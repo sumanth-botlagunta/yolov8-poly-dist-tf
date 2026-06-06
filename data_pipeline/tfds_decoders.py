@@ -124,9 +124,20 @@ class PolygonDecoder:
 
         n = tf.shape(classes)[0]
 
-        is_crowd = tf.cast(objects['is_crowd'], tf.bool)    # [N]
-        area = tf.cast(objects['area'], tf.float32)         # int64 in TFDS → float32
-        polygons = tf.cast(objects['points'], tf.float32)   # [N, pts]
+        try:
+            is_crowd = tf.cast(objects['is_crowd'], tf.bool)
+        except KeyError:
+            is_crowd = tf.zeros([n], dtype=tf.bool)
+
+        try:
+            area = tf.cast(objects['area'], tf.float32)     # int64 in TFDS → float32
+        except KeyError:
+            area = tf.zeros([n], dtype=tf.float32)
+
+        try:
+            polygons = tf.cast(objects['points'], tf.float32)   # [N, pts]
+        except KeyError:
+            polygons = tf.zeros([n, self._max_vertices + 2], dtype=tf.float32) - 1.0
 
         # is_dontcare exists in cleaner datasets; ServingBot has no such field
         try:
@@ -182,8 +193,10 @@ class ServingBotDetDecoder(PolygonDecoder):
 
     def decode(self, data: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
         result = super().decode(data)
-        # Replace sentinel with real per-object distances
-        result['groundtruth_dists'] = tf.cast(data['objects']['distance'], tf.float32)
+        try:
+            result['groundtruth_dists'] = tf.cast(data['objects']['distance'], tf.float32)
+        except KeyError:
+            pass  # parent already filled -1.0 sentinel
         return result
 
 

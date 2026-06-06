@@ -174,6 +174,11 @@ class CopyAndPasteModule:
         bg_data['groundtruth_dontcare'] = tf.concat(
             [bg_data['groundtruth_dontcare'], tf.constant([0], tf.int64)], axis=0
         )
+        # Pasted object has no distance measurement — append sentinel
+        if 'groundtruth_dists' in bg_data:
+            bg_data['groundtruth_dists'] = tf.concat(
+                [bg_data['groundtruth_dists'], tf.constant([-1.0])], axis=0
+            )
 
         # Append polygon (transform from obj-normalised to bg-normalised)
         obj_pts = obj_data.get('points', tf.constant([], tf.float32))
