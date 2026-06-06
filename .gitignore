@@ -3,7 +3,6 @@
 docs/
 CLAUDE.md
 MASTER_PLAN.md
-setup.py
 
 # Checkpoints and model outputs
 initial_checkpoint_folder/
