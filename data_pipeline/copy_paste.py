@@ -82,31 +82,27 @@ class CopyAndPasteModule:
         obj_rgb  = obj_rgba[:, :, :3]                       # [H_o, W_o, 3]
         alpha    = obj_rgba[:, :, 3:4] / 255.0              # [H_o, W_o, 1]
 
-        # Compute target size within [min_resize_ratio, max_resize_ratio] * min(H, W)
-        min_dim = tf.cast(tf.minimum(H, W), tf.float32)
+        # Resize object by a ratio applied directly to its own dimensions.
         resize_ratio = tf.random.uniform([], self._min_resize_ratio, self._max_resize_ratio)
-        target_long = resize_ratio * min_dim
         obj_h_f = tf.cast(tf.shape(obj_rgb)[0], tf.float32)
         obj_w_f = tf.cast(tf.shape(obj_rgb)[1], tf.float32)
-        scale_f = target_long / tf.maximum(obj_h_f, obj_w_f)
-        new_h = tf.cast(tf.round(obj_h_f * scale_f), tf.int32)
-        new_w = tf.cast(tf.round(obj_w_f * scale_f), tf.int32)
-        new_h = tf.maximum(new_h, 1)
-        new_w = tf.maximum(new_w, 1)
+        new_h = tf.maximum(tf.cast(tf.round(obj_h_f * resize_ratio), tf.int32), 1)
+        new_w = tf.maximum(tf.cast(tf.round(obj_w_f * resize_ratio), tf.int32), 1)
 
         # Resize obj and alpha
         obj_rgb_r = tf.image.resize(obj_rgb, [new_h, new_w], method='bilinear')
         alpha_r   = tf.image.resize(alpha,   [new_h, new_w], method='bilinear')
         alpha_r   = tf.clip_by_value(alpha_r, 0.0, 1.0)
 
-        # Random placement: within height_limit of background
-        max_y = tf.cast(tf.cast(H, tf.float32) * self._height_limit, tf.int32) - new_h
-        max_y = tf.maximum(max_y, 0)
-        max_x = W - new_w
-        max_x = tf.maximum(max_x, 0)
+        # Random placement in [10%, height_limit] × [10%, 90%] of background.
+        _margin = 0.1
+        min_y = tf.cast(H_f * _margin, tf.int32)
+        min_x = tf.cast(W_f * _margin, tf.int32)
+        max_y = tf.maximum(tf.cast(H_f * self._height_limit, tf.int32) - new_h, min_y)
+        max_x = tf.maximum(tf.cast(W_f * (1.0 - _margin), tf.int32) - new_w, min_x)
 
-        paste_y = tf.random.uniform([], 0, max_y + 1, dtype=tf.int32)
-        paste_x = tf.random.uniform([], 0, max_x + 1, dtype=tf.int32)
+        paste_y = tf.random.uniform([], min_y, max_y + 1, dtype=tf.int32)
+        paste_x = tf.random.uniform([], min_x, max_x + 1, dtype=tf.int32)
 
         # Build full-canvas alpha mask (0 everywhere except paste region)
         pad_top    = paste_y
@@ -134,9 +130,9 @@ class CopyAndPasteModule:
              [0, 0]],
         )  # [H, W, 3]
 
-        # Alpha composite: bg * (1 - alpha) + obj * alpha
-        blended = bg_img * (1.0 - alpha_canvas) + obj_canvas * alpha_canvas
-        blended = tf.clip_by_value(blended, 0.0, 255.0)
+        # Hard-mask composite: use alpha > 0.5 as binary mask (matches old codebase).
+        hard_mask = alpha_canvas > 0.5  # [H, W, 1] bool, broadcasts over channels
+        blended = tf.where(hard_mask, obj_canvas, bg_img)
         bg_data = dict(bg_data)
         bg_data['image'] = tf.cast(blended, tf.uint8)
 

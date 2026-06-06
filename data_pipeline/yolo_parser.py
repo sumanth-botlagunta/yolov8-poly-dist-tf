@@ -107,6 +107,14 @@ class V8ParserExtended(Parser):
             classes  = tf.boolean_mask(classes,  valid)
             polygons = tf.boolean_mask(polygons, valid)
 
+        # Resize to output_size so all images entering augmentation have a fixed shape.
+        h_out, w_out = self._output_size[0], self._output_size[1]
+        image = tf.cast(
+            tf.image.resize(tf.cast(image, tf.float32), [h_out, w_out], method='bilinear'),
+            tf.uint8,
+        )
+        image.set_shape([h_out, w_out, 3])
+
         # 2. Random horizontal flip
         if self._random_flip:
             image, boxes, polygons = random_horizontal_flip(
@@ -228,21 +236,20 @@ class V8ParserExtended(Parser):
     ) -> tf.Tensor:
         """Convert raw polygon vertices to PolyYOLO radial format.
 
-        PolyYOLO format per instance: [dx_0, dy_0, conf_0, ..., dx_23, dy_23, conf_23]
-            origin: box center (normalized) — NOT stored in the output tensor.
-            dx, dy: delta from box center to vertex (normalized coords).
-            conf:   1.0 if any vertex assigned to this angle bin, else 0.0.
+        Output format per instance: [dist_0, angle_norm_0, conf_0, ..., dist_23, angle_norm_23, conf_23]
+            dist:       radial distance from box center to the vertex assigned to this bin.
+            angle_norm: 1.0 for the dominant bin (max dist across all bins), 0.0 elsewhere.
+            conf:       1.0 if any valid vertex assigned to this bin, else 0.0.
 
         For each of the 24 angle bins (0°, 15°, ..., 345°):
-            - Find all valid polygon vertices whose angle from box center falls
-              within [bin*angle_step, (bin+1)*angle_step).
-            - Select the vertex with maximum radial distance.
-            - Compute (dx, dy) and set conf=1.0.
-            - Bins with no valid vertex: dx=dy=0, conf=0.
+            - Find all valid polygon vertices whose angle from box center falls in the bin.
+            - Select the vertex with maximum radial distance as the bin representative.
+            - dist = sqrt(dx² + dy²), conf = 1.0 if any vertex present.
+        The bin with maximum dist across all bins gets angle_norm = 1.0 (one-hot dominant bin).
 
         Args:
             boxes:    float32 [N, 4] yxyx normalized (used for box centers).
-            polygons: float32 [N, max_vertices] flat xy pairs, -1 padded.
+            polygons: float32 [N, max_vertices+2] flat xy pairs, -1 padded.
             angle_step: degrees per bin (15 → 24 bins).
             legacy:   unused, kept for API compatibility.
 
@@ -250,8 +257,6 @@ class V8ParserExtended(Parser):
             float32 [N, n_angles * 3]
         """
         n_angles = 360 // angle_step
-        max_v = self._max_vertices
-        n_pairs = max_v // 2
 
         N = tf.shape(boxes)[0]
 
@@ -259,8 +264,8 @@ class V8ParserExtended(Parser):
         cy = (boxes[:, 0] + boxes[:, 2]) / 2.0  # [N]
         cx = (boxes[:, 1] + boxes[:, 3]) / 2.0  # [N]
 
-        # Reshape polygons to [N, n_pairs, 2] (x, y)
-        pts = tf.reshape(polygons, [N, n_pairs, 2])
+        # Reshape polygons to [N, n_pairs, 2] (x, y); -1 auto-infers n_pairs.
+        pts = tf.reshape(polygons, [N, -1, 2])
 
         # Valid vertices: x >= 0 (both x and y are -1 for invalid pairs)
         valid = pts[:, :, 0] >= 0.0  # [N, n_pairs]
@@ -280,7 +285,6 @@ class V8ParserExtended(Parser):
         bins = tf.clip_by_value(bins, 0, n_angles - 1)
 
         # For each (instance, bin), find the vertex with maximum radial distance.
-        # Build a [N, n_pairs, n_angles] assignment mask: 1 where bin matches AND valid.
         bins_oh = tf.one_hot(bins, n_angles)  # [N, n_pairs, n_angles]
         valid_3d = tf.cast(valid[:, :, tf.newaxis], tf.float32)  # [N, n_pairs, 1]
 
@@ -292,21 +296,16 @@ class V8ParserExtended(Parser):
         # Max distance per bin: [N, n_angles]
         max_dists = tf.reduce_max(dists_assigned, axis=1)
 
-        # Index of argmax vertex per bin: [N, n_angles]
-        argmax_idx = tf.argmax(dists_assigned, axis=1, output_type=tf.int32)
-
-        # Gather dx, dy for argmax vertices
-        inst_idx = tf.tile(tf.range(N)[:, tf.newaxis], [1, n_angles])  # [N, n_angles]
-        gather_idx = tf.stack([inst_idx, argmax_idx], axis=-1)           # [N, n_angles, 2]
-        dx_bins   = tf.gather_nd(dx, gather_idx)   # [N, n_angles]
-        dy_bins   = tf.gather_nd(dy, gather_idx)   # [N, n_angles]
-
         # Confidence: 1.0 if any valid vertex was assigned to this bin
         conf_bins = tf.cast(max_dists > 0.0, tf.float32)  # [N, n_angles]
 
-        # Interleave [dx0, dy0, conf0, dx1, dy1, conf1, ...]
-        result = tf.stack([dx_bins, dy_bins, conf_bins], axis=-1)  # [N, n_angles, 3]
-        return tf.reshape(result, [N, n_angles * 3])                # [N, n_angles*3]
+        # Dominant bin (max dist across all bins) → one-hot angle label
+        dominant_bin = tf.argmax(max_dists, axis=1, output_type=tf.int32)  # [N]
+        angle_bins = tf.one_hot(dominant_bin, n_angles)  # [N, n_angles]
+
+        # Interleave [dist0, angle_norm0, conf0, dist1, angle_norm1, conf1, ...]
+        result = tf.stack([max_dists, angle_bins, conf_bins], axis=-1)  # [N, n_angles, 3]
+        return tf.reshape(result, [N, n_angles * 3])                     # [N, n_angles*3]
 
     # ------------------------------------------------------------------
     # Augmentation helpers
