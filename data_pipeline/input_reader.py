@@ -330,9 +330,116 @@ def build_input_reader_from_config(
     distance_reader: Optional[InputReader] = None,
     cnp_decoder=None,
 ) -> InputReader:
-    """Construct an InputReader from DataConfig + TaskConfig dataclasses."""
+    """Construct an InputReader from DataConfig + TaskConfig dataclasses.
+
+    All pipeline components (decoder, parser, mosaic, copy-paste, distance
+    reader) are built from config when not explicitly provided.  task.py calls
+    this function without passing any components, so this is where they must be
+    instantiated — failing to do so leaves parser=None and raw variable-size
+    images reach batch() directly, causing a shape-mismatch crash.
+    """
     names = [n.strip() for n in data_cfg.tfds_name.split(',')]
     splits = [s.strip() for s in data_cfg.tfds_split.split(',')]
+
+    output_size = task_cfg.model.input_size[:2]   # [H, W]
+    num_classes = task_cfg.num_classes
+    parser_cfg  = data_cfg.parser
+    min_level   = task_cfg.model.backbone.min_level  # 3
+    max_level   = task_cfg.model.backbone.max_level  # 5
+
+    # Decoder: normalise raw TFDS feature dicts into our standard schema.
+    if decoder is None:
+        from data_pipeline.tfds_decoders import PolygonDecoder
+        decoder = PolygonDecoder(
+            max_vertices=parser_cfg.max_vertices,
+            num_classes=num_classes,
+        )
+
+    # Parser: augment + resize images and build fixed-shape label tensors.
+    # Without this every image stays at its native resolution and batch() fails.
+    if parser is None:
+        from data_pipeline.yolo_parser import V8ParserExtended
+        levels = [str(l) for l in range(min_level, max_level + 1)]
+        expanded_strides = {
+            str(l): 8 * (2 ** (l - min_level))
+            for l in range(min_level, max_level + 1)
+        }
+        parser = V8ParserExtended(
+            output_size=output_size,
+            expanded_strides=expanded_strides,
+            levels=levels,
+            max_vertices=parser_cfg.max_vertices,
+            angle_step=parser_cfg.angle_step,
+            with_polygons=parser_cfg.with_polygons,
+            dummy_distance=parser_cfg.dummy_distance,
+            skip_crowd_during_training=parser_cfg.skip_crowd_during_training,
+            max_num_instances=parser_cfg.max_num_instances,
+            aug_rand_hue=parser_cfg.aug_rand_hue,
+            aug_rand_saturation=parser_cfg.aug_rand_saturation,
+            aug_rand_brightness=parser_cfg.aug_rand_brightness,
+            aug_rand_translate=parser_cfg.aug_rand_translate,
+            aug_scale_min=parser_cfg.aug_scale_min,
+            aug_scale_max=parser_cfg.aug_scale_max,
+            random_flip=parser_cfg.random_flip,
+            letter_box=parser_cfg.letter_box,
+            albumentations_frequency=parser_cfg.albumentations_frequency,
+        )
+
+    # Mosaic (training only).
+    if mosaic_module is None and is_training:
+        from data_pipeline.mosaic import Mosaic
+        mosaic_cfg = parser_cfg.mosaic
+        mosaic_module = Mosaic(
+            output_size=output_size,
+            mosaic_frequency=mosaic_cfg.mosaic_frequency,
+            mixup_frequency=mosaic_cfg.mixup_frequency,
+            mosaic_center=mosaic_cfg.mosaic_center,
+            aug_scale_min=mosaic_cfg.aug_scale_min,
+            aug_scale_max=mosaic_cfg.aug_scale_max,
+            area_thresh=mosaic_cfg.area_thresh,
+            mosaic_crop_mode=mosaic_cfg.mosaic_crop_mode,
+            with_polygons=parser_cfg.with_polygons,
+        )
+
+    # Copy-paste (training only, when a source dataset is configured).
+    if copy_paste_module is None and is_training and data_cfg.tfds_for_cnp:
+        from data_pipeline.copy_paste import CopyAndPasteModule
+        from data_pipeline.tfds_decoders import CopyPasteDecoder
+        copy_paste_module = CopyAndPasteModule(prob=data_cfg.prob_copy_n_paste)
+        if cnp_decoder is None:
+            cnp_decoder = CopyPasteDecoder(num_classes=num_classes)
+
+    # Distance reader (training only, when distance_data is configured).
+    if distance_reader is None and is_training and getattr(data_cfg, 'distance_data', None) is not None:
+        from data_pipeline.distance_parser import V8DistanceParser
+        from data_pipeline.tfds_decoders import ServingBotDetDecoder
+        dist_cfg = data_cfg.distance_data
+        dist_decoder = ServingBotDetDecoder(num_classes=num_classes)
+        dist_parser = V8DistanceParser(
+            output_size=output_size,
+            max_num_instances=dist_cfg.parser.max_num_instances,
+            angle_step=dist_cfg.parser.angle_step,
+            with_polygons=dist_cfg.with_polygons,
+            min_meter=task_cfg.min_distance,
+            max_meter=task_cfg.max_distance,
+            aug_rand_hue=dist_cfg.parser.aug_rand_hue,
+            aug_rand_saturation=dist_cfg.parser.aug_rand_saturation,
+            aug_rand_brightness=dist_cfg.parser.aug_rand_brightness,
+            random_flip=dist_cfg.parser.random_flip,
+            skip_crowd_during_training=dist_cfg.parser.skip_crowd_during_training,
+        )
+        distance_reader = InputReader(
+            tfds_names=[dist_cfg.tfds_name],
+            tfds_split=[dist_cfg.tfds_split],
+            tfds_data_dir=dist_cfg.tfds_data_dir,
+            global_batch_size=dist_cfg.global_batch_size,
+            is_training=True,
+            decoder=dist_decoder,
+            parser=dist_parser,
+            seed=data_cfg.seed,
+            shuffle_buffer_size=1500,
+            drop_remainder=True,
+        )
 
     return InputReader(
         tfds_names=names,
