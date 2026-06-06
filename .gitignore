@@ -1,0 +1,74 @@
+# ── Project-specific excludes ────────────────────────────────────────────────
+.claude/
+docs/
+CLAUDE.md
+MASTER_PLAN.md
+setup.py
+
+# Checkpoints and model outputs
+initial_checkpoint_folder/
+checkpoints/
+*.ckpt
+*.ckpt.index
+*.ckpt.data-*
+*.weights.h5
+saved_model/
+*.tflite
+*.pb
+
+# TensorBoard
+tb_events/
+runs/
+
+# Experiment outputs
+outputs/
+results/
+*.json
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+MANIFEST
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+.env
+*.env
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ── IDEs ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Testing / coverage ────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ── TensorFlow / ML ───────────────────────────────────────────────────────────
+tfds_cache/
+tensorflow_datasets/
+wandb/
+mlruns/
