@@ -1,0 +1,298 @@
+# Experiment: yolov8_poly_dist
+# Full pipeline: bbox + cls + polygon (24-vertex PolyYOLO) + distance estimation
+# Source of truth: docs/experiment_config.yaml
+
+task:
+  init_checkpoint: initial_checkpoint_folder/ckpt-920304
+  init_checkpoint_modules: [backbone, decoder]
+  num_classes: 39
+  with_polygons: true
+  with_distance: true
+  min_distance: 0.5
+  max_distance: 10.0
+  output_poly_size: 24
+  output_dist_size: 1
+  num_dist_block: 1
+  ignore_dontcare: true
+  ignore_iscrowds: false
+  iscrowds_labels: [6, 13, 24, 36, 37]
+  smart_bias_lr: 0.1
+  gradient_clip_norm: 0.0
+  find_best_score_thresh: true
+  summary_types: scalar,image
+  summary_image_num: 10
+  summary_image_draw_box: true
+  summary_image_draw_poly: true
+  per_category_metrics: false
+
+  norm_activation:
+    activation: relu
+    norm_epsilon: 0.001
+    norm_momentum: 0.97
+    use_sync_bn: false
+
+  model:
+    input_size: [672, 672, 3]
+    angle_step: 15
+    darknet_based_model: false
+    deploy: true
+    backbone:
+      type: darknet
+      darknet:
+        model_id: cspdarknetv8s
+        min_level: 3
+        max_level: 5
+        depth_scale: 1.0
+        width_scale: 1.0
+        dilate: false
+        use_reorg_input: false
+        use_separable_conv: false
+    decoder:
+      type: yolo_decoder
+      yolo_decoder:
+        version: v8
+        type: s
+        activation: same
+        use_separable_conv: false
+        model_id: null
+    head:
+      smart_bias: true
+    anchor_boxes:
+      anchors_per_scale: 1
+      boxes: [[1, 1]]
+      level_limits: null
+    detection_generator:
+      max_boxes: 300
+      nms_thresh: 0.65
+      iou_thresh: 0.001
+      nms_type: greedy
+      pre_nms_points: 30000
+      topN_per_anchor: 1
+      path_scales:
+        '1': 2
+        '2': 4
+        '3': 8
+        '4': 16
+        '5': 32
+
+  losses:
+    iou_gain: 7.5
+    cls_gain: 0.5
+    dfl_gain: 1.5
+    dist_gain: 1.0
+    poly_dist_gain: 0.45
+    poly_conf_gain: 0.2
+    poly_angle_gain: 0.4
+    poly_gain: 0.5
+    tal_alpha: 0.5
+    tal_beta: 6.0
+    topk: 10
+    max_delta: .inf
+    acsl:
+      use_acsl: false
+      bg_common_ratio: 0.38
+      bg_frequent_ratio: 1.0
+      bg_rare_ratio: 0.17
+      threshold: 0.3
+      common_cls: [0, 2, 3, 4, 5, 11, 12, 13, 16, 17, 19, 20, 23, 24, 27, 28, 34, 36]
+      frequent_cls: [18, 22, 25, 35]
+      rare_cls: [1, 6, 7, 8, 9, 10, 14, 15, 21, 26, 29, 30, 31, 32, 33, 37]
+
+  train_data:
+    tfds_name: "cleaner_polygon2026:2.0.0,field_misrecog2026:1.0.0,station_misrecog:1.1.0"
+    tfds_split: "train,train,train"
+    tfds_sampling_weights: [95, 2, 3]
+    tfds_data_dir: /home/user/tensorflow_datasets/
+    tfds_download: true
+    tfds_for_cnp: "cleaner_copy_paste:1.0.0"
+    tfds_for_cnp_split: train_f
+    global_batch_size: 128
+    is_training: true
+    shuffle_buffer_size: 1500
+    prob_copy_n_paste: 0.2
+    seed: 1000
+    drop_remainder: true
+    with_polygons: true
+    with_distance: true
+    poly_eval_gt_policy: polyyolo
+    class_remap_json_path: null
+    parser:
+      angle_step: 15
+      max_num_instances: 300
+      max_vertices: 10938
+      aug_rand_hue: 0.015
+      aug_rand_saturation: 0.7
+      aug_rand_brightness: 0.4
+      aug_rand_translate: 0.1
+      aug_scale_min: 1.0
+      aug_scale_max: 1.0
+      aug_rand_angle: 0.0
+      aug_rand_perspective: 0.0
+      random_flip: true
+      letter_box: true
+      resize_with_random_method: true
+      skip_crowd_during_training: true
+      dummy_distance: true
+      with_polygons: true
+      albumentations_frequency: 1.0
+      jitter: 0.0
+      random_pad: false
+      random_rotate: false
+      best_match_only: false
+      use_tie_breaker: true
+      anchor_thresh: -0.01
+      area_thresh: 0.1
+      eval_gray_border: false
+      mosaic:
+        mosaic_frequency: 0.5
+        mixup_frequency: 0.0
+        mosaic_center: 0.2
+        aug_scale_min: 0.4
+        aug_scale_max: 1.9
+        mosaic_crop_mode: scale
+        area_thresh: 0.5
+        jitter: 0.0
+    distance_data:
+      tfds_name: "servingbot_polygon:1.0.1"
+      tfds_split: train
+      tfds_data_dir: /home/user/tensorflow_datasets/
+      global_batch_size: 16
+      ignore_bg: true
+      with_distance: true
+      with_polygons: false
+      drop_remainder: true
+      shuffle_buffer_size: 200
+      class_remap_json_path: ./serving/bot_cleaner/class_remap_servingbot.json
+      parser:
+        angle_step: 15
+        max_num_instances: 300
+        max_vertices: 10938
+        aug_rand_hue: 0.015
+        aug_rand_saturation: 0.7
+        aug_rand_brightness: 0.4
+        random_flip: true
+        skip_crowd_during_training: true
+        with_polygons: true
+        min_meter: 0.5
+        max_meter: 10.0
+        eval_gray_border: false
+
+  validation_data:
+    tfds_name: "cleaner_polygon2026:2.0.0"
+    tfds_split: test
+    tfds_data_dir: /home/user/tensorflow_datasets/
+    global_batch_size: 2
+    is_training: false
+    shuffle_buffer_size: 100
+    prob_copy_n_paste: 0.0
+    drop_remainder: true
+    with_polygons: true
+    with_distance: false
+    poly_eval_gt_policy: polyyolo
+    verbose_eval_results_per_category: true
+    distance_data: null
+    parser:
+      angle_step: 15
+      max_num_instances: 300
+      max_vertices: 10938
+      aug_rand_hue: 0.0
+      aug_rand_saturation: 0.0
+      aug_rand_brightness: 0.0
+      aug_rand_translate: 0.0
+      aug_scale_min: 1.0
+      aug_scale_max: 1.0
+      aug_rand_angle: 0.0
+      aug_rand_perspective: 0.0
+      random_flip: true
+      letter_box: true
+      resize_with_random_method: false
+      skip_crowd_during_training: true
+      dummy_distance: true
+      with_polygons: true
+      albumentations_frequency: 0.0
+      jitter: 0.0
+      random_pad: false
+      random_rotate: false
+      best_match_only: false
+      use_tie_breaker: true
+      anchor_thresh: -0.01
+      area_thresh: 0.1
+      eval_gray_border: false
+      mosaic:
+        mosaic_frequency: 0.0
+        mixup_frequency: 0.0
+        mosaic_center: 0.2
+        aug_scale_min: 1.0
+        aug_scale_max: 1.0
+        mosaic_crop_mode: null
+        area_thresh: 0.1
+        jitter: 0.0
+
+trainer:
+  train_epochs: 300
+  train_steps: 716400
+  steps_per_loop: 2388
+  steps_by_epochs: true
+  checkpoint_interval: 2388
+  validation_interval: 2388
+  validation_interval_epoch: 1
+  validation_steps: 1951
+  validation_total_examples: 3903
+  train_total_examples: 305780
+  best_checkpoint_eval_metric: F1score50
+  best_checkpoint_export_subdir: best_F1score50
+  best_checkpoint_metric_comp: higher
+  max_to_keep: 300
+  loss_upper_bound: 1000000.0
+  recovery_begin_steps: 0
+  recovery_max_trials: 0
+  train_tf_function: true
+  train_tf_while_loop: true
+  eval_tf_function: true
+  eval_tf_while_loop: false
+  summary_interval: 2388
+  validation_summary_subdir: validation
+  allow_tpu_summary: false
+  continuous_eval_timeout: 3600
+  optimizer_config:
+    ema:
+      average_decay: 0.9999
+      dynamic_decay: true
+    learning_rate:
+      type: cosine
+      cosine:
+        name: CosineDecay
+        initial_learning_rate: 0.01
+        decay_steps: 716400
+        alpha: 0.01
+    optimizer:
+      type: sgd_torch
+      sgd_torch:
+        name: SGD
+        momentum: 0.937
+        momentum_start: 0.8
+        nesterov: true
+        weight_decay: 0.0005
+        warmup_steps: 7164
+        weight_keys: [kernel, weight]
+        bias_keys: [bias, beta]
+        clipnorm: null
+        clipvalue: null
+        global_clipnorm: null
+        decay: 0.0
+  warmup:
+    type: linear
+    linear:
+      name: linear
+      warmup_learning_rate: 0.0
+      warmup_steps: 7164
+
+runtime:
+  distribution_strategy: mirrored
+  num_gpus: 2
+  mixed_precision_dtype: float32
+  run_eagerly: false
+  enable_xla: false
+  num_cores_per_replica: 1
+  num_packs: 1
+  per_gpu_thread_count: 0

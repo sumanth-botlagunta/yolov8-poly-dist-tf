@@ -1,0 +1,490 @@
+"""Task-Aligned Learning loss with polygon and distance extensions.
+
+Loss components and gains (from experiment_config.yaml):
+    iou_gain:        7.5   CIoU box loss
+    dfl_gain:        1.5   Distribution Focal Loss (DFL) for box regression
+    cls_gain:        0.5   BCE classification loss
+    dist_gain:       1.0   L1 distance loss (on valid samples only)
+    poly_dist_gain:  0.45  PolyYOLO radial distance regression
+    poly_angle_gain: 0.4   PolyYOLO angle classification
+    poly_conf_gain:  0.2   PolyYOLO vertex confidence
+
+TAL assignment parameters:
+    tal_alpha: 0.5   (score exponent in alignment metric)
+    tal_beta:  6.0   (IoU exponent in alignment metric)
+    topk:      10    (top-k candidates per GT)
+
+ignore_bg logic:
+    ignore_bg=0: standard BCE on all anchors (detection data)
+    ignore_bg=1: class loss masked to foreground only (distance data)
+
+Classes:
+    TaskAlignedLossExtended: Full loss computation with TAL assignment.
+"""
+
+import math
+from typing import Dict, Optional, Tuple
+
+import tensorflow as tf
+
+from losses.distance_loss import (
+    INVALID_DISTANCE_SENTINEL,
+    distance_l1_loss,
+)
+from losses.polygon_loss import (
+    polygon_angle_loss,
+    polygon_conf_loss,
+    polygon_dist_loss,
+)
+from losses.tal_assigner import TaskAlignedAssigner
+
+_LEVEL_STRIDES = {"3": 8, "4": 16, "5": 32}
+
+
+# ---------------------------------------------------------------------------
+# CIoU helper (module-level to avoid closure overhead)
+# ---------------------------------------------------------------------------
+
+def _ciou_loss(b1: tf.Tensor, b2: tf.Tensor, eps: float = 1e-7) -> tf.Tensor:
+    """Complete IoU loss between two sets of xyxy boxes.
+
+    Args:
+        b1, b2: float32 [..., 4]  xyxy in the same coordinate system.
+
+    Returns:
+        float32 [...]  per-box CIoU loss in [0, 2].
+    """
+    ix1 = tf.maximum(b1[..., 0], b2[..., 0])
+    iy1 = tf.maximum(b1[..., 1], b2[..., 1])
+    ix2 = tf.minimum(b1[..., 2], b2[..., 2])
+    iy2 = tf.minimum(b1[..., 3], b2[..., 3])
+    inter = tf.maximum(ix2 - ix1, 0.0) * tf.maximum(iy2 - iy1, 0.0)
+
+    a1 = (b1[..., 2] - b1[..., 0]) * (b1[..., 3] - b1[..., 1])
+    a2 = (b2[..., 2] - b2[..., 0]) * (b2[..., 3] - b2[..., 1])
+    union = a1 + a2 - inter + eps
+    iou = inter / union
+
+    # Center distance squared
+    cx1 = (b1[..., 0] + b1[..., 2]) * 0.5
+    cy1 = (b1[..., 1] + b1[..., 3]) * 0.5
+    cx2 = (b2[..., 0] + b2[..., 2]) * 0.5
+    cy2 = (b2[..., 1] + b2[..., 3]) * 0.5
+    rho2 = tf.square(cx1 - cx2) + tf.square(cy1 - cy2)
+
+    # Enclosing box diagonal squared
+    ex1 = tf.minimum(b1[..., 0], b2[..., 0])
+    ey1 = tf.minimum(b1[..., 1], b2[..., 1])
+    ex2 = tf.maximum(b1[..., 2], b2[..., 2])
+    ey2 = tf.maximum(b1[..., 3], b2[..., 3])
+    c2  = tf.square(ex2 - ex1) + tf.square(ey2 - ey1) + eps
+
+    # Aspect-ratio consistency penalty
+    w1 = b1[..., 2] - b1[..., 0]
+    h1 = b1[..., 3] - b1[..., 1]
+    w2 = b2[..., 2] - b2[..., 0]
+    h2 = b2[..., 3] - b2[..., 1]
+    v      = (4.0 / (math.pi ** 2)) * tf.square(
+        tf.math.atan2(w2, h2 + eps) - tf.math.atan2(w1, h1 + eps)
+    )
+    alpha_v = v / (1.0 - iou + v + eps)
+
+    ciou = iou - rho2 / c2 - alpha_v * v
+    return 1.0 - ciou
+
+
+# ---------------------------------------------------------------------------
+
+class TaskAlignedLossExtended:
+    """TAL-based loss for box, cls, polygon, and distance prediction."""
+
+    def __init__(
+        self,
+        num_classes: int = 39,
+        iou_gain: float = 7.5,
+        cls_gain: float = 0.5,
+        dfl_gain: float = 1.5,
+        dist_gain: float = 1.0,
+        poly_dist_gain: float = 0.45,
+        poly_conf_gain: float = 0.2,
+        poly_angle_gain: float = 0.4,
+        tal_alpha: float = 0.5,
+        tal_beta: float = 6.0,
+        topk: int = 10,
+        reg_max: int = 16,
+        with_polygons: bool = True,
+        with_distance: bool = True,
+        angle_step: int = 15,
+        use_acsl: bool = False,
+    ):
+        self.num_classes    = num_classes
+        self.iou_gain       = iou_gain
+        self.cls_gain       = cls_gain
+        self.dfl_gain       = dfl_gain
+        self.dist_gain      = dist_gain
+        self.poly_dist_gain = poly_dist_gain
+        self.poly_conf_gain = poly_conf_gain
+        self.poly_angle_gain= poly_angle_gain
+        self.with_polygons  = with_polygons
+        self.with_distance  = with_distance
+        self.reg_max        = reg_max
+        self.angle_step     = angle_step
+        self.use_acsl       = use_acsl
+        self.num_vertices   = 360 // angle_step  # = 24
+
+        self._assigner_fn = TaskAlignedAssigner(
+            topk=topk, alpha=tal_alpha, beta=tal_beta
+        )
+        # DFL bin indices: [0, 1, ..., reg_max-1]
+        self._dfl_bins = tf.cast(tf.range(reg_max), tf.float32)
+
+    # ------------------------------------------------------------------
+
+    def _assigner(
+        self,
+        pd_scores: tf.Tensor,
+        pd_bboxes: tf.Tensor,
+        anc_points: tf.Tensor,
+        gt_labels: tf.Tensor,
+        gt_bboxes: tf.Tensor,
+        mask_gt: tf.Tensor,
+        gt_polys: Optional[tf.Tensor] = None,
+        gt_dists: Optional[tf.Tensor] = None,
+    ) -> Tuple:
+        """Task-Aligned label assignment.
+
+        Assignment steps:
+            1. Compute alignment metric: score^alpha * IoU^beta.
+            2. Select top-k candidates per GT.
+            3. Apply spatial constraint (anchor center inside GT box).
+            4. Handle duplicate assignments (keep max-IoU GT).
+
+        Returns:
+            target_labels, target_bboxes, target_scores,
+            target_polygons, target_dists, fg_mask, target_gt_idx
+        """
+        return self._assigner_fn(
+            pd_scores, pd_bboxes, anc_points,
+            gt_labels, gt_bboxes, mask_gt,
+            gt_polys=gt_polys, gt_dists=gt_dists,
+        )
+
+    # ------------------------------------------------------------------
+
+    def _box_loss(
+        self,
+        pd_bboxes: tf.Tensor,
+        target_bboxes: tf.Tensor,
+        target_scores_sum: tf.Tensor,
+        fg_mask: tf.Tensor,
+        pd_box_raw: tf.Tensor,
+        anc_strides: tf.Tensor,     # [A, 1]  — added for DFL target normalisation
+        anc_points: tf.Tensor,      # [A, 2]  — added to build LTRB targets
+    ) -> Tuple[tf.Tensor, tf.Tensor]:
+        """CIoU loss + DFL loss for foreground anchors.
+
+        Returns:
+            (ciou_loss, dfl_loss) both scalar tensors.
+        """
+        fg_float = tf.cast(fg_mask, tf.float32)           # [B, A]
+
+        # ── CIoU ──────────────────────────────────────────────────────
+        ciou = _ciou_loss(pd_bboxes, target_bboxes)        # [B, A]
+        ciou_loss = tf.reduce_sum(ciou * fg_float) / target_scores_sum
+
+        # ── DFL ───────────────────────────────────────────────────────
+        # Target LTRB offsets in feature-map units
+        cx = anc_points[:, 0]   # [A]
+        cy = anc_points[:, 1]   # [A]
+
+        tgt_l = cx[tf.newaxis] - target_bboxes[..., 0]   # [B, A]
+        tgt_t = cy[tf.newaxis] - target_bboxes[..., 1]
+        tgt_r = target_bboxes[..., 2] - cx[tf.newaxis]
+        tgt_b = target_bboxes[..., 3] - cy[tf.newaxis]
+
+        tgt_ltrb_px = tf.stack([tgt_l, tgt_t, tgt_r, tgt_b], axis=-1)   # [B, A, 4]
+        tgt_ltrb_fm = tgt_ltrb_px / anc_strides[tf.newaxis]              # [B, A, 4]
+        tgt_ltrb_fm = tf.clip_by_value(
+            tgt_ltrb_fm, 0.0, float(self.reg_max) - 1.001
+        )
+
+        tgt_floor        = tf.floor(tgt_ltrb_fm)                         # [B, A, 4]
+        weight_right     = tgt_ltrb_fm - tgt_floor
+        weight_left      = 1.0 - weight_right
+
+        B_val = tf.shape(pd_box_raw)[0]
+        A_val = tf.shape(pd_box_raw)[1]
+        pd_logits = tf.reshape(pd_box_raw, [B_val, A_val, 4, self.reg_max])
+        pd_log_softmax = tf.nn.log_softmax(pd_logits, axis=-1)           # [B, A, 4, R]
+
+        fl_idx = tf.cast(tgt_floor, tf.int32)                            # [B, A, 4]
+        cl_idx = tf.minimum(fl_idx + 1, self.reg_max - 1)
+
+        # Gather log-probs via one-hot matmul
+        fl_oh = tf.one_hot(fl_idx, self.reg_max)                         # [B, A, 4, R]
+        cl_oh = tf.one_hot(cl_idx, self.reg_max)
+
+        log_p_fl = tf.reduce_sum(pd_log_softmax * fl_oh, axis=-1)        # [B, A, 4]
+        log_p_cl = tf.reduce_sum(pd_log_softmax * cl_oh, axis=-1)
+
+        dfl_raw  = -(weight_left * log_p_fl + weight_right * log_p_cl)   # [B, A, 4]
+        dfl_mean = tf.reduce_mean(dfl_raw, axis=-1)                       # [B, A]
+        dfl_loss = tf.reduce_sum(dfl_mean * fg_float) / target_scores_sum
+
+        return ciou_loss, dfl_loss
+
+    # ------------------------------------------------------------------
+
+    def _class_loss(
+        self,
+        pred_scores: tf.Tensor,
+        target_scores: tf.Tensor,
+        target_scores_sum: tf.Tensor,
+        fg_mask: tf.Tensor,
+        ignore_bg: tf.Tensor,
+    ) -> tf.Tensor:
+        """BCE classification loss, with ignore_bg and optional ACSL weighting."""
+        bce = tf.nn.sigmoid_cross_entropy_with_logits(
+            labels=target_scores, logits=pred_scores
+        )  # [B, A, C]
+        bce_sum = tf.reduce_sum(bce, axis=-1)   # [B, A]
+
+        # ignore_bg=1 → apply loss only on foreground anchors for that image
+        ignore_bg_f = tf.cast(ignore_bg, tf.float32)                   # [B]
+        fg_float    = tf.cast(fg_mask, tf.float32)                     # [B, A]
+        # mask = 1.0 when ignore_bg=0; mask = fg when ignore_bg=1
+        mask = (
+            (1.0 - ignore_bg_f[:, tf.newaxis]) +
+            ignore_bg_f[:, tf.newaxis] * fg_float
+        )  # [B, A]
+
+        return tf.reduce_sum(bce_sum * mask) / target_scores_sum
+
+    # ------------------------------------------------------------------
+
+    def _distance_loss(
+        self,
+        pd_dist: tf.Tensor,
+        target_dist: tf.Tensor,
+        fg_mask: tf.Tensor,
+        target_scores_sum: tf.Tensor,
+    ) -> tf.Tensor:
+        """L1 loss on log-scale distances, masked to valid GT entries (> -10.0)."""
+        valid_mask = (
+            (target_dist > INVALID_DISTANCE_SENTINEL) &
+            tf.expand_dims(fg_mask, axis=-1)
+        )  # [B, A, 1]
+        n_valid = tf.maximum(
+            tf.reduce_sum(tf.cast(valid_mask, tf.float32)), 1.0
+        )
+        return distance_l1_loss(pd_dist, target_dist, fg_mask, n_valid)
+
+    # ------------------------------------------------------------------
+
+    def _polygon_loss(
+        self,
+        pd_poly_angle: tf.Tensor,
+        pd_poly_dist: tf.Tensor,
+        pd_poly_conf: tf.Tensor,
+        target_polygons: tf.Tensor,
+        fg_mask: tf.Tensor,
+        target_scores_sum: tf.Tensor,
+    ) -> tf.Tensor:
+        """Combined PolyYOLO polygon loss (angle + dist + conf)."""
+        # target_polygons: [B, A, 72] = [dx0, dy0, c0, dx1, dy1, c1, ...]
+        dx   = target_polygons[:, :, 0::3]   # [B, A, 24]
+        dy   = target_polygons[:, :, 1::3]   # [B, A, 24]
+        conf = target_polygons[:, :, 2::3]   # [B, A, 24]
+
+        # Radial distance per vertex
+        target_dist = tf.sqrt(tf.square(dx) + tf.square(dy) + 1e-9)   # [B, A, 24]
+
+        # Dominant angle bin: one-hot over 24 directions
+        dominant_bin  = tf.argmax(
+            tf.stop_gradient(target_dist), axis=-1, output_type=tf.int32
+        )  # [B, A]
+        target_angle  = tf.one_hot(dominant_bin, self.num_vertices, dtype=tf.float32)
+
+        a_loss = polygon_angle_loss(
+            pd_poly_angle, target_angle, fg_mask, target_scores_sum
+        )
+        d_loss = polygon_dist_loss(
+            pd_poly_dist, target_dist, fg_mask, target_scores_sum
+        )
+        c_loss = polygon_conf_loss(
+            pd_poly_conf, conf, fg_mask, target_scores_sum
+        )
+
+        return (
+            self.poly_angle_gain * a_loss +
+            self.poly_dist_gain  * d_loss +
+            self.poly_conf_gain  * c_loss
+        )
+
+    # ------------------------------------------------------------------
+
+    def __call__(
+        self,
+        feats: Dict[str, Dict[str, tf.Tensor]],
+        batch: Dict[str, tf.Tensor],
+    ) -> Tuple[tf.Tensor, ...]:
+        """Compute total loss.
+
+        Returns:
+            (total_loss, box_loss, dfl_loss, cls_loss, dist_loss, poly_loss)
+        """
+        # ── 1. Flatten FPN outputs and build anchor grid ──────────────
+        box_raw_list, cls_list = [], []
+        poly_a_list, poly_d_list, poly_c_list, dist_list = [], [], [], []
+        anc_list, stride_list = [], []
+
+        for level_str, stride_val in _LEVEL_STRIDES.items():
+            box_lvl = feats["box"][level_str]                # [B, H, W, 64]
+            B_val   = tf.shape(box_lvl)[0]
+            fH      = tf.shape(box_lvl)[1]
+            fW      = tf.shape(box_lvl)[2]
+            A_lvl   = fH * fW
+
+            box_raw_list.append(tf.reshape(box_lvl, [B_val, A_lvl, -1]))
+            cls_list.append(
+                tf.reshape(feats["cls"][level_str], [B_val, A_lvl, -1])
+            )
+
+            if self.with_polygons:
+                poly_a_list.append(
+                    tf.reshape(feats["poly_angle"][level_str], [B_val, A_lvl, -1])
+                )
+                poly_d_list.append(
+                    tf.reshape(feats["poly_dist"][level_str], [B_val, A_lvl, -1])
+                )
+                poly_c_list.append(
+                    tf.reshape(feats["poly_conf"][level_str], [B_val, A_lvl, -1])
+                )
+
+            if self.with_distance:
+                dist_list.append(
+                    tf.reshape(feats["dist"][level_str], [B_val, A_lvl, 1])
+                )
+
+            # Anchor grid for this FPN level
+            ys = (tf.cast(tf.range(fH), tf.float32) + 0.5) * stride_val
+            xs = (tf.cast(tf.range(fW), tf.float32) + 0.5) * stride_val
+            grid_x, grid_y = tf.meshgrid(xs, ys)
+            cx_flat = tf.reshape(grid_x, [-1])
+            cy_flat = tf.reshape(grid_y, [-1])
+            anc_list.append(tf.stack([cx_flat, cy_flat], axis=-1))     # [H*W, 2]
+            stride_list.append(
+                tf.fill([A_lvl, 1], tf.cast(stride_val, tf.float32))
+            )
+
+        pd_box_raw  = tf.concat(box_raw_list, axis=1)   # [B, A, 64]
+        pd_cls      = tf.concat(cls_list,     axis=1)   # [B, A, C]
+        anc_points  = tf.concat(anc_list,     axis=0)   # [A, 2]
+        anc_strides = tf.concat(stride_list,  axis=0)   # [A, 1]
+
+        pd_poly_angle = tf.concat(poly_a_list, axis=1) if self.with_polygons else None
+        pd_poly_dist  = tf.concat(poly_d_list, axis=1) if self.with_polygons else None
+        pd_poly_conf  = tf.concat(poly_c_list, axis=1) if self.with_polygons else None
+        pd_dist       = tf.concat(dist_list,   axis=1) if self.with_distance else None
+
+        # ── 2. Decode DFL → xyxy pixel boxes ──────────────────────────
+        B_val = tf.shape(pd_box_raw)[0]
+        A_val = tf.shape(pd_box_raw)[1]
+        logits_4 = tf.reshape(pd_box_raw, [B_val, A_val, 4, self.reg_max])
+        probs    = tf.nn.softmax(logits_4, axis=-1)
+        ltrb     = tf.reduce_sum(probs * self._dfl_bins, axis=-1)         # [B, A, 4]
+        ltrb_px  = ltrb * anc_strides[tf.newaxis]                         # [B, A, 4]
+
+        acx = anc_points[:, 0]   # [A]
+        acy = anc_points[:, 1]
+        pd_bboxes = tf.stack(
+            [
+                acx[tf.newaxis] - ltrb_px[..., 0],   # x1
+                acy[tf.newaxis] - ltrb_px[..., 1],   # y1
+                acx[tf.newaxis] + ltrb_px[..., 2],   # x2
+                acy[tf.newaxis] + ltrb_px[..., 3],   # y2
+            ],
+            axis=-1,
+        )  # [B, A, 4] xyxy pixels
+
+        # ── 3. Prepare GT tensors ──────────────────────────────────────
+        gt_bboxes_norm = batch["bbox"]       # [B, M, 4] yxyx normalized [0, 1]
+        gt_labels      = batch["classes"]    # [B, M] int64
+        n_gt           = batch["n_gt"]       # [B] int64
+
+        # Image size inferred from level-3 feature map (stride 8)
+        img_H = tf.cast(tf.shape(feats["box"]["3"])[1] * 8, tf.float32)
+        img_W = tf.cast(tf.shape(feats["box"]["3"])[2] * 8, tf.float32)
+
+        # Convert yxyx normalized → xyxy pixel space
+        gt_bboxes_px = tf.stack(
+            [
+                gt_bboxes_norm[..., 1] * img_W,   # x1
+                gt_bboxes_norm[..., 0] * img_H,   # y1
+                gt_bboxes_norm[..., 3] * img_W,   # x2
+                gt_bboxes_norm[..., 2] * img_H,   # y2
+            ],
+            axis=-1,
+        )  # [B, M, 4] xyxy pixels
+
+        M_val   = tf.shape(gt_bboxes_norm)[1]
+        mask_gt = tf.sequence_mask(n_gt, maxlen=M_val)   # [B, M] bool
+
+        gt_polys = batch.get("polygons")      if self.with_polygons else None
+        gt_dists = batch.get("log_distance")  if self.with_distance else None
+
+        # ── 4. TAL assignment (stop-gradient) ─────────────────────────
+        (
+            target_labels,
+            target_bboxes,
+            target_scores,
+            target_polygons,
+            target_dists,
+            fg_mask,
+        ) = self._assigner(
+            tf.stop_gradient(tf.sigmoid(pd_cls)),
+            tf.stop_gradient(pd_bboxes),
+            anc_points,
+            gt_labels,
+            gt_bboxes_px,
+            mask_gt,
+            gt_polys=gt_polys,
+            gt_dists=gt_dists,
+        )
+
+        target_scores_sum = tf.maximum(tf.reduce_sum(target_scores), 1.0)
+
+        # ── 5. Component losses ────────────────────────────────────────
+        ciou_loss, dfl_loss = self._box_loss(
+            pd_bboxes, target_bboxes, target_scores_sum, fg_mask,
+            pd_box_raw, anc_strides, anc_points,
+        )
+
+        cls_loss = self._class_loss(
+            pd_cls, target_scores, target_scores_sum, fg_mask,
+            batch.get("ignore_bg", tf.zeros([B_val], dtype=tf.int64)),
+        )
+
+        dist_loss_val = tf.constant(0.0)
+        if self.with_distance and pd_dist is not None:
+            dist_loss_val = self._distance_loss(
+                pd_dist, target_dists, fg_mask, target_scores_sum
+            )
+
+        poly_loss_val = tf.constant(0.0)
+        if self.with_polygons and pd_poly_angle is not None:
+            poly_loss_val = self._polygon_loss(
+                pd_poly_angle, pd_poly_dist, pd_poly_conf,
+                target_polygons, fg_mask, target_scores_sum,
+            )
+
+        # ── 6. Apply gains and aggregate ──────────────────────────────
+        box_loss_w  = self.iou_gain  * ciou_loss
+        dfl_loss_w  = self.dfl_gain  * dfl_loss
+        cls_loss_w  = self.cls_gain  * cls_loss
+        dist_loss_w = self.dist_gain * dist_loss_val
+        # poly gains already applied inside _polygon_loss
+
+        total_loss = box_loss_w + dfl_loss_w + cls_loss_w + dist_loss_w + poly_loss_val
+
+        return total_loss, box_loss_w, dfl_loss_w, cls_loss_w, dist_loss_w, poly_loss_val

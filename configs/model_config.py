@@ -1,0 +1,256 @@
+"""Configuration dataclasses for the YOLOv8 polygon + distance model.
+
+These mirror the YAML structure in docs/experiment_config.yaml and can be
+populated by parsing the YAML or constructed programmatically.
+
+Dataclasses:
+    NormActivationConfig
+    BackboneConfig
+    DecoderConfig
+    HeadConfig
+    DetectionGeneratorConfig
+    ModelConfig
+    LossConfig
+    AcslConfig
+    MosaicConfig
+    ParserConfig
+    DataConfig
+    DistanceDataConfig
+    OptimizerConfig
+    EmaConfig
+    LrScheduleConfig
+    WarmupConfig
+    TrainerConfig
+    TaskConfig
+    ExperimentConfig
+"""
+
+import dataclasses
+from typing import Dict, List, Optional
+
+
+@dataclasses.dataclass
+class NormActivationConfig:
+    activation: str = "relu"
+    norm_epsilon: float = 0.001
+    norm_momentum: float = 0.97
+    use_sync_bn: bool = False
+
+
+@dataclasses.dataclass
+class BackboneConfig:
+    model_id: str = "cspdarknetv8s"
+    min_level: int = 3
+    max_level: int = 5
+    depth_scale: float = 1.0
+    width_scale: float = 1.0
+    dilate: bool = False
+    use_reorg_input: bool = False
+    use_separable_conv: bool = False
+
+
+@dataclasses.dataclass
+class DecoderConfig:
+    type: str = "yolo_decoder"
+    version: str = "v8"
+    model_type: str = "s"
+    activation: str = "same"
+    use_separable_conv: bool = False
+
+
+@dataclasses.dataclass
+class HeadConfig:
+    smart_bias: bool = True
+
+
+@dataclasses.dataclass
+class DetectionGeneratorConfig:
+    max_boxes: int = 300
+    nms_thresh: float = 0.65
+    iou_thresh: float = 0.001
+    nms_type: str = "greedy"
+    pre_nms_points: int = 30000
+
+
+@dataclasses.dataclass
+class ModelConfig:
+    input_size: List[int] = dataclasses.field(default_factory=lambda: [672, 672, 3])
+    num_classes: int = 39
+    angle_step: int = 15
+    output_poly_size: int = 24
+    output_dist_size: int = 1
+    num_dist_block: int = 1
+    with_polygons: bool = True
+    with_distance: bool = True
+    deploy: bool = True
+    backbone: BackboneConfig = dataclasses.field(default_factory=BackboneConfig)
+    decoder: DecoderConfig = dataclasses.field(default_factory=DecoderConfig)
+    head: HeadConfig = dataclasses.field(default_factory=HeadConfig)
+    detection_generator: DetectionGeneratorConfig = dataclasses.field(
+        default_factory=DetectionGeneratorConfig
+    )
+    norm_activation: NormActivationConfig = dataclasses.field(
+        default_factory=NormActivationConfig
+    )
+
+
+@dataclasses.dataclass
+class AcslConfig:
+    use_acsl: bool = False
+    bg_common_ratio: float = 0.38
+    bg_frequent_ratio: float = 1.0
+    bg_rare_ratio: float = 0.17
+    common_cls: List[int] = dataclasses.field(default_factory=list)
+    frequent_cls: List[int] = dataclasses.field(default_factory=list)
+    rare_cls: List[int] = dataclasses.field(default_factory=list)
+    threshold: float = 0.3
+
+
+@dataclasses.dataclass
+class LossConfig:
+    iou_gain: float = 7.5
+    cls_gain: float = 0.5
+    dfl_gain: float = 1.5
+    dist_gain: float = 1.0
+    poly_dist_gain: float = 0.45
+    poly_conf_gain: float = 0.2
+    poly_angle_gain: float = 0.4
+    poly_gain: float = 0.5
+    tal_alpha: float = 0.5
+    tal_beta: float = 6.0
+    topk: int = 10
+    acsl: AcslConfig = dataclasses.field(default_factory=AcslConfig)
+
+
+@dataclasses.dataclass
+class MosaicConfig:
+    mosaic_frequency: float = 0.5
+    mixup_frequency: float = 0.0
+    mosaic_center: float = 0.2
+    aug_scale_min: float = 0.4
+    aug_scale_max: float = 1.9
+    mosaic_crop_mode: str = "scale"
+    area_thresh: float = 0.5
+    jitter: float = 0.0
+
+
+@dataclasses.dataclass
+class ParserConfig:
+    angle_step: int = 15
+    max_num_instances: int = 300
+    max_vertices: int = 10938
+    aug_rand_hue: float = 0.015
+    aug_rand_saturation: float = 0.7
+    aug_rand_brightness: float = 0.4
+    aug_rand_translate: float = 0.1
+    aug_scale_min: float = 1.0
+    aug_scale_max: float = 1.0
+    random_flip: bool = True
+    letter_box: bool = True
+    resize_with_random_method: bool = True
+    skip_crowd_during_training: bool = True
+    dummy_distance: bool = True
+    with_polygons: bool = True
+    albumentations_frequency: float = 1.0
+    mosaic: MosaicConfig = dataclasses.field(default_factory=MosaicConfig)
+
+
+@dataclasses.dataclass
+class DistanceDataConfig:
+    tfds_name: str = "servingbot_polygon:1.0.1"
+    tfds_split: str = "train"
+    tfds_data_dir: str = "/home/user/tensorflow_datasets/"
+    global_batch_size: int = 16
+    ignore_bg: bool = True
+    with_distance: bool = True
+    with_polygons: bool = False
+    parser: ParserConfig = dataclasses.field(default_factory=ParserConfig)
+
+
+@dataclasses.dataclass
+class DataConfig:
+    tfds_name: str = "cleaner_polygon2026:2.0.0"
+    tfds_split: str = "train"
+    tfds_data_dir: str = "/home/user/tensorflow_datasets/"
+    global_batch_size: int = 128
+    is_training: bool = True
+    shuffle_buffer_size: int = 1500
+    tfds_sampling_weights: Optional[List[float]] = None
+    prob_copy_n_paste: float = 0.2
+    tfds_for_cnp: Optional[str] = "cleaner_copy_paste:1.0.0"
+    tfds_for_cnp_split: Optional[str] = "train_f"
+    seed: Optional[int] = 1000
+    parser: ParserConfig = dataclasses.field(default_factory=ParserConfig)
+    distance_data: Optional[DistanceDataConfig] = None
+
+
+@dataclasses.dataclass
+class EmaConfig:
+    average_decay: float = 0.9999
+    dynamic_decay: bool = True
+
+
+@dataclasses.dataclass
+class LrScheduleConfig:
+    initial_learning_rate: float = 0.01
+    decay_steps: int = 716400
+    alpha: float = 0.01
+
+
+@dataclasses.dataclass
+class WarmupConfig:
+    warmup_steps: int = 7164
+    warmup_learning_rate: float = 0.0
+
+
+@dataclasses.dataclass
+class OptimizerConfig:
+    momentum: float = 0.937
+    momentum_start: float = 0.8
+    nesterov: bool = True
+    weight_decay: float = 0.0005
+    warmup_steps: int = 7164
+    ema: EmaConfig = dataclasses.field(default_factory=EmaConfig)
+    learning_rate: LrScheduleConfig = dataclasses.field(default_factory=LrScheduleConfig)
+    warmup: WarmupConfig = dataclasses.field(default_factory=WarmupConfig)
+
+
+@dataclasses.dataclass
+class TrainerConfig:
+    train_epochs: int = 300
+    train_steps: int = 716400
+    steps_per_loop: int = 2388
+    checkpoint_interval: int = 2388
+    validation_interval: int = 2388
+    best_checkpoint_eval_metric: str = "F1score50"
+    best_checkpoint_metric_comp: str = "higher"
+    max_to_keep: int = 300
+    optimizer_config: OptimizerConfig = dataclasses.field(default_factory=OptimizerConfig)
+
+
+@dataclasses.dataclass
+class TaskConfig:
+    model: ModelConfig = dataclasses.field(default_factory=ModelConfig)
+    losses: LossConfig = dataclasses.field(default_factory=LossConfig)
+    train_data: DataConfig = dataclasses.field(default_factory=DataConfig)
+    validation_data: DataConfig = dataclasses.field(default_factory=DataConfig)
+    init_checkpoint: Optional[str] = None
+    init_checkpoint_modules: List[str] = dataclasses.field(
+        default_factory=lambda: ["backbone", "decoder"]
+    )
+    num_classes: int = 39
+    with_polygons: bool = True
+    with_distance: bool = True
+    min_distance: float = 0.5
+    max_distance: float = 10.0
+    ignore_dontcare: bool = True
+    ignore_iscrowds: bool = False
+    iscrowds_labels: List[int] = dataclasses.field(
+        default_factory=lambda: [6, 13, 24, 36, 37]
+    )
+
+
+@dataclasses.dataclass
+class ExperimentConfig:
+    task: TaskConfig = dataclasses.field(default_factory=TaskConfig)
+    trainer: TrainerConfig = dataclasses.field(default_factory=TrainerConfig)
