@@ -59,22 +59,22 @@ python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU')
 
 ```bash
 # Full model (all 6 heads)
-python scripts/train.py \
+python scripts/run_train.py \
     --config  configs/experiments/yolo/yolov8_poly_dist.yaml \
     --output_dir /path/to/output
 
 # Detection + segmentation only
-python scripts/train.py \
+python scripts/run_train.py \
     --config  configs/experiments/yolo/yolov8_poly.yaml \
     --output_dir /path/to/output
 
 # Detection only (fastest)
-python scripts/train.py \
+python scripts/run_train.py \
     --config  configs/experiments/yolo/yolov8_bbox.yaml \
     --output_dir /path/to/output
 
 # Debug (eager mode, verbose)
-python scripts/train.py \
+python scripts/run_train.py \
     --config  configs/experiments/yolo/yolov8_bbox.yaml \
     --output_dir /tmp/debug_run \
     --debug
