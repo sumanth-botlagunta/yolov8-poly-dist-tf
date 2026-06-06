@@ -54,13 +54,14 @@ def apply_albumentations(image: tf.Tensor, freq: float = 1.0) -> tf.Tensor:
         except Exception:
             return img_np
 
+    static_shape = image.shape  # capture before py_function erases it
     do_aug = tf.random.uniform([]) < freq
     image = tf.cond(
         do_aug,
         lambda: tf.py_function(_aug_fn, [image], tf.float32),
         lambda: image,
     )
-    image = tf.ensure_shape(image, [None, None, 3])
+    image = tf.ensure_shape(image, static_shape)
     return image
 
 

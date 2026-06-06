@@ -163,10 +163,23 @@ class InputReader:
             ds = ds.map(copy_paste_fn, num_parallel_calls=_AUTOTUNE)
 
         # Mosaic: batch(4) → combine → unbatch so downstream sees single examples.
+        # Pre-resize to a fixed shape before batch(4) because raw decoded images
+        # have variable spatial dimensions and cannot be stacked otherwise.
+        # The mosaic fn will letterbox-resize each quadrant again to its target size.
         if self._mosaic_module is not None:
+            _H, _W = self._mosaic_module._H, self._mosaic_module._W
+
+            def _pre_resize_for_mosaic(ex, H=_H, W=_W):
+                img = tf.cast(
+                    tf.image.resize(tf.cast(ex['image'], tf.float32), [H, W], method='bilinear'),
+                    tf.uint8,
+                )
+                return {**ex, 'image': img}
+
             mosaic_fn = self._mosaic_module.mosaic_fn(is_training=True)
             ds = (
                 ds
+                .map(_pre_resize_for_mosaic, num_parallel_calls=_AUTOTUNE)
                 .batch(4, drop_remainder=True)
                 .map(mosaic_fn, num_parallel_calls=_AUTOTUNE)
                 .unbatch()
