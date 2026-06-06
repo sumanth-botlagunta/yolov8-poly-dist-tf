@@ -26,10 +26,13 @@ import tensorflow as tf
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_string('config',      None, 'Path to experiment YAML config.', required=True)
-flags.DEFINE_string('checkpoint',  None, 'Checkpoint path prefix.',          required=True)
-flags.DEFINE_string('output_dir',  None, 'Directory to write SavedModel.',    required=True)
-flags.DEFINE_bool  ('tflite',      False, 'Also export a TFLite flatbuffer.')
+try:
+    flags.DEFINE_string('config',      None, 'Path to experiment YAML config.', required=True)
+    flags.DEFINE_string('checkpoint',  None, 'Checkpoint path prefix.',          required=True)
+    flags.DEFINE_string('output_dir',  None, 'Directory to write SavedModel.',    required=True)
+    flags.DEFINE_bool  ('tflite',      False, 'Also export a TFLite flatbuffer.')
+except flags.DuplicateFlagError:
+    pass
 
 log = logging.getLogger(__name__)
 
