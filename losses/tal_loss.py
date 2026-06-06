@@ -290,20 +290,16 @@ class TaskAlignedLossExtended:
         fg_mask: tf.Tensor,
         target_scores_sum: tf.Tensor,
     ) -> tf.Tensor:
-        """Combined PolyYOLO polygon loss (angle + dist + conf)."""
-        # target_polygons: [B, A, 72] = [dx0, dy0, c0, dx1, dy1, c1, ...]
-        dx   = target_polygons[:, :, 0::3]   # [B, A, 24]
-        dy   = target_polygons[:, :, 1::3]   # [B, A, 24]
-        conf = target_polygons[:, :, 2::3]   # [B, A, 24]
+        """Combined PolyYOLO polygon loss (angle + dist + conf).
 
-        # Radial distance per vertex
-        target_dist = tf.sqrt(tf.square(dx) + tf.square(dy) + 1e-9)   # [B, A, 24]
-
-        # Dominant angle bin: one-hot over 24 directions
-        dominant_bin  = tf.argmax(
-            tf.stop_gradient(target_dist), axis=-1, output_type=tf.int32
-        )  # [B, A]
-        target_angle  = tf.one_hot(dominant_bin, self.num_vertices, dtype=tf.float32)
+        target_polygons layout: [dist0, angle_norm0, conf0, dist1, angle_norm1, conf1, ...]
+            dist:       radial distance from box center (stored pre-computed by parser).
+            angle_norm: 1.0 for the dominant bin (one-hot), 0.0 elsewhere.
+            conf:       1.0 if any valid vertex was assigned to this bin.
+        """
+        target_dist  = target_polygons[:, :, 0::3]   # [B, A, 24]
+        target_angle = target_polygons[:, :, 1::3]   # [B, A, 24] — already one-hot
+        conf         = target_polygons[:, :, 2::3]   # [B, A, 24]
 
         a_loss = polygon_angle_loss(
             pd_poly_angle, target_angle, fg_mask, target_scores_sum
