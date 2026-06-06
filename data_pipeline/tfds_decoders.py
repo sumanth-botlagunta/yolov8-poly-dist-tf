@@ -219,24 +219,19 @@ class PolygonDecoder:
         return boxes, classes, is_crowd, area, polygons, dontcare
 
     def _decode_polygons(self, objects: dict, data: dict, n: tf.Tensor) -> tf.Tensor:
-        """Extract polygon coordinates, pad to [N, max_vertices] with -1."""
+        """Extract polygon coordinates from TFDS; returns the raw fixed-size tensor.
+
+        The TFDS feature has shape [N, max_vertices+2] with invalid coords as -1.
+        Downstream parsers filter invalid entries via the x >= 0 mask.
+        """
         pts_raw = _get_nested(
-            objects, 'polygon_points', 'polygons',
-            data, 'objects/polygon_points',
+            objects, 'points', 'polygon_points', 'polygons',
+            data, 'objects/points', 'objects/polygon_points',
         )
         if pts_raw is None:
-            # No polygon annotations — return all-zeros (not -1) so the loss
-            # ignores them (the parser's conf=0 will suppress them).
             return tf.zeros([n, self._max_vertices], dtype=tf.float32) - 1.0
 
-        pts = tf.cast(pts_raw, tf.float32)  # [N, variable] or [N, max_pts]
-
-        # Pad / truncate to exactly max_vertices columns.
-        current_cols = tf.shape(pts)[1]
-        pad_needed = tf.maximum(0, self._max_vertices - current_cols)
-        pts = tf.pad(pts, [[0, 0], [0, pad_needed]], constant_values=-1.0)
-        pts = pts[:, :self._max_vertices]  # truncate if needed
-        return pts
+        return tf.cast(pts_raw, tf.float32)
 
     def _remap_classes(self, classes: tf.Tensor) -> tf.Tensor:
         table_tensor = tf.constant(self._class_remap, dtype=tf.int64)

@@ -44,6 +44,9 @@ def apply_albumentations(image: tf.Tensor, freq: float = 1.0) -> tf.Tensor:
                 A.MedianBlur(blur_limit=3, p=0.01),
                 A.ToGray(p=0.01),
                 A.CLAHE(p=0.01),
+                A.RandomBrightnessContrast(p=0.0),
+                A.RandomGamma(p=0.0),
+                A.ImageCompression(quality_lower=75, p=0.0),
             ])
             img_uint8 = np.clip(img_np * 255.0, 0, 255).astype(np.uint8)
             result = transform(image=img_uint8)['image']
@@ -102,11 +105,12 @@ def random_horizontal_flip(
 
     # Flip x coords of polygons: x_new = 1 - x  (y unchanged, -1 padding kept)
     N = tf.shape(polygons)[0]
-    pts = tf.reshape(polygons, [N, max_vertices // 2, 2])  # [N, n_pairs, (x, y)]
+    max_v = tf.shape(polygons)[1]
+    pts = tf.reshape(polygons, [N, -1, 2])  # [N, n_pairs, (x, y)]
     valid_x = pts[:, :, 0] >= 0.0  # [N, n_pairs]
     x_flipped = tf.where(valid_x, 1.0 - pts[:, :, 0], pts[:, :, 0])
     pts_flipped = tf.stack([x_flipped, pts[:, :, 1]], axis=-1)
-    poly_flipped = tf.reshape(pts_flipped, [N, max_vertices])
+    poly_flipped = tf.reshape(pts_flipped, [N, max_v])
     polygons = tf.cond(do_flip, lambda: poly_flipped, lambda: polygons)
 
     return image, boxes, polygons
@@ -174,7 +178,10 @@ def random_affine(
         extrapolation_value=114.0,
     )  # [1, H_out, W_out, 3]
     image_out = tf.cast(tf.squeeze(image_out, 0), tf.uint8)
-    image_out.set_shape([None, None, 3])
+    if output_size is not None:
+        image_out.set_shape([output_size[0], output_size[1], 3])
+    else:
+        image_out.set_shape([None, None, 3])
 
     # Transform boxes: y_out = (y_in − y_start) / (y_end − y_start)
     dy_range = y_end - y_start
@@ -195,8 +202,14 @@ def random_affine(
 
     x_out = (pts[:, :, 0] - x_start) / dx_range
     y_out = (pts[:, :, 1] - y_start) / dy_range
-    x_out = tf.where(valid_x, x_out, tf.fill(tf.shape(x_out), -1.0))
-    y_out = tf.where(valid_x, y_out, tf.fill(tf.shape(y_out), -1.0))
+    # Invalidate points that were originally -1 OR that fall outside [0, 1] after transform.
+    in_bounds = tf.logical_and(
+        tf.logical_and(x_out >= 0.0, x_out <= 1.0),
+        tf.logical_and(y_out >= 0.0, y_out <= 1.0),
+    )
+    final_valid = tf.logical_and(valid_x, in_bounds)
+    x_out = tf.where(final_valid, x_out, tf.fill(tf.shape(x_out), -1.0))
+    y_out = tf.where(final_valid, y_out, tf.fill(tf.shape(y_out), -1.0))
 
     pts_out = tf.stack([x_out, y_out], axis=-1)
     polygons_out = tf.reshape(pts_out, [N, max_v])
@@ -266,9 +279,10 @@ def hsv_augment(
     if hue > 0.0:
         image = tf.image.random_hue(image, hue)
     if sat > 0.0:
-        lower = max(0.0, 1.0 - sat)
-        upper = 1.0 + sat
-        image = tf.image.random_saturation(image, lower, upper)
+        # sat is the direct multiplicative factor: gain ∈ [sat, 1/sat] (symmetric in log space).
+        sat_lower = min(sat, 1.0 / sat)
+        sat_upper = max(sat, 1.0 / sat)
+        image = tf.image.random_saturation(image, sat_lower, sat_upper)
     if val > 0.0:
         image = tf.image.random_brightness(image, val)
     return tf.clip_by_value(image, 0.0, 1.0)
