@@ -105,7 +105,8 @@ def _build_task_config(t: Dict[str, Any]) -> TaskConfig:
 
 def _build_model_config(m: Dict[str, Any], task: Dict[str, Any]) -> ModelConfig:
     backbone_raw = m.get("backbone", {}).get("darknet", m.get("backbone", {}))
-    decoder_raw = m.get("decoder", {}).get("yolo_decoder", m.get("decoder", {}))
+    decoder_outer = m.get("decoder", {})
+    decoder_raw = decoder_outer.get("yolo_decoder", decoder_outer)
     head_raw = m.get("head", {})
     det_gen_raw = m.get("detection_generator", {})
     norm_act_raw = task.get("norm_activation", {})
@@ -122,7 +123,7 @@ def _build_model_config(m: Dict[str, Any], task: Dict[str, Any]) -> ModelConfig:
     )
 
     decoder_cfg = DecoderConfig(
-        type=decoder_raw.get("type", "yolo_decoder"),
+        type=decoder_outer.get("type", "yolo_decoder"),
         version=decoder_raw.get("version", "v8"),
         model_type=decoder_raw.get("type", "s"),
         activation=decoder_raw.get("activation", "same"),
