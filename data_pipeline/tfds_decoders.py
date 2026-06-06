@@ -229,7 +229,8 @@ class PolygonDecoder:
             data, 'objects/points', 'objects/polygon_points',
         )
         if pts_raw is None:
-            return tf.zeros([n, self._max_vertices], dtype=tf.float32) - 1.0
+            # Fallback uses max_vertices+2 to match the actual TFDS feature shape.
+            return tf.zeros([n, self._max_vertices + 2], dtype=tf.float32) - 1.0
 
         return tf.cast(pts_raw, tf.float32)
 

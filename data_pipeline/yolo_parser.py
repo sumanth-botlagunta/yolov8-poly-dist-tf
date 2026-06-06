@@ -392,7 +392,8 @@ class V8ParserExtended(Parser):
         polygons = tf.cast(
             data.get(
                 'groundtruth_polygons',
-                tf.fill([tf.shape(boxes)[0], self._max_vertices], -1.0),
+                # +2 matches the actual TFDS feature shape (max_vertices+2 columns).
+                tf.fill([tf.shape(boxes)[0], self._max_vertices + 2], -1.0),
             ),
             tf.float32,
         )
