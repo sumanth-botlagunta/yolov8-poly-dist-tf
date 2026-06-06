@@ -28,10 +28,13 @@ import tensorflow as tf
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_string('config',      None, 'Path to experiment YAML config.', required=True)
-flags.DEFINE_string('checkpoint',  None, 'Checkpoint path prefix.',          required=True)
-flags.DEFINE_string('split',       'val', "Eval split: 'val' or 'test'.")
-flags.DEFINE_string('output_json', None, 'Path to write COCO results JSON.')
+try:
+    flags.DEFINE_string('config',      None, 'Path to experiment YAML config.', required=True)
+    flags.DEFINE_string('checkpoint',  None, 'Checkpoint path prefix.',          required=True)
+    flags.DEFINE_string('split',       'val', "Eval split: 'val' or 'test'.")
+    flags.DEFINE_string('output_json', None, 'Path to write COCO results JSON.')
+except flags.DuplicateFlagError:
+    pass
 
 log = logging.getLogger(__name__)
 

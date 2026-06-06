@@ -16,9 +16,12 @@ import tensorflow as tf
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_string('config',     None, 'Path to experiment YAML config.', required=True)
-flags.DEFINE_string('output_dir', None, 'Output directory for checkpoints and logs.', required=True)
-flags.DEFINE_bool  ('debug',      False, 'Enable eager execution and verbose logging.')
+try:
+    flags.DEFINE_string('config',     None, 'Path to experiment YAML config.', required=True)
+    flags.DEFINE_string('output_dir', None, 'Output directory for checkpoints and logs.', required=True)
+    flags.DEFINE_bool  ('debug',      False, 'Enable eager execution and verbose logging.')
+except flags.DuplicateFlagError:
+    pass
 
 
 def main(_):
