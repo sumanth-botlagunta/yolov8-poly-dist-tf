@@ -3,11 +3,20 @@
 Decoders convert raw TFDS feature dicts (loaded with as_supervised=False)
 into a normalized schema consumed by the parsers downstream.
 
+Access pattern mirrors TF Model Garden MSCOCODecoder:
+  data['image']               top-level image tensor
+  data['image/id']            literal key with slash (int64 image identifier)
+  data['objects']['bbox']     two-step nested access for per-object fields
+  data['objects']['label']
+  data['objects']['is_crowd']
+  data['objects']['area']
+  data['objects']['polygon_points']   (or 'points' for older datasets)
+
 The TFDS feature schemas for the custom datasets are:
 
 cleaner_polygon2026 / field_misrecog2026 / station_misrecog:
     image: uint8 [H, W, 3]
-    image/id: int64  (or image/filename: string)
+    image/id: int64
     objects/bbox: float32 [N, 4]  ymin/xmin/ymax/xmax normalized
     objects/label: int64 [N]
     objects/is_crowd: bool [N]
@@ -20,11 +29,10 @@ servingbot_polygon:
 cleaner_copy_paste:
     image: uint8 [H, W, 4]  (RGBA — 4th channel is alpha mask)
     image/id: int64
-    objects (single object per image):
-        bbox: float32 [4]
-        label: int64
-        polygon_points: float32 [max_pts*2]
-        obj_id: int64
+    objects/bbox: float32 [4]
+    objects/label: int64
+    objects/polygon_points: float32 [max_pts*2]
+    objects/obj_id: int64
 
 Classes:
     PolygonDecoder: Decodes polygon TFDS records (e.g. cleaner_polygon2026).
@@ -39,25 +47,6 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import tensorflow as tf
-
-
-def _get_nested(data: dict, *keys: str, default=None):
-    """Try each key in order; return the first that exists, or default."""
-    for key in keys:
-        if key in data:
-            return data[key]
-        # Try nested: 'objects/bbox' → data['objects']['bbox']
-        parts = key.split('/')
-        node = data
-        for part in parts:
-            if isinstance(node, dict) and part in node:
-                node = node[part]
-            else:
-                node = None
-                break
-        if node is not None:
-            return node
-    return default
 
 
 class PolygonDecoder:
@@ -93,37 +82,65 @@ class PolygonDecoder:
             if path.exists():
                 with open(path) as f:
                     remap_dict = json.load(f)
-                # Build lookup table indexed by old class ID.
                 max_id = max(int(k) for k in remap_dict) + 1
                 table = list(range(max_id))
                 for old, new in remap_dict.items():
                     table[int(old)] = int(new)
                 self._class_remap = table
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def decode(self, data: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
         """Normalize a TFDS feature dict to our standard schema.
 
-        Args:
-            data: Feature dict from tfds.load(as_supervised=False).
-
-        Returns:
-            Normalized tensor dict conforming to the output schema above.
+        Mirrors TF Model Garden MSCOCODecoder: direct two-step access for
+        nested fields (data['objects']['bbox']) and literal-slash keys for
+        top-level metadata (data['image/id']).
         """
-        image = self._decode_image(data)
+        # --- image ---
+        image = data['image']
+        if image.dtype == tf.string:
+            image = tf.io.decode_image(image, channels=3, expand_animations=False)
+            image.set_shape([None, None, 3])
+        image = tf.cast(image, tf.uint8)
+
         shape = tf.shape(image)
         height = tf.cast(shape[0], tf.int32)
         width = tf.cast(shape[1], tf.int32)
 
-        source_id = self._decode_source_id(data, height, width)
-        boxes, classes, is_crowd, area, polygons, dontcare = (
-            self._decode_objects(data, height, width)
-        )
+        # --- source_id — 'image/id' is a literal flat key in TFDS ---
+        try:
+            source_id = tf.strings.as_string(tf.cast(data['image/id'], tf.int64))
+        except KeyError:
+            source_id = tf.strings.as_string(height * 100000 + width)
 
-        result = {
+        # --- per-object fields: always two-step access ---
+        objects = data['objects']
+
+        boxes = tf.cast(objects['bbox'], tf.float32)  # [N, 4] ymin/xmin/ymax/xmax
+        if len(boxes.shape) == 1:
+            boxes = tf.expand_dims(boxes, 0)
+
+        classes = tf.cast(objects['label'], tf.int64)  # [N]
+        if self._class_remap is not None:
+            classes = self._remap_classes(classes)
+
+        n = tf.shape(classes)[0]
+
+        try:
+            is_crowd = tf.cast(objects['is_crowd'], tf.bool)
+        except KeyError:
+            is_crowd = tf.zeros([n], dtype=tf.bool)
+
+        try:
+            area = tf.cast(objects['area'], tf.float32)
+        except KeyError:
+            area = tf.zeros([n], dtype=tf.float32)
+
+        polygons = self._decode_polygons(objects, n)
+
+        # dontcare is not in standard TFDS schemas; default to zeros
+        dontcare = tf.zeros([n], dtype=tf.int64)
+
+        return {
             'image': image,
             'source_id': source_id,
             'height': height,
@@ -135,108 +152,21 @@ class PolygonDecoder:
             'groundtruth_area': area,
             'groundtruth_dontcare': dontcare,
         }
-        return result
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
-    def _decode_image(self, data: dict) -> tf.Tensor:
-        image = _get_nested(data, 'image')
-        if image is None:
-            raise ValueError("TFDS feature dict missing 'image' field.")
-        # TFDS may return already-decoded uint8 or encoded bytes.
-        if image.dtype == tf.string:
-            image = tf.io.decode_image(image, channels=3, expand_animations=False)
-            image.set_shape([None, None, 3])
-        return tf.cast(image, tf.uint8)
-
-    def _decode_source_id(self, data: dict, height, width) -> tf.Tensor:
-        sid = _get_nested(data, 'image/id', 'image_id', 'source_id')
-        if sid is None:
-            # Derive a deterministic string from image shape as fallback.
-            sid = tf.strings.as_string(height * 100000 + width)
-        if sid.dtype != tf.string:
-            sid = tf.strings.as_string(tf.cast(sid, tf.int64))
-        return sid
-
-    def _decode_objects(self, data: dict, height, width):
-        objects = _get_nested(data, 'objects') or data
-
-        # Bounding boxes — stored as [N, 4] ymin/xmin/ymax/xmax normalized.
-        boxes = tf.cast(
-            _get_nested(objects, 'bbox', 'groundtruth_boxes',
-                        data, 'objects/bbox'),
-            tf.float32,
-        )  # [N, 4]
-        if len(boxes.shape) == 1:
-            boxes = tf.expand_dims(boxes, 0)
-
-        # Classes
-        classes = tf.cast(
-            _get_nested(objects, 'label', 'labels', 'groundtruth_classes',
-                        data, 'objects/label'),
-            tf.int64,
-        )  # [N]
-        if self._class_remap is not None:
-            classes = self._remap_classes(classes)
-
-        n = tf.shape(classes)[0]
-
-        # is_crowd
-        is_crowd_raw = _get_nested(
-            objects, 'is_crowd', 'groundtruth_is_crowd',
-            data, 'objects/is_crowd',
-        )
-        if is_crowd_raw is None:
-            is_crowd = tf.zeros([n], dtype=tf.bool)
-        else:
-            is_crowd = tf.cast(is_crowd_raw, tf.bool)
-
-        # area
-        area_raw = _get_nested(
-            objects, 'area', 'groundtruth_area',
-            data, 'objects/area',
-        )
-        if area_raw is None:
-            area = tf.zeros([n], dtype=tf.float32)
-        else:
-            area = tf.cast(area_raw, tf.float32)
-
-        # polygons
-        polygons = self._decode_polygons(objects, data, n)
-
-        # dontcare
-        dc_raw = _get_nested(
-            objects, 'dontcare', 'groundtruth_dontcare',
-            data, 'objects/dontcare',
-        )
-        if dc_raw is None:
-            dontcare = tf.zeros([n], dtype=tf.int64)
-        else:
-            dontcare = tf.cast(dc_raw, tf.int64)
-
-        return boxes, classes, is_crowd, area, polygons, dontcare
-
-    def _decode_polygons(self, objects: dict, data: dict, n: tf.Tensor) -> tf.Tensor:
-        """Extract polygon coordinates from TFDS; returns the raw fixed-size tensor.
-
-        The TFDS feature has shape [N, max_vertices+2] with invalid coords as -1.
-        Downstream parsers filter invalid entries via the x >= 0 mask.
-        """
-        pts_raw = _get_nested(
-            objects, 'points', 'polygon_points', 'polygons',
-            data, 'objects/points', 'objects/polygon_points',
-        )
-        if pts_raw is None:
-            # Fallback uses max_vertices+2 to match the actual TFDS feature shape.
-            return tf.zeros([n, self._max_vertices + 2], dtype=tf.float32) - 1.0
-
-        return tf.cast(pts_raw, tf.float32)
+    def _decode_polygons(self, objects: dict, n: tf.Tensor) -> tf.Tensor:
+        """Extract polygon_points from the objects sub-dict."""
+        try:
+            return tf.cast(objects['polygon_points'], tf.float32)
+        except KeyError:
+            pass
+        try:
+            return tf.cast(objects['points'], tf.float32)
+        except KeyError:
+            pass
+        return tf.zeros([n, self._max_vertices + 2], dtype=tf.float32) - 1.0
 
     def _remap_classes(self, classes: tf.Tensor) -> tf.Tensor:
         table_tensor = tf.constant(self._class_remap, dtype=tf.int64)
-        # Clip to valid range before lookup.
         clipped = tf.clip_by_value(classes, 0, len(self._class_remap) - 1)
         return tf.gather(table_tensor, clipped)
 
@@ -263,17 +193,13 @@ class ServingBotDetDecoder(PolygonDecoder):
     def decode(self, data: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
         result = super().decode(data)
 
-        objects = _get_nested(data, 'objects') or data
+        objects = data['objects']
         n = tf.shape(result['groundtruth_classes'])[0]
 
-        dists_raw = _get_nested(
-            objects, 'distance', 'distances', 'groundtruth_dists',
-            data, 'objects/distance',
-        )
-        if dists_raw is None:
+        try:
+            dists = tf.cast(objects['distance'], tf.float32)
+        except KeyError:
             dists = tf.fill([n], -1.0)
-        else:
-            dists = tf.cast(dists_raw, tf.float32)
 
         result['groundtruth_dists'] = dists
         return result
@@ -299,39 +225,31 @@ class CopyPasteDecoder:
 
     def decode(self, data: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
         """Normalize a cleaner_copy_paste TFDS feature dict."""
-        # Image — 4 channels (RGB + alpha mask).
-        image = _get_nested(data, 'image')
+        image = data['image']
         if image.dtype == tf.string:
             image = tf.io.decode_image(image, channels=4, expand_animations=False)
             image.set_shape([None, None, 4])
         image = tf.cast(image, tf.uint8)  # [H, W, 4]
 
-        image_id = _get_nested(data, 'image/id', 'image_id', 'id')
-        if image_id is None:
+        try:
+            image_id = tf.cast(data['image/id'], tf.int64)
+        except KeyError:
             image_id = tf.constant(0, dtype=tf.int64)
-        image_id = tf.cast(image_id, tf.int64)
 
-        objects = _get_nested(data, 'objects') or data
+        objects = data['objects']
 
-        bbox = _get_nested(objects, 'bbox', 'orig_bbox', data, 'orig_bbox')
-        if bbox is None:
-            bbox = tf.zeros([4], dtype=tf.float32)
-        orig_bbox = tf.cast(tf.reshape(bbox, [4]), tf.float32)
+        orig_bbox = tf.cast(tf.reshape(objects['bbox'], [4]), tf.float32)
+        label = tf.cast(tf.reshape(objects['label'], []), tf.int64)
 
-        label = _get_nested(objects, 'label', data, 'label')
-        if label is None:
-            label = tf.constant(0, dtype=tf.int64)
-        label = tf.cast(tf.reshape(label, []), tf.int64)
-
-        points = _get_nested(objects, 'polygon_points', 'points', data, 'points')
-        if points is None:
+        try:
+            points = tf.cast(tf.reshape(objects['polygon_points'], [-1]), tf.float32)
+        except KeyError:
             points = tf.zeros([0], dtype=tf.float32)
-        points = tf.cast(tf.reshape(points, [-1]), tf.float32)
 
-        obj_id = _get_nested(objects, 'obj_id', data, 'obj_id')
-        if obj_id is None:
+        try:
+            obj_id = tf.cast(tf.reshape(objects['obj_id'], []), tf.int64)
+        except KeyError:
             obj_id = tf.constant(0, dtype=tf.int64)
-        obj_id = tf.cast(tf.reshape(obj_id, []), tf.int64)
 
         return {
             'image': image,
