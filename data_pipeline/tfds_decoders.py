@@ -1,43 +1,49 @@
 """TFDS decoder classes for polygon detection and distance datasets.
 
-Decoders convert raw TFDS feature dicts (loaded with as_supervised=False)
-into a normalized schema consumed by the parsers downstream.
-
-Access pattern mirrors TF Model Garden MSCOCODecoder:
-  data['image']               top-level image tensor
-  data['image/id']            literal key with slash (int64 image identifier)
-  data['objects']['bbox']     two-step nested access for per-object fields
+Access pattern mirrors TF Model Garden MSCOCODecoder — direct access only:
+  data['image']                   top-level
+  data['image/id']                literal slash key
+  data['objects']['bbox']         two-step nested for per-object fields
   data['objects']['label']
   data['objects']['is_crowd']
-  data['objects']['area']
-  data['objects']['polygon_points']   (or 'points' for older datasets)
+  data['objects']['area']         dtype int64 in TFDS → cast to float32
+  data['objects']['points']       polygon coords (not 'polygon_points')
+  data['objects']['is_dontcare']  dontcare flag (not 'dontcare')
 
-The TFDS feature schemas for the custom datasets are:
+Actual TFDS schemas used in this project:
 
-cleaner_polygon2026 / field_misrecog2026 / station_misrecog:
-    image: uint8 [H, W, 3]
-    image/id: int64
-    objects/bbox: float32 [N, 4]  ymin/xmin/ymax/xmax normalized
-    objects/label: int64 [N]
-    objects/is_crowd: bool [N]
-    objects/area: float32 [N]
-    objects/polygon_points: float32 [N, max_pts]  xy interleaved, -1 padded
+cleaner_polygon2026:2.0.0 / field_misrecog2026:1.0.0 / station_misrecog:1.1.0
+  (all identical structure)
+    image:            uint8  [H, W, 3]
+    image/filename:   string
+    image/id:         int64
+    objects/area:     int64  [N]
+    objects/bbox:     float32 [N, 4]   ymin/xmin/ymax/xmax normalized
+    objects/id:       int64  [N]
+    objects/is_crowd: bool   [N]
+    objects/is_dontcare: bool [N]
+    objects/label:    int64  [N]
+    objects/points:   float32 [N, 3972]   xy interleaved, -1 padded
 
-servingbot_polygon:
-    Same as above + objects/distance: float32 [N]
+servingbot_polygon:1.0.1
+    Same as above except:
+      objects/points:    float32 [N, 10940]
+      objects/distance:  float32 [N]
+      (no objects/is_dontcare)
 
-cleaner_copy_paste:
-    image: uint8 [H, W, 4]  (RGBA — 4th channel is alpha mask)
-    image/id: int64
-    objects/bbox: float32 [4]
-    objects/label: int64
-    objects/polygon_points: float32 [max_pts*2]
-    objects/obj_id: int64
+cleaner_copy_paste:1.0.0   — FLAT, no nested 'objects' dict
+    image:          uint8  [H, W, 4]   RGBA
+    image/filename: string
+    image/id:       int64
+    label:          int64  scalar
+    obj_id:         int64  scalar
+    orig_bbox:      float32 [4]
+    points:         float32 [3972]     xy interleaved, -1 padded
 
 Classes:
-    PolygonDecoder: Decodes polygon TFDS records (e.g. cleaner_polygon2026).
-    ServingBotDetDecoder: Decodes servingbot_polygon records with distance field.
-    CopyPasteDecoder: Decodes cleaner_copy_paste RGBA object crops.
+    PolygonDecoder:        cleaner_polygon2026 / field_misrecog2026 / station_misrecog
+    ServingBotDetDecoder:  servingbot_polygon (adds real distance values)
+    CopyPasteDecoder:      cleaner_copy_paste (flat schema, RGBA image)
 """
 
 from __future__ import annotations
@@ -50,19 +56,25 @@ import tensorflow as tf
 
 
 class PolygonDecoder:
-    """Decode polygon TFDS records to a standard tensor dictionary.
+    """Decode polygon TFDS records (cleaner_polygon2026 schema).
+
+    All three detection datasets share the same schema and are decoded here.
+    Distance is absent from these datasets; groundtruth_dists is filled with
+    the sentinel value -1.0 so the output schema matches ServingBotDetDecoder,
+    enabling zip+concat of the two streams.
 
     Output schema:
-        image: uint8 [H, W, 3]
-        source_id: string scalar
-        height: int32 scalar
-        width: int32 scalar
-        groundtruth_boxes: float32 [N, 4] (yxyx normalized 0-1)
-        groundtruth_classes: int64 [N]
-        groundtruth_polygons: float32 [N, max_polygon_coords] (xy interleaved, -1 padded)
-        groundtruth_is_crowd: bool [N]
-        groundtruth_area: float32 [N]
-        groundtruth_dontcare: int64 [N]
+        image:                  uint8  [H, W, 3]
+        source_id:              string scalar
+        height:                 int32 scalar
+        width:                  int32 scalar
+        groundtruth_boxes:      float32 [N, 4]   ymin/xmin/ymax/xmax
+        groundtruth_classes:    int64  [N]
+        groundtruth_polygons:   float32 [N, pts]  xy interleaved, -1 padded
+        groundtruth_is_crowd:   bool   [N]
+        groundtruth_area:       float32 [N]
+        groundtruth_dontcare:   int64  [N]
+        groundtruth_dists:      float32 [N]   (-1.0 sentinel for no-distance data)
     """
 
     def __init__(
@@ -70,11 +82,9 @@ class PolygonDecoder:
         max_vertices: int = 10938,
         class_remap_json_path: Optional[str] = None,
         num_classes: int = 39,
-        with_distance: bool = False,
     ):
         self._max_vertices = max_vertices
         self._num_classes = num_classes
-        self._with_distance = with_distance
 
         self._class_remap: Optional[List[int]] = None
         if class_remap_json_path:
@@ -89,13 +99,8 @@ class PolygonDecoder:
                 self._class_remap = table
 
     def decode(self, data: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
-        """Normalize a TFDS feature dict to our standard schema.
-
-        Mirrors TF Model Garden MSCOCODecoder: direct two-step access for
-        nested fields (data['objects']['bbox']) and literal-slash keys for
-        top-level metadata (data['image/id']).
-        """
-        # --- image ---
+        """Decode a cleaner_polygon2026-schema TFDS feature dict."""
+        # image
         image = data['image']
         if image.dtype == tf.string:
             image = tf.io.decode_image(image, channels=3, expand_animations=False)
@@ -106,39 +111,31 @@ class PolygonDecoder:
         height = tf.cast(shape[0], tf.int32)
         width = tf.cast(shape[1], tf.int32)
 
-        # --- source_id — 'image/id' is a literal flat key in TFDS ---
-        try:
-            source_id = tf.strings.as_string(tf.cast(data['image/id'], tf.int64))
-        except KeyError:
-            source_id = tf.strings.as_string(height * 100000 + width)
+        # source_id — 'image/id' is a literal flat key in TFDS (slash in key name)
+        source_id = tf.strings.as_string(tf.cast(data['image/id'], tf.int64))
 
-        # --- per-object fields: always two-step access ---
+        # per-object fields — always two-step: data['objects'][field]
         objects = data['objects']
 
-        boxes = tf.cast(objects['bbox'], tf.float32)  # [N, 4] ymin/xmin/ymax/xmax
-        if len(boxes.shape) == 1:
-            boxes = tf.expand_dims(boxes, 0)
-
-        classes = tf.cast(objects['label'], tf.int64)  # [N]
+        boxes = tf.cast(objects['bbox'], tf.float32)        # [N, 4]
+        classes = tf.cast(objects['label'], tf.int64)       # [N]
         if self._class_remap is not None:
             classes = self._remap_classes(classes)
 
         n = tf.shape(classes)[0]
 
+        is_crowd = tf.cast(objects['is_crowd'], tf.bool)    # [N]
+        area = tf.cast(objects['area'], tf.float32)         # int64 in TFDS → float32
+        polygons = tf.cast(objects['points'], tf.float32)   # [N, pts]
+
+        # is_dontcare exists in cleaner datasets; ServingBot has no such field
         try:
-            is_crowd = tf.cast(objects['is_crowd'], tf.bool)
+            dontcare = tf.cast(objects['is_dontcare'], tf.int64)
         except KeyError:
-            is_crowd = tf.zeros([n], dtype=tf.bool)
+            dontcare = tf.zeros([n], dtype=tf.int64)
 
-        try:
-            area = tf.cast(objects['area'], tf.float32)
-        except KeyError:
-            area = tf.zeros([n], dtype=tf.float32)
-
-        polygons = self._decode_polygons(objects, n)
-
-        # dontcare is not in standard TFDS schemas; default to zeros
-        dontcare = tf.zeros([n], dtype=tf.int64)
+        # No distance in detection datasets — sentinel so schema matches ServingBot
+        dists = tf.fill([n], -1.0)
 
         return {
             'image': image,
@@ -151,19 +148,8 @@ class PolygonDecoder:
             'groundtruth_is_crowd': is_crowd,
             'groundtruth_area': area,
             'groundtruth_dontcare': dontcare,
+            'groundtruth_dists': dists,
         }
-
-    def _decode_polygons(self, objects: dict, n: tf.Tensor) -> tf.Tensor:
-        """Extract polygon_points from the objects sub-dict."""
-        try:
-            return tf.cast(objects['polygon_points'], tf.float32)
-        except KeyError:
-            pass
-        try:
-            return tf.cast(objects['points'], tf.float32)
-        except KeyError:
-            pass
-        return tf.zeros([n, self._max_vertices + 2], dtype=tf.float32) - 1.0
 
     def _remap_classes(self, classes: tf.Tensor) -> tf.Tensor:
         table_tensor = tf.constant(self._class_remap, dtype=tf.int64)
@@ -172,10 +158,15 @@ class PolygonDecoder:
 
 
 class ServingBotDetDecoder(PolygonDecoder):
-    """Decode servingbot_polygon TFDS records including per-object distances.
+    """Decode servingbot_polygon:1.0.1 TFDS records.
 
-    Extends PolygonDecoder output with:
-        groundtruth_dists: float32 [N]  — raw meter distances (-1 if absent)
+    Identical schema to cleaner_polygon2026 except:
+      - objects/points shape is [N, 10940] (vs 3972)
+      - objects/distance: float32 [N] is present
+      - objects/is_dontcare is absent
+
+    Overrides groundtruth_dists with the real distance values from
+    objects['distance'] instead of the -1.0 sentinel from PolygonDecoder.
     """
 
     def __init__(
@@ -187,75 +178,48 @@ class ServingBotDetDecoder(PolygonDecoder):
             max_vertices=10938,
             class_remap_json_path=class_remap_json_path,
             num_classes=num_classes,
-            with_distance=True,
         )
 
     def decode(self, data: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
         result = super().decode(data)
-
-        objects = data['objects']
-        n = tf.shape(result['groundtruth_classes'])[0]
-
-        try:
-            dists = tf.cast(objects['distance'], tf.float32)
-        except KeyError:
-            dists = tf.fill([n], -1.0)
-
-        result['groundtruth_dists'] = dists
+        # Replace sentinel with real per-object distances
+        result['groundtruth_dists'] = tf.cast(data['objects']['distance'], tf.float32)
         return result
 
 
 class CopyPasteDecoder:
-    """Decode cleaner_copy_paste TFDS records (RGBA object crops).
+    """Decode cleaner_copy_paste:1.0.0 TFDS records (RGBA object crops).
 
-    The cleaner_copy_paste:1.0.0 TFDS stores individual object crops with
-    an alpha-channel mask used for compositing.
+    This dataset has a FLAT schema — no nested 'objects' dict.  Every field
+    is a scalar or 1-D tensor at the top level of the feature dict.  Each
+    TFDS example is one object crop with an alpha mask in channel 3.
 
     Output schema:
-        image: uint8 [H, W, 4]  — RGBA with alpha mask in channel 3
-        image/id: int64 scalar
-        orig_bbox: float32 [4]  — ymin, xmin, ymax, xmax normalized
-        label: int64 scalar
-        points: float32 [max_pts]  — xy interleaved, normalized
-        obj_id: int64 scalar
+        image:      uint8  [H, W, 4]   RGBA (alpha mask in channel 3)
+        image/id:   int64  scalar
+        orig_bbox:  float32 [4]        ymin, xmin, ymax, xmax normalized
+        label:      int64  scalar
+        points:     float32 [3972]     xy interleaved, -1 padded
+        obj_id:     int64  scalar
     """
 
     def __init__(self, num_classes: int = 39):
         self._num_classes = num_classes
 
     def decode(self, data: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
-        """Normalize a cleaner_copy_paste TFDS feature dict."""
+        """Decode a cleaner_copy_paste flat feature dict."""
         image = data['image']
         if image.dtype == tf.string:
             image = tf.io.decode_image(image, channels=4, expand_animations=False)
             image.set_shape([None, None, 4])
         image = tf.cast(image, tf.uint8)  # [H, W, 4]
 
-        try:
-            image_id = tf.cast(data['image/id'], tf.int64)
-        except KeyError:
-            image_id = tf.constant(0, dtype=tf.int64)
-
-        objects = data['objects']
-
-        orig_bbox = tf.cast(tf.reshape(objects['bbox'], [4]), tf.float32)
-        label = tf.cast(tf.reshape(objects['label'], []), tf.int64)
-
-        try:
-            points = tf.cast(tf.reshape(objects['polygon_points'], [-1]), tf.float32)
-        except KeyError:
-            points = tf.zeros([0], dtype=tf.float32)
-
-        try:
-            obj_id = tf.cast(tf.reshape(objects['obj_id'], []), tf.int64)
-        except KeyError:
-            obj_id = tf.constant(0, dtype=tf.int64)
-
+        # All fields are flat top-level keys — no objects sub-dict
         return {
             'image': image,
-            'image/id': image_id,
-            'orig_bbox': orig_bbox,
-            'label': label,
-            'points': points,
-            'obj_id': obj_id,
+            'image/id': tf.cast(data['image/id'], tf.int64),
+            'orig_bbox': tf.cast(data['orig_bbox'], tf.float32),   # [4]
+            'label': tf.cast(data['label'], tf.int64),             # scalar
+            'points': tf.cast(data['points'], tf.float32),         # [3972]
+            'obj_id': tf.cast(data['obj_id'], tf.int64),           # scalar
         }

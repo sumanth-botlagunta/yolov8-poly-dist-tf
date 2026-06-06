@@ -66,6 +66,7 @@ def _make_raw_example(h: int, w: int, n_boxes: int = 2) -> dict:
         'groundtruth_area':      tf.ones([n], dtype=tf.float32) * 0.05,
         'groundtruth_dontcare':  tf.zeros([n], dtype=tf.int64),
         'groundtruth_polygons':  tf.fill([n, _MAX_VERTICES + 2], -1.0),
+        'groundtruth_dists':     tf.fill([n], -1.0),
         'source_id':             tf.constant('test'),
     }
 
@@ -329,6 +330,7 @@ class TestEndToEndDatasetBatch(unittest.TestCase):
                     'groundtruth_area':     np.ones(2, dtype=np.float32) * 0.05,
                     'groundtruth_dontcare': np.zeros(2, dtype=np.int64),
                     'groundtruth_polygons': np.full((2, _MAX_VERTICES + 2), -1.0, dtype=np.float32),
+                    'groundtruth_dists':    np.full(2, -1.0, dtype=np.float32),
                     'source_id':            b'test',
                 }
         return _gen
@@ -342,6 +344,7 @@ class TestEndToEndDatasetBatch(unittest.TestCase):
             'groundtruth_area':      tf.TensorSpec(shape=(None,),          dtype=tf.float32),
             'groundtruth_dontcare':  tf.TensorSpec(shape=(None,),          dtype=tf.int64),
             'groundtruth_polygons':  tf.TensorSpec(shape=(None, _MAX_VERTICES + 2), dtype=tf.float32),
+            'groundtruth_dists':     tf.TensorSpec(shape=(None,),          dtype=tf.float32),
             'source_id':             tf.TensorSpec(shape=(),               dtype=tf.string),
         }
 
