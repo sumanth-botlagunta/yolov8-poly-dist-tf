@@ -133,6 +133,7 @@ class YoloV8Task:
             poly_dist_gain=loss_cfg.poly_dist_gain,
             poly_conf_gain=loss_cfg.poly_conf_gain,
             poly_angle_gain=loss_cfg.poly_angle_gain,
+            poly_gain=loss_cfg.poly_gain,
             tal_alpha=loss_cfg.tal_alpha,
             tal_beta=loss_cfg.tal_beta,
             topk=loss_cfg.topk,
