@@ -35,18 +35,6 @@ def main(_):
 
     config = load_config(FLAGS.config)
 
-    # Mixed precision — must be set before any model variables are created.
-    runtime = getattr(config, 'runtime', None)
-    mp_dtype = getattr(runtime, 'mixed_precision_dtype', 'float32') if runtime else 'float32'
-    if mp_dtype in ('bfloat16', 'float16'):
-        tf.keras.mixed_precision.set_global_policy(f'mixed_{mp_dtype}')
-        logging.info("Mixed precision policy: mixed_%s", mp_dtype)
-
-    # XLA JIT (global flag; trainer also passes jit_compile=True per tf.function).
-    if getattr(runtime, 'enable_xla', False) if runtime else False:
-        tf.config.optimizer.set_jit(True)
-        logging.info("XLA JIT enabled globally.")
-
     strategy = tf.distribute.MirroredStrategy()
     logging.info("Running with %d replica(s).", strategy.num_replicas_in_sync)
 
