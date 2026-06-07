@@ -163,6 +163,12 @@ class YoloV8Task:
         images, labels = inputs
         with tf.GradientTape() as tape:
             feats = model(images, training=True)
+            # Cast head outputs to float32 so loss is computed in full precision
+            # regardless of whether the model runs in mixed_bfloat16 mode.
+            feats = tf.nest.map_structure(
+                lambda t: tf.cast(t, tf.float32) if t.dtype != tf.float32 else t,
+                feats,
+            )
             total, box, dfl, cls, dist, poly = self._loss_fn(feats, labels)
 
         grads = tape.gradient(total, model.trainable_variables)

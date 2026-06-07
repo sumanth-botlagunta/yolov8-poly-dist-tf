@@ -81,9 +81,7 @@ class YoloV8Trainer:
             # ---- training ----
             step_losses = {}
             for inputs in self._train_ds:
-                step_losses = self._task.train_step(
-                    inputs, self._model, self._optimizer
-                )
+                step_losses = self._compiled_train_step(inputs)
                 self._global_step.assign_add(1)
                 self._log_step(step_losses)
 
@@ -140,6 +138,23 @@ class YoloV8Trainer:
         self._tb_writer = tf.summary.create_file_writer(
             os.path.join(self._output_dir, 'tb_events')
         )
+
+        # Compile the train step into a single TF graph.  Without this, each
+        # call from the Python for-loop retraces forward+loss+backward, which
+        # dominates step time on fast hardware like H100.
+        use_xla = (
+            not self._debug
+            and getattr(self._config, 'runtime', None) is not None
+            and getattr(self._config.runtime, 'enable_xla', False)
+        )
+        _task, _model, _optimizer = self._task, self._model, self._optimizer
+
+        @tf.function(jit_compile=use_xla)
+        def _compiled_train_step(inputs):
+            return _task.train_step(inputs, _model, _optimizer)
+
+        self._compiled_train_step = _compiled_train_step
+        log.info("train_step compiled (tf.function, jit_compile=%s)", use_xla)
 
     # ------------------------------------------------------------------
     # Validation
