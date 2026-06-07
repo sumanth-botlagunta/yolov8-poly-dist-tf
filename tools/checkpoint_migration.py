@@ -86,24 +86,42 @@ def build_name_mapping(
         ".OPTIMIZER_SLOT/",
     ]
 
-    def _strip(name: str) -> str:
+    # Substitution rules: normalize legacy TF1/Keras layer name patterns to
+    # match the new codebase's explicit sub-layer naming (conv/bn/act).
+    _SUBS = [
+        # Conv2D layer named inline (TF1) → sub-layer named 'conv'
+        ("/Conv2D/kernel",    "/conv/kernel"),
+        ("/Conv2D/bias",      "/conv/bias"),
+        # BatchNorm variants → 'bn'
+        ("/BatchNorm/",             "/bn/"),
+        ("/batch_normalization/",   "/bn/"),
+        ("/BatchNormalization/",    "/bn/"),
+        # BN parameter names differ across TF versions
+        ("/bn/moving_average",      "/bn/moving_mean"),
+        ("/bn/Momentum",            "/bn/moving_variance"),
+    ]
+
+    def _normalize(name: str) -> str:
         for prefix in _STRIP_PREFIXES:
             if name.startswith(prefix):
                 name = name[len(prefix):]
         # Remove trailing ":0" if present (TF1 style)
-        return name.rstrip(":0")
+        name = name.rstrip(":0")
+        for old_pat, new_pat in _SUBS:
+            name = name.replace(old_pat, new_pat)
+        return name
 
-    # Build stripped → full-name lookup for new vars.
+    # Build normalized → full-name lookup for new vars.
     new_stripped: Dict[str, str] = {}
     for new_name in new_vars:
-        stripped = _strip(new_name)
+        stripped = _normalize(new_name)
         new_stripped[stripped] = new_name
 
     mapping: Dict[str, str] = {}
     unmatched: List[str] = []
 
     for old_name, (old_shape, _) in old_filtered.items():
-        old_stripped = _strip(old_name)
+        old_stripped = _normalize(old_name)
 
         # Exact match on stripped name.
         if old_stripped in new_stripped:

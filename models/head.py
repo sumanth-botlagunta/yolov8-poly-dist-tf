@@ -27,7 +27,7 @@ from configs.registry import HEADS
 from models.backbone import _ConvBnAct
 
 _STRIDES = {"3": 8, "4": 16, "5": 32}
-_HIDDEN  = 256   # hidden channels for all branch stems
+_HIDDEN  = 256   # fallback hidden channels when input_channels is not provided
 
 
 @HEADS.register("yolov8_head")
@@ -36,6 +36,10 @@ class YoloV8Head(tf.keras.layers.Layer):
 
     Per-level branch weights (not shared across levels) for all heads.
     Smart bias is initialised via initialize_biases() after the first forward pass.
+
+    When input_channels is provided, hidden-channel counts match the legacy formula:
+        box/poly/dist stems: c2 = max(reg_max, in_ch // 4, 4 * reg_max)
+        cls stems:           c3 = max(in_ch, num_classes)
     """
 
     def __init__(
@@ -52,17 +56,19 @@ class YoloV8Head(tf.keras.layers.Layer):
         norm_momentum: float = 0.97,
         norm_epsilon: float = 0.001,
         use_sync_bn: bool = False,
+        input_channels: Optional[Dict[str, int]] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self.num_classes    = num_classes
+        self.num_classes      = num_classes
         self.output_poly_size = output_poly_size
         self.output_dist_size = output_dist_size
-        self.num_dist_block = num_dist_block
-        self.reg_max        = reg_max
-        self.smart_bias     = smart_bias
-        self.with_polygons  = with_polygons
-        self.with_distance  = with_distance
+        self.num_dist_block   = num_dist_block
+        self.reg_max          = reg_max
+        self.smart_bias       = smart_bias
+        self.with_polygons    = with_polygons
+        self.with_distance    = with_distance
+        self._input_channels  = input_channels  # {level: int} or None
 
         self._norm_kw = dict(
             activation=activation,
@@ -71,6 +77,15 @@ class YoloV8Head(tf.keras.layers.Layer):
             use_sync_bn=use_sync_bn,
         )
         self._levels: Optional[List[str]] = None
+
+    def _stem_ch(self, level: str):
+        """Per-level hidden channel widths matching legacy YOLOv8 formula."""
+        if not self._input_channels or level not in self._input_channels:
+            return _HIDDEN, _HIDDEN
+        in_ch = self._input_channels[level]
+        c2 = max(self.reg_max, in_ch // 4, 4 * self.reg_max)
+        c3 = max(in_ch, self.num_classes)
+        return c2, c3
 
     # ------------------------------------------------------------------
     # Lazy build
@@ -87,47 +102,48 @@ class YoloV8Head(tf.keras.layers.Layer):
 
         for level in levels:
             nk = self._norm_kw
+            c2, c3 = self._stem_ch(level)
 
-            # ---- box branch: 2×Conv(256,3×3) + Conv(4*reg_max, 1×1) ----
-            setattr(self, f"box_s1_{level}", _ConvBnAct(_HIDDEN, 3, **nk))
-            setattr(self, f"box_s2_{level}", _ConvBnAct(_HIDDEN, 3, **nk))
+            # ---- box branch: 2×Conv(c2,3×3) + Conv(4*reg_max, 1×1) ----
+            setattr(self, f"box_s1_{level}", _ConvBnAct(c2, 3, **nk))
+            setattr(self, f"box_s2_{level}", _ConvBnAct(c2, 3, **nk))
             setattr(self, f"box_pred_{level}",
                     tf.keras.layers.Conv2D(4 * self.reg_max, 1, use_bias=True,
                                            padding="same", name=f"box_pred_{level}"))
 
-            # ---- cls branch: 2×Conv(256,3×3) + Conv(num_classes, 1×1) ----
-            setattr(self, f"cls_s1_{level}", _ConvBnAct(_HIDDEN, 3, **nk))
-            setattr(self, f"cls_s2_{level}", _ConvBnAct(_HIDDEN, 3, **nk))
+            # ---- cls branch: 2×Conv(c3,3×3) + Conv(num_classes, 1×1) ----
+            setattr(self, f"cls_s1_{level}", _ConvBnAct(c3, 3, **nk))
+            setattr(self, f"cls_s2_{level}", _ConvBnAct(c3, 3, **nk))
             setattr(self, f"cls_pred_{level}",
                     tf.keras.layers.Conv2D(self.num_classes, 1, use_bias=True,
                                            padding="same", name=f"cls_pred_{level}"))
 
             if self.with_polygons:
                 # ---- poly_angle branch ----
-                setattr(self, f"pa_s1_{level}", _ConvBnAct(_HIDDEN, 3, **nk))
-                setattr(self, f"pa_s2_{level}", _ConvBnAct(_HIDDEN, 3, **nk))
+                setattr(self, f"pa_s1_{level}", _ConvBnAct(c2, 3, **nk))
+                setattr(self, f"pa_s2_{level}", _ConvBnAct(c2, 3, **nk))
                 setattr(self, f"pa_pred_{level}",
                         tf.keras.layers.Conv2D(self.output_poly_size, 1, use_bias=True,
                                                padding="same", name=f"pa_pred_{level}"))
 
                 # ---- poly_dist branch ----
-                setattr(self, f"pd_s1_{level}", _ConvBnAct(_HIDDEN, 3, **nk))
-                setattr(self, f"pd_s2_{level}", _ConvBnAct(_HIDDEN, 3, **nk))
+                setattr(self, f"pd_s1_{level}", _ConvBnAct(c2, 3, **nk))
+                setattr(self, f"pd_s2_{level}", _ConvBnAct(c2, 3, **nk))
                 setattr(self, f"pd_pred_{level}",
                         tf.keras.layers.Conv2D(self.output_poly_size, 1, use_bias=True,
                                                padding="same", name=f"pd_pred_{level}"))
 
                 # ---- poly_conf branch ----
-                setattr(self, f"pc_s1_{level}", _ConvBnAct(_HIDDEN, 3, **nk))
-                setattr(self, f"pc_s2_{level}", _ConvBnAct(_HIDDEN, 3, **nk))
+                setattr(self, f"pc_s1_{level}", _ConvBnAct(c2, 3, **nk))
+                setattr(self, f"pc_s2_{level}", _ConvBnAct(c2, 3, **nk))
                 setattr(self, f"pc_pred_{level}",
                         tf.keras.layers.Conv2D(self.output_poly_size, 1, use_bias=True,
                                                padding="same", name=f"pc_pred_{level}"))
 
             if self.with_distance:
-                # ---- dist branch: num_dist_block×Conv(256,3×3) + Conv(1, 1×1) ----
+                # ---- dist branch: num_dist_block×Conv(c2,3×3) + Conv(1, 1×1) ----
                 for bi in range(self.num_dist_block):
-                    setattr(self, f"dist_s{bi}_{level}", _ConvBnAct(_HIDDEN, 3, **nk))
+                    setattr(self, f"dist_s{bi}_{level}", _ConvBnAct(c2, 3, **nk))
                 setattr(self, f"dist_pred_{level}",
                         tf.keras.layers.Conv2D(self.output_dist_size, 1, use_bias=True,
                                                padding="same", name=f"dist_pred_{level}"))
