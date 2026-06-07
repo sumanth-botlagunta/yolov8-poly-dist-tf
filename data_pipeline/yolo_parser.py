@@ -209,14 +209,21 @@ class V8ParserExtended(Parser):
         )
 
         m = self._max_num_instances
-        pad_crowd = tf.maximum(0, m - n_gt)
-        is_crowd_out = tf.reshape(
-            tf.concat([
-                tf.cast(is_crowd[:m], tf.bool),
-                tf.zeros([pad_crowd], tf.bool),
-            ], axis=0),
-            [m],
+        pad = tf.maximum(0, m - n_gt)
+
+        def _pad_bool(t):
+            return tf.reshape(
+                tf.concat([tf.cast(t[:m], tf.bool), tf.zeros([pad], tf.bool)], axis=0),
+                [m],
+            )
+
+        is_crowd_out = _pad_bool(is_crowd)
+
+        dontcare_raw = tf.cast(
+            data.get('groundtruth_dontcare', tf.zeros_like(classes, dtype=tf.int64)),
+            tf.bool,
         )
+        is_dontcare_out = _pad_bool(dontcare_raw)
 
         labels = {
             'bbox':         boxes,
@@ -227,6 +234,7 @@ class V8ParserExtended(Parser):
             'log_distance': log_dist,
             # Eval extras (not present in train labels)
             'is_crowd':     is_crowd_out,
+            'is_dontcare':  is_dontcare_out,
             'source_id':    data.get('source_id', tf.constant('')),
         }
         return image, labels
