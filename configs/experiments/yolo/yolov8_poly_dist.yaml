@@ -23,7 +23,7 @@ task:
   summary_image_num: 10
   summary_image_draw_box: true
   summary_image_draw_poly: true
-  per_category_metrics: false
+  per_category_metrics: true
 
   norm_activation:
     activation: relu
