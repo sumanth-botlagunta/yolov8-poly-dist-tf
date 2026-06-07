@@ -71,16 +71,21 @@ class TestSGDTorch(unittest.TestCase):
         self.assertAlmostEqual(mu, 0.937, places=5)
 
     def test_weight_decay_applied_to_kernel_group(self):
-        """A kernel variable should be shrunk by weight decay before gradient step."""
-        sgd = _make_sgd(weight_decay=0.1)
+        """A kernel variable should be shrunk by weight decay (after warmup).
+
+        The weight group's effective LR ramps UP from 0 over warmup_steps, so WD has
+        no effect at step 0 (eff_lr=0). Past warmup the full schedule LR applies, so
+        decoupled WD shrinks the weights: w_new = w * (1 - lr * wd).
+        """
+        sgd = _make_sgd(warmup_steps=100, weight_decay=0.1)
+        sgd.iterations.assign(200)   # past warmup → weight-group LR is full base_lr
         # Variable named 'kernel' → group 2 → WD applies
         w = tf.Variable(tf.ones([2, 2]), name='kernel_wd_test')
         val_before = w.numpy().copy()
         grad = tf.zeros_like(w)   # zero grad so only WD effect is visible
         sgd.apply_gradients([(grad, w)])
-        # weight decay: w_new = w * (1 - lr * wd). With lr≈0.01 and wd=0.1: w < 1.0
         self.assertTrue((w.numpy() < val_before).all(),
-                        "WD should shrink kernel weights")
+                        "WD should shrink kernel weights after warmup")
 
     def test_no_weight_decay_for_bn_group(self):
         """BN (moving_mean) variable must NOT be shrunk by weight decay."""

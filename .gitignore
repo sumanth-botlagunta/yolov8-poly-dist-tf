@@ -1,8 +1,9 @@
 # ── Project-specific excludes ────────────────────────────────────────────────
-.claude/
 tmp_reference_docs/
-CLAUDE.md
-MASTER_PLAN.md
+
+# .claude/ is committed (shared skills, settings, agents) for easy team setup.
+# Only the per-user local override file stays out of version control.
+.claude/settings.local.json
 
 # Checkpoints and model outputs
 initial_checkpoint_folder/
@@ -23,6 +24,10 @@ runs/
 outputs/
 results/
 *.json
+# ...but keep committed config/tooling JSON that lives in tracked folders.
+# (settings.local.json stays ignored via the rule near the top of this file.)
+!.claude/settings.json
+!serving/**/*.json
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/

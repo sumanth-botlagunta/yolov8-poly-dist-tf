@@ -259,6 +259,10 @@ class InputReader:
             tf.data.Dataset
             .zip((det_dataset, dist_dataset))
             .map(_concat_batch_dicts, num_parallel_calls=_AUTOTUNE)
+            # Final terminal prefetch: overlap the batch-concat with the training
+            # step. The sub-streams prefetch internally, but the merged stream is
+            # what the training loop actually consumes.
+            .prefetch(_AUTOTUNE)
         )
 
     # ------------------------------------------------------------------

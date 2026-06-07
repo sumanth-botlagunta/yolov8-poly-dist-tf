@@ -12,6 +12,10 @@ The codebase supports three experiment tiers (config-driven, shared code):
 | `yolov8_poly` | box + cls + polygon | Detection + segmentation |
 | `yolov8_poly_dist` | all 6 heads | Detection + segmentation + distance |
 
+> **Developer docs:** see [`docs/`](docs/) — [architecture](docs/architecture.md),
+> [data pipeline](docs/data_pipeline.md), [losses](docs/losses.md),
+> [training](docs/training.md), [testing](docs/testing.md).
+
 ---
 
 ## Architecture
@@ -88,6 +92,24 @@ tensorboard --logdir /path/to/output/tb_events
 ```
 
 Auto-resume on preemption: the trainer restores from the latest checkpoint in `output_dir` at startup with no extra flags.
+
+### Performance: mixed precision & XLA
+
+The default configs run in `float32` with XLA off. To train faster on Tensor-Core GPUs,
+use the `bfloat16` + XLA variant:
+
+```bash
+python scripts/run_train.py \
+    --config  configs/experiments/yolo/yolov8_poly_dist_bf16.yaml \
+    --output_dir /path/to/output
+```
+
+That config is a thin override — it inherits everything from `yolov8_poly_dist.yaml` via a
+top-level `base:` key and only flips `runtime.mixed_precision_dtype: bfloat16` and
+`runtime.enable_xla: true`. `bfloat16` needs no loss scaling (unlike `float16`). Validate on
+a few hundred steps (loss finite, curves track the float32 baseline) before committing to a
+full run, and use `/benchmark` to record the throughput delta. Any config can inherit from
+another with `base: <relative-path.yaml>` and deep-merge its own keys on top.
 
 ---
 
@@ -217,12 +239,16 @@ eval/
 train/
   task.py                  YoloV8Task — build, train_step, validation_step, evaluators
   trainer.py               YoloV8Trainer — custom loop, EMA swap, CheckpointManager, TensorBoard
+  viz_utils.py             Box / polygon overlay rendering for TensorBoard image summaries
 
 scripts/
-  train.py                 Training entry point (absl-py flags)
+  run_train.py             Training entry point (absl-py flags)
 
 tools/
   checkpoint_migration.py  List / map / migrate old checkpoints (fuzzy name matching)
+  compare_checkpoints.py   Diff two checkpoints (weights / metrics)
+  trace_shapes.py          Trace tensor shapes through the pipeline
+  benchmark_pipeline.py    Data pipeline throughput benchmark
   eval.py                  Standalone evaluation script
   export_saved_model.py    Export SavedModel + optional TFLite
 
@@ -280,8 +306,20 @@ trainer:
 | Stage | Format | Notes |
 |-------|--------|-------|
 | TFDS input | `[N, max_vertices+2]` xy normalized, padded with -1 | Raw dataset format |
-| PolyYOLO (training GT) | `[N, 72]` = `[dx, dy, conf] × 24` | Origin implicit (cx, cy of box) |
+| PolyYOLO (training GT) | `[N, 72]` = `[dist, angle_norm, conf] × 24` interleaved | Origin implicit (cx, cy of box); see `losses/tal_loss.py:_polygon_loss` |
 | Prediction output | `[B, max_det, 24, 3]` = `(conf, dist, angle_logit)` | From detection_generator |
 | Cartesian (eval) | `[N, max_vertices, 2]` yx denormalized | For mask IoU |
 
 Vertex angles are fixed: `θᵢ = i × 2π/24` for i = 0…23. Distance regressor predicts the radial distance at each angle; angle head selects the dominant bin via softmax.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---------|--------------------|
+| `Failed to load TFDS dataset ...` at startup | The TFDS dataset/version isn't on disk or `tfds_data_dir` is wrong. Run `/check-env` to verify dataset availability and the `TFDS_DATA_DIR` path. The distance dataset (`servingbot_polygon`) is **training-only** — don't reference it from a validation split. |
+| OOM during training | Lower `train_data.global_batch_size`, reduce input size, or train with fewer GPUs per step. With multiple GPUs the global batch is sharded across replicas (`MirroredStrategy`); the per-replica batch is `global_batch_size / num_replicas`. |
+| `NaN` loss after a few steps | Usually too-high LR or unstable mixed precision. Use the default `float32` config to isolate, prefer `bfloat16` over `float16` if enabling mixed precision (no loss scaling needed), and confirm GT boxes/polygons are valid (no degenerate zero-area boxes). |
+| Config load error (`missing field` / `unexpected key`) | A YAML key has no matching dataclass field (or vice-versa). Configs are validated by `scripts/run_train.py:_validate_config`; check the failing key against `configs/model_config.py`. |
+| Eval metrics look identical to raw weights | EMA weights may not be swapped in. EMA is swapped before validation and back after (`optimizers/ema.py:swap_weights`); confirm the optimizer is the EMA wrapper. |

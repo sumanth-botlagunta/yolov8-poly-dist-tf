@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find . -type f*)",
+      "Bash(ls*)",
+      "Bash(cat*)",
+      "Bash(python -c*)",
+      "Bash(python tools/*)",
+      "Bash(python scripts/*)",
+      "Bash(pytest*)",
+      "Bash(pip install*)",
+      "Bash(conda*)",
+      "Bash(mkdir -p*)",
+      "Bash(cp*)",
+      "Bash(git status)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(echo*)",
+      "Bash(touch*)",
+      "Bash(grep*)",
+      "Bash(wc*)"
+    ],
+    "additionalDirectories": [
+      "/Users/sumanth/Documents/Developer/yolov8-poly-dist-tf "
+    ]
+  }
+}
