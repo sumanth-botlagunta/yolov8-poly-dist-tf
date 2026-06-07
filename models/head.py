@@ -8,6 +8,11 @@ Six output heads per FPN level (strides 8, 16, 32):
     poly_conf:  float32 [batch, H, W, 24]   per-vertex confidence
     dist:       float32 [batch, H, W,  1]   object distance (log-scale)
 
+Head architecture (matching legacy):
+    cv2feat: 2 × Conv(4*reg_max + 3*poly_size, 3×3) — shared stem for box and all poly branches
+    cv3:     2 × Conv(128, 3×3)                      — cls stem (fixed 128 ch at all levels)
+    cv4:     num_dist_block × Conv(128, 3×3)          — dist stem (fixed 128 ch at all levels)
+
 Smart bias initialization is applied when smart_bias=True:
     class head bias: log(5 / num_classes / (640/stride)^2)
     box head bias:   1.0
@@ -26,20 +31,21 @@ import tensorflow as tf
 from configs.registry import HEADS
 from models.backbone import _ConvBnAct
 
-_STRIDES = {"3": 8, "4": 16, "5": 32}
-_HIDDEN  = 256   # fallback hidden channels when input_channels is not provided
+_STRIDES   = {"3": 8, "4": 16, "5": 32}
+_CLS_HIDDEN  = 128   # cls stem channels — fixed at all levels
+_DIST_HIDDEN = 128   # dist stem channels — fixed at all levels
 
 
 @HEADS.register("yolov8_head")
 class YoloV8Head(tf.keras.layers.Layer):
     """Multi-branch detection head for YOLOv8.
 
-    Per-level branch weights (not shared across levels) for all heads.
-    Smart bias is initialised via initialize_biases() after the first forward pass.
+    Box and all polygon branches share a common cv2feat stem so that the
+    same intermediate features feed box regression and polygon prediction —
+    matching the legacy architecture.
 
-    When input_channels is provided, hidden-channel counts match the legacy formula:
-        box/poly/dist stems: c2 = max(reg_max, in_ch // 4, 4 * reg_max)
-        cls stems:           c3 = max(in_ch, num_classes)
+    cv2feat hidden channels = 4*reg_max + 3*output_poly_size (136 for defaults).
+    cls and dist stems always use 128 channels regardless of FPN level.
     """
 
     def __init__(
@@ -56,7 +62,6 @@ class YoloV8Head(tf.keras.layers.Layer):
         norm_momentum: float = 0.97,
         norm_epsilon: float = 0.001,
         use_sync_bn: bool = False,
-        input_channels: Optional[Dict[str, int]] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -68,7 +73,9 @@ class YoloV8Head(tf.keras.layers.Layer):
         self.smart_bias       = smart_bias
         self.with_polygons    = with_polygons
         self.with_distance    = with_distance
-        self._input_channels  = input_channels  # {level: int} or None
+
+        # cv2feat channels: shared by box and all poly branches
+        self._cv2_hidden = 4 * reg_max + 3 * output_poly_size  # 136 for reg_max=16, poly=24
 
         self._norm_kw = dict(
             activation=activation,
@@ -77,15 +84,6 @@ class YoloV8Head(tf.keras.layers.Layer):
             use_sync_bn=use_sync_bn,
         )
         self._levels: Optional[List[str]] = None
-
-    def _stem_ch(self, level: str):
-        """Per-level hidden channel widths matching legacy YOLOv8 formula."""
-        if not self._input_channels or level not in self._input_channels:
-            return _HIDDEN, _HIDDEN
-        in_ch = self._input_channels[level]
-        c2 = max(self.reg_max, in_ch // 4, 4 * self.reg_max)
-        c3 = max(in_ch, self.num_classes)
-        return c2, c3
 
     # ------------------------------------------------------------------
     # Lazy build
@@ -100,50 +98,43 @@ class YoloV8Head(tf.keras.layers.Layer):
         levels = sorted(input_shape.keys())
         self._levels = levels
 
+        c2 = self._cv2_hidden   # 136 — shared for box + poly, fixed at all levels
+
         for level in levels:
             nk = self._norm_kw
-            c2, c3 = self._stem_ch(level)
 
-            # ---- box branch: 2×Conv(c2,3×3) + Conv(4*reg_max, 1×1) ----
-            setattr(self, f"box_s1_{level}", _ConvBnAct(c2, 3, **nk))
-            setattr(self, f"box_s2_{level}", _ConvBnAct(c2, 3, **nk))
+            # ---- cv2feat: shared 2-conv stem for box and all poly branches ----
+            setattr(self, f"cv2feat_s1_{level}", _ConvBnAct(c2, 3, **nk))
+            setattr(self, f"cv2feat_s2_{level}", _ConvBnAct(c2, 3, **nk))
+
+            # ---- box prediction from cv2feat output ----
             setattr(self, f"box_pred_{level}",
                     tf.keras.layers.Conv2D(4 * self.reg_max, 1, use_bias=True,
                                            padding="same", name=f"box_pred_{level}"))
 
-            # ---- cls branch: 2×Conv(c3,3×3) + Conv(num_classes, 1×1) ----
-            setattr(self, f"cls_s1_{level}", _ConvBnAct(c3, 3, **nk))
-            setattr(self, f"cls_s2_{level}", _ConvBnAct(c3, 3, **nk))
+            # ---- cls stem: 2 × Conv(128, 3×3), fixed at all levels ----
+            setattr(self, f"cls_s1_{level}", _ConvBnAct(_CLS_HIDDEN, 3, **nk))
+            setattr(self, f"cls_s2_{level}", _ConvBnAct(_CLS_HIDDEN, 3, **nk))
             setattr(self, f"cls_pred_{level}",
                     tf.keras.layers.Conv2D(self.num_classes, 1, use_bias=True,
                                            padding="same", name=f"cls_pred_{level}"))
 
             if self.with_polygons:
-                # ---- poly_angle branch ----
-                setattr(self, f"pa_s1_{level}", _ConvBnAct(c2, 3, **nk))
-                setattr(self, f"pa_s2_{level}", _ConvBnAct(c2, 3, **nk))
+                # poly preds: all come directly from cv2feat output (no separate stems)
                 setattr(self, f"pa_pred_{level}",
                         tf.keras.layers.Conv2D(self.output_poly_size, 1, use_bias=True,
                                                padding="same", name=f"pa_pred_{level}"))
-
-                # ---- poly_dist branch ----
-                setattr(self, f"pd_s1_{level}", _ConvBnAct(c2, 3, **nk))
-                setattr(self, f"pd_s2_{level}", _ConvBnAct(c2, 3, **nk))
                 setattr(self, f"pd_pred_{level}",
                         tf.keras.layers.Conv2D(self.output_poly_size, 1, use_bias=True,
                                                padding="same", name=f"pd_pred_{level}"))
-
-                # ---- poly_conf branch ----
-                setattr(self, f"pc_s1_{level}", _ConvBnAct(c2, 3, **nk))
-                setattr(self, f"pc_s2_{level}", _ConvBnAct(c2, 3, **nk))
                 setattr(self, f"pc_pred_{level}",
                         tf.keras.layers.Conv2D(self.output_poly_size, 1, use_bias=True,
                                                padding="same", name=f"pc_pred_{level}"))
 
             if self.with_distance:
-                # ---- dist branch: num_dist_block×Conv(c2,3×3) + Conv(1, 1×1) ----
+                # ---- dist stem: num_dist_block × Conv(128, 3×3), fixed at all levels ----
                 for bi in range(self.num_dist_block):
-                    setattr(self, f"dist_s{bi}_{level}", _ConvBnAct(c2, 3, **nk))
+                    setattr(self, f"dist_s{bi}_{level}", _ConvBnAct(_DIST_HIDDEN, 3, **nk))
                 setattr(self, f"dist_pred_{level}",
                         tf.keras.layers.Conv2D(self.output_dist_size, 1, use_bias=True,
                                                padding="same", name=f"dist_pred_{level}"))
@@ -172,20 +163,22 @@ class YoloV8Head(tf.keras.layers.Layer):
                 'dist':       {'3': ..., '4': ..., '5': ...},  # if with_distance
             }
         """
-        out_box = {}
-        out_cls = {}
-        out_pa  = {}
-        out_pd  = {}
-        out_pc  = {}
+        out_box  = {}
+        out_cls  = {}
+        out_pa   = {}
+        out_pd   = {}
+        out_pc   = {}
         out_dist = {}
 
         for level in self._levels:
             x = features[level]
 
-            # box
-            h = getattr(self, f"box_s1_{level}")(x, training=training)
-            h = getattr(self, f"box_s2_{level}")(h, training=training)
-            out_box[level] = getattr(self, f"box_pred_{level}")(h)
+            # shared cv2feat — feeds box and all poly branches
+            h = getattr(self, f"cv2feat_s1_{level}")(x, training=training)
+            h = getattr(self, f"cv2feat_s2_{level}")(h, training=training)
+            cv2 = h
+
+            out_box[level] = getattr(self, f"box_pred_{level}")(cv2)
 
             # cls
             h = getattr(self, f"cls_s1_{level}")(x, training=training)
@@ -193,20 +186,9 @@ class YoloV8Head(tf.keras.layers.Layer):
             out_cls[level] = getattr(self, f"cls_pred_{level}")(h)
 
             if self.with_polygons:
-                # poly_angle
-                h = getattr(self, f"pa_s1_{level}")(x, training=training)
-                h = getattr(self, f"pa_s2_{level}")(h, training=training)
-                out_pa[level] = getattr(self, f"pa_pred_{level}")(h)
-
-                # poly_dist
-                h = getattr(self, f"pd_s1_{level}")(x, training=training)
-                h = getattr(self, f"pd_s2_{level}")(h, training=training)
-                out_pd[level] = getattr(self, f"pd_pred_{level}")(h)
-
-                # poly_conf
-                h = getattr(self, f"pc_s1_{level}")(x, training=training)
-                h = getattr(self, f"pc_s2_{level}")(h, training=training)
-                out_pc[level] = getattr(self, f"pc_pred_{level}")(h)
+                out_pa[level] = getattr(self, f"pa_pred_{level}")(cv2)
+                out_pd[level] = getattr(self, f"pd_pred_{level}")(cv2)
+                out_pc[level] = getattr(self, f"pc_pred_{level}")(cv2)
 
             if self.with_distance:
                 h = x

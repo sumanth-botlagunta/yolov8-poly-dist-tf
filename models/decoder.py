@@ -6,8 +6,8 @@ maps via top-down FPN and bottom-up PAN paths, each step using C2f blocks.
 Channel flow for cspdarknetv8s (c3=128, c4=256, c5=512):
 
   FPN top-down:
-    P5(512) → reduce(256) → upsample → concat(P4=256) → C2f(256) → P4'(256)
-    P4'(256)→ reduce(128) → upsample → concat(P3=128) → C2f(128) → P3'(128)
+    P5(512) → upsample → concat(P4=256) → C2f(256) → P4'(256)   [C2f cv1: 768→256]
+    P4'(256)→ upsample → concat(P3=128) → C2f(128) → P3'(128)   [C2f cv1: 384→128]
 
   PAN bottom-up:
     P3'(128)→ conv(s=2,128) → concat(P4'=256)  → C2f(256) → P4''(256)
@@ -85,14 +85,9 @@ class YoloDecoder(tf.keras.Model):
         )
 
         # ---- FPN top-down ----
-        # Reduce P5 channels to match P4 before concat
-        self.fpn_c5_reduce = _ConvBnAct(c4, 1, **norm_kw, name="fpn_c5_reduce")
-        # After concat: c4 + c4 = 2*c4 → C2f → c4
+        # P5(c5) upsample and concat directly with P4(c4) → c5+c4 channels into C2f
         self.fpn_c2f_p4 = C2f(c4, n=n, shortcut=False, **norm_kw, name="fpn_c2f_p4")
-
-        # Reduce P4' channels to match P3 before concat
-        self.fpn_c4_reduce = _ConvBnAct(c3, 1, **norm_kw, name="fpn_c4_reduce")
-        # After concat: c3 + c3 = 2*c3 → C2f → c3
+        # P4'(c4) upsample and concat directly with P3(c3) → c4+c3 channels into C2f
         self.fpn_c2f_p3 = C2f(c3, n=n, shortcut=False, **norm_kw, name="fpn_c2f_p3")
 
         # ---- PAN bottom-up ----
@@ -132,13 +127,11 @@ class YoloDecoder(tf.keras.Model):
         p5 = inputs["5"]   # [B, H/32, W/32, c5]
 
         # --- FPN: top-down ---
-        p5r    = self.fpn_c5_reduce(p5, training=training)                        # → c4
-        p5_up  = tf.image.resize(p5r, tf.shape(p4)[1:3], method="nearest")       # upsample to P4 size
-        p4_fpn = self.fpn_c2f_p4(tf.concat([p5_up, p4], axis=-1), training=training)  # → c4
+        p5_up  = tf.image.resize(p5, tf.shape(p4)[1:3], method="nearest")             # upsample P5(c5) to P4 size
+        p4_fpn = self.fpn_c2f_p4(tf.concat([p5_up, p4], axis=-1), training=training)  # concat c5+c4 → C2f → c4
 
-        p4r    = self.fpn_c4_reduce(p4_fpn, training=training)                    # → c3
-        p4_up  = tf.image.resize(p4r, tf.shape(p3)[1:3], method="nearest")       # upsample to P3 size
-        p3_out = self.fpn_c2f_p3(tf.concat([p4_up, p3], axis=-1), training=training)  # → c3
+        p4_up  = tf.image.resize(p4_fpn, tf.shape(p3)[1:3], method="nearest")         # upsample P4'(c4) to P3 size
+        p3_out = self.fpn_c2f_p3(tf.concat([p4_up, p3], axis=-1), training=training)  # concat c4+c3 → C2f → c3
 
         # --- PAN: bottom-up ---
         p3_down = self.pan_down_p3(p3_out, training=training)                          # stride-2 → c3

@@ -156,9 +156,6 @@ def build_yolov8(config: ModelConfig) -> YoloV8:
         name             = "decoder",
     )
 
-    dec_out = decoder(bb_out, training=False)
-    decoder_output_channels = {k: int(v.shape[-1]) for k, v in dec_out.items()}
-
     # --- Head ---
     head_cls = HEADS.get("yolov8_head")
     head = head_cls(
@@ -174,7 +171,6 @@ def build_yolov8(config: ModelConfig) -> YoloV8:
         norm_momentum    = na.norm_momentum,
         norm_epsilon     = na.norm_epsilon,
         use_sync_bn      = na.use_sync_bn,
-        input_channels   = decoder_output_channels,
         name             = "head",
     )
 
