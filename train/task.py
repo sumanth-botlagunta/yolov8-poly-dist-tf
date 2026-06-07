@@ -135,7 +135,7 @@ class YoloV8Task:
             poly_angle_gain=loss_cfg.poly_angle_gain,
             tal_alpha=loss_cfg.tal_alpha,
             tal_beta=loss_cfg.tal_beta,
-            topk=10,
+            topk=loss_cfg.topk,
             reg_max=16,
             with_polygons=task_cfg.with_polygons,
             with_distance=task_cfg.with_distance,

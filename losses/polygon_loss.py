@@ -34,9 +34,12 @@ def polygon_angle_loss(
     Returns:
         Scalar loss.
     """
-    # Softmax cross-entropy over the 24-bin distribution (one dominant bin per anchor)
-    ce = tf.nn.softmax_cross_entropy_with_logits(
-        labels=target_angle, logits=pd_angle
+    # BCE per bin (independent per vertex), averaged over 24 bins — matches legacy
+    # binary_crossentropy(reduction='mean'). Using reduce_sum here would be 24×
+    # too large relative to the poly_angle_gain=0.4 calibration.
+    ce = tf.reduce_mean(
+        tf.nn.sigmoid_cross_entropy_with_logits(labels=target_angle, logits=pd_angle),
+        axis=-1,
     )  # [B, A]
     fg_float = tf.cast(fg_mask, tf.float32)
     return tf.reduce_sum(ce * fg_float) / target_scores_sum

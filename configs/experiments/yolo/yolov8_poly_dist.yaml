@@ -84,9 +84,9 @@ task:
     poly_conf_gain: 0.2
     poly_angle_gain: 0.4
     poly_gain: 0.5
-    tal_alpha: 0.5
+    tal_alpha: 1.0
     tal_beta: 6.0
-    topk: 10
+    topk: 13
     max_delta: .inf
     acsl:
       use_acsl: false
@@ -254,7 +254,7 @@ trainer:
         momentum: 0.937
         momentum_start: 0.8
         nesterov: true
-        weight_decay: 0.0005
+        weight_decay: 0.001
         warmup_steps: 7164
         weight_keys: [kernel, weight]
         bias_keys: [bias, beta]
