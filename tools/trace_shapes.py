@@ -8,19 +8,20 @@ Sources can be a YAML config (builds the model) or a checkpoint path.
 
 Usage
 -----
-# Two configs — build both, compare variable order:
-python tools/trace_shapes.py \\
-    --src1 configs/experiments/yolo/yolov8_poly_dist.yaml \\
-    --src2 configs/other_model.yaml
-
-# Config vs checkpoint (e.g. init ckpt):
+# Default positional compare (sorted by normalized name):
 python tools/trace_shapes.py \\
     --src1 configs/experiments/yolo/yolov8_poly_dist.yaml \\
     --src2 initial_checkpoint_folder/ckpt-920304
 
-# Two checkpoints:
+# Sort both sides by shape before comparing (removes ordering ambiguity):
+#   If architectures are identical, every row will be MATCH.
+#   Any SHAPE MISMATCH here means a true architectural difference.
 python tools/trace_shapes.py \\
-    --src1 ckpt-920304 --src2 ckpt-other
+    --src1 ... --src2 ... --by-shape
+
+# Shape histogram + module counts only (no per-row table):
+python tools/trace_shapes.py \\
+    --src1 ... --src2 ... --stats-only
 
 # Filter to backbone only, hide matching rows:
 python tools/trace_shapes.py \\
@@ -35,10 +36,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
-from _table import Table
+from _table import Table, coloured
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +68,12 @@ def _normalize(name: str) -> str:
     for old, new in _SUBS:
         name = name.replace(old, new)
     return name
+
+
+def _top_module(name: str) -> str:
+    """Return the first path segment of the normalized name (e.g. 'backbone')."""
+    norm = _normalize(name)
+    return norm.split("/")[0]
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +106,6 @@ def _load_config(config_path: str) -> Tuple[str, List[Tuple[str, tuple]]]:
     model.deploy = False
     model.build_and_init(cfg.task.model.input_size)
 
-    # model.variables preserves build order; use that order (most meaningful)
     label = Path(config_path).stem
     items = [(v.name.rstrip(":0"), tuple(v.shape)) for v in model.variables]
     return label, items
@@ -114,7 +121,6 @@ def _load_ckpt(ckpt_path: str) -> Tuple[str, List[Tuple[str, tuple]]]:
         for name, shape in shape_map.items()
         if not any(s in name for s in skip)
     ]
-    # Sort checkpoints by normalized name for a deterministic order
     items.sort(key=lambda t: _normalize(t[0]))
     label = Path(ckpt_path).name
     return label, items
@@ -145,9 +151,9 @@ def align(
         if s1 and s2:
             status = "MATCH" if s1 == s2 else "SHAPE MISMATCH"
         elif s1:
-            status = "EXTRA"    # in src1 only
+            status = "EXTRA"
         else:
-            status = "MISSING"  # in src2 only
+            status = "MISSING"
 
         if only_mismatch and status == "MATCH":
             idx += 1
@@ -160,12 +166,91 @@ def align(
 
 
 # ---------------------------------------------------------------------------
+# Diagnostics
+# ---------------------------------------------------------------------------
+
+def print_module_counts(
+    items1: List[Tuple[str, tuple]],
+    items2: List[Tuple[str, tuple]],
+    label1: str,
+    label2: str,
+    use_colour: bool,
+) -> None:
+    """Print variable counts broken down by top-level module (backbone/decoder/head/…)."""
+    c1: Counter = Counter(_top_module(n) for n, _ in items1)
+    c2: Counter = Counter(_top_module(n) for n, _ in items2)
+    all_modules = sorted(set(c1) | set(c2))
+
+    w = max((len(m) for m in all_modules), default=10)
+    w = max(w, len(label1), len(label2), 10)
+
+    print(f"\n{'Module counts by top-level prefix':}")
+    print(f"  {'Module':<{w}}  {label1:>10}  {label2:>10}  {'Status':>8}")
+    print(f"  {'-'*w}  {'-'*10}  {'-'*10}  {'-'*8}")
+    for mod in all_modules:
+        n1, n2 = c1.get(mod, 0), c2.get(mod, 0)
+        ok = n1 == n2
+        status = "OK" if ok else "DIFF"
+        colour = None if ok else "red"
+        line = f"  {mod:<{w}}  {n1:>10}  {n2:>10}  {status:>8}"
+        print(coloured(line, colour, use_colour))
+    total1, total2 = len(items1), len(items2)
+    ok = total1 == total2
+    colour = None if ok else "red"
+    print(f"  {'-'*w}  {'-'*10}  {'-'*10}  {'-'*8}")
+    line = f"  {'TOTAL':<{w}}  {total1:>10}  {total2:>10}  {'OK' if ok else 'DIFF':>8}"
+    print(coloured(line, colour, use_colour))
+
+
+def print_shape_histogram(
+    items1: List[Tuple[str, tuple]],
+    items2: List[Tuple[str, tuple]],
+    label1: str,
+    label2: str,
+    use_colour: bool,
+) -> None:
+    """Print a side-by-side count of every unique shape in both sources.
+
+    Identical counts → architectures have the same multiset of shapes.
+    Any DIFF row → one source has a shape the other does not, or in different quantity.
+    """
+    hist1: Counter = Counter(str(s) for _, s in items1)
+    hist2: Counter = Counter(str(s) for _, s in items2)
+    all_shapes = sorted(set(hist1) | set(hist2))
+
+    w = max((len(s) for s in all_shapes), default=20)
+    w = max(w, 20)
+
+    print(f"\n{'Shape histogram (unique shapes × count)':}")
+    print(f"  {'Shape':<{w}}  {label1:>10}  {label2:>10}  {'Status':>8}")
+    print(f"  {'-'*w}  {'-'*10}  {'-'*10}  {'-'*8}")
+    diff_count = 0
+    for shape in all_shapes:
+        n1, n2 = hist1.get(shape, 0), hist2.get(shape, 0)
+        ok = n1 == n2
+        if not ok:
+            diff_count += 1
+        status = "OK" if ok else "DIFF"
+        colour = None if ok else "red"
+        line = f"  {shape:<{w}}  {n1:>10}  {n2:>10}  {status:>8}"
+        print(coloured(line, colour, use_colour))
+
+    print()
+    if diff_count == 0:
+        msg = "Shape histograms are IDENTICAL — any row mismatches above are purely ordering artifacts."
+        print(coloured(f"  ✓ {msg}", "green", use_colour))
+    else:
+        msg = f"{diff_count} shape(s) differ in count — true architectural difference exists."
+        print(coloured(f"  ✗ {msg}", "red", use_colour))
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Positional (index-by-index) shape comparison of two model sources.",
+        description="Positional shape comparison with shape-histogram diagnostics.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -177,9 +262,16 @@ def main() -> None:
                     help="Only show rows where either name contains this substring")
     ap.add_argument("--only-mismatch", action="store_true",
                     help="Hide MATCH rows, show only mismatches and extras")
+    ap.add_argument("--by-shape", action="store_true",
+                    help="Sort both sources by shape before comparing (removes ordering ambiguity). "
+                         "MATCH everywhere = architectures are identical.")
+    ap.add_argument("--stats-only", action="store_true",
+                    help="Skip the per-row table; only print module counts and shape histogram.")
     ap.add_argument("--no-colour", action="store_true",
                     help="Disable ANSI colours (useful for file output)")
     args = ap.parse_args()
+
+    use_colour = not args.no_colour
 
     print(f"Loading src1: {args.src1}")
     label1, items1 = load_source(args.src1)
@@ -189,17 +281,31 @@ def main() -> None:
     label2, items2 = load_source(args.src2)
     print(f"  {len(items2)} variables  (source type: {'config' if _is_config(args.src2) else 'checkpoint'})\n")
 
+    # ---- always print diagnostics first ----
+    print_module_counts(items1, items2, label1, label2, use_colour)
+    print_shape_histogram(items1, items2, label1, label2, use_colour)
+
+    if args.stats_only:
+        return
+
     if len(items1) != len(items2):
-        print(f"WARNING: variable counts differ ({len(items1)} vs {len(items2)}) — "
-              f"extra rows will be marked EXTRA / MISSING\n")
+        print(f"\nWARNING: variable counts differ ({len(items1)} vs {len(items2)}) — "
+              f"extra rows will be marked EXTRA / MISSING")
+
+    # ---- optional: sort by shape to remove ordering bias ----
+    if args.by_shape:
+        print(f"\n[--by-shape] Sorting both sources by (shape, normalized_name) before comparison.")
+        items1 = sorted(items1, key=lambda t: (str(t[1]), _normalize(t[0])))
+        items2 = sorted(items2, key=lambda t: (str(t[1]), _normalize(t[0])))
 
     rows = align(items1, items2, args.filter, args.only_mismatch)
 
     if not rows:
-        print("No rows to display (all matched or all filtered out).")
+        print("\nNo rows to display (all matched or all filtered out).")
         return
 
-    tbl = Table(label1, label2, show_index=True, use_colour=not args.no_colour)
+    print()
+    tbl = Table(label1, label2, show_index=True, use_colour=use_colour)
     tbl.header()
 
     counts: Dict[str, int] = {}
@@ -209,7 +315,7 @@ def main() -> None:
 
     tbl.footer()
 
-    total = len(items1) if len(items1) >= len(items2) else len(items2)
+    total = max(len(items1), len(items2))
     tbl.summary(counts, total)
 
 
