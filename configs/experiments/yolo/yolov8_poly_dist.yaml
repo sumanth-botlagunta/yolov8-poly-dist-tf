@@ -181,7 +181,7 @@ task:
     tfds_name: "cleaner_polygon2026:2.0.0"
     tfds_split: test
     tfds_data_dir: /home/user/tensorflow_datasets/
-    global_batch_size: 2
+    global_batch_size: 16
     is_training: false
     shuffle_buffer_size: 100
     prob_copy_n_paste: 0.0
@@ -230,30 +230,12 @@ task:
 
 trainer:
   train_epochs: 300
-  train_steps: 716400
-  steps_per_loop: 2388
-  steps_by_epochs: true
-  checkpoint_interval: 2388
-  validation_interval: 2388
-  validation_interval_epoch: 1
-  validation_steps: 1951
-  validation_total_examples: 3903
   train_total_examples: 305780
+  validation_total_examples: 3903
+  # steps_per_loop, train_steps, validation_steps auto-computed from the above
   best_checkpoint_eval_metric: F1score50
-  best_checkpoint_export_subdir: best_F1score50
   best_checkpoint_metric_comp: higher
   max_to_keep: 300
-  loss_upper_bound: 1000000.0
-  recovery_begin_steps: 0
-  recovery_max_trials: 0
-  train_tf_function: true
-  train_tf_while_loop: true
-  eval_tf_function: true
-  eval_tf_while_loop: false
-  summary_interval: 2388
-  validation_summary_subdir: validation
-  allow_tpu_summary: false
-  continuous_eval_timeout: 3600
   optimizer_config:
     ema:
       average_decay: 0.9999

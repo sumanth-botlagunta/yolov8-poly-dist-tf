@@ -11,11 +11,13 @@ Classes:
     YoloV8Trainer: Coordinates YoloV8Task with data, checkpoints, and logging.
 """
 
+import dataclasses
 import logging
 import os
 from typing import Optional
 
 import tensorflow as tf
+import yaml
 
 log = logging.getLogger(__name__)
 
@@ -132,7 +134,12 @@ class YoloV8Trainer:
         def _compiled_train_step(inputs):
             return _task.train_step(inputs, _model, _optimizer)
 
+        @tf.function
+        def _compiled_val_step(inputs):
+            return _task.validation_step(inputs, _model)
+
         self._compiled_train_step = _compiled_train_step
+        self._compiled_val_step   = _compiled_val_step
 
         sgd = self._optimizer._optimizer
         self._ckpt = tf.train.Checkpoint(
@@ -152,6 +159,11 @@ class YoloV8Trainer:
             os.path.join(self._output_dir, 'tb_events')
         )
 
+        params_path = os.path.join(self._output_dir, 'params.yaml')
+        with open(params_path, 'w') as _f:
+            yaml.dump(dataclasses.asdict(self._config), _f, default_flow_style=False)
+        log.info("Full resolved config saved to %s", params_path)
+
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
@@ -159,7 +171,7 @@ class YoloV8Trainer:
     def _run_validation(self) -> dict:
         logs = None
         for inputs in self._val_ds:
-            step_out = self._task.validation_step(inputs, self._model)
+            step_out = self._compiled_val_step(inputs)
             logs = self._task.aggregate_logs(logs, step_out)
         return self._task.reduce_aggregated_logs(
             logs, global_step=int(self._global_step)
@@ -205,12 +217,21 @@ class YoloV8Trainer:
 
     def _log_epoch(self, epoch: int, train_losses: dict, val_metrics: dict) -> None:
         step = int(self._global_step)
+
+        scalar_metrics  = {k: v for k, v in val_metrics.items() if not k.startswith('cls/')}
+        per_cls_metrics = {k: v for k, v in val_metrics.items() if k.startswith('cls/')}
+
         log.info(
-            "Epoch %d: total=%.4f  val=%s",
+            "Epoch %d: total=%.4f  conf_thresh=%.3f  val=%s",
             epoch + 1,
             float(train_losses.get('total_loss', 0.0)),
-            val_metrics,
+            float(scalar_metrics.get('best_conf_thresh', 0.0)),
+            {k: v for k, v in scalar_metrics.items() if k != 'best_conf_thresh'},
         )
+        if per_cls_metrics:
+            log.info("Per-category AP50: %s",
+                     {k: round(v, 4) for k, v in sorted(per_cls_metrics.items())})
+
         with self._tb_writer.as_default():
             for k, v in val_metrics.items():
                 tf.summary.scalar(f'val/{k}', v, step=step)
