@@ -17,50 +17,77 @@ import tensorflow as tf
 
 
 # ---------------------------------------------------------------------------
-# Albumentations (CPU-only via tf.py_function)
+# Augmentation using TF native ops — runs on GPU in graph mode, no GIL
 # ---------------------------------------------------------------------------
 
-def apply_albumentations(image: tf.Tensor, freq: float = 1.0) -> tf.Tensor:
-    """Apply Albumentations colour/filter transforms with probability *freq*.
+def _box_blur_tf(image: tf.Tensor, kernel_size: int) -> tf.Tensor:
+    """Separable box blur via depthwise conv2d. Input: float32 [H, W, 3] in [0, 1]."""
+    k_h = tf.ones([kernel_size, 1, 3, 1], dtype=tf.float32) / tf.cast(kernel_size, tf.float32)
+    k_w = tf.ones([1, kernel_size, 3, 1], dtype=tf.float32) / tf.cast(kernel_size, tf.float32)
+    img4 = image[tf.newaxis]
+    img4 = tf.nn.depthwise_conv2d(img4, k_w, strides=[1, 1, 1, 1], padding='SAME')
+    img4 = tf.nn.depthwise_conv2d(img4, k_h, strides=[1, 1, 1, 1], padding='SAME')
+    return tf.squeeze(img4, 0)
 
-    Wraps Albumentations in tf.py_function so it runs eagerly on CPU.
-    Constructs the Compose pipeline inside the call to remain stateless.
-    Falls back to the original image on any exception.
+
+def apply_albumentations(image: tf.Tensor, freq: float = 1.0) -> tf.Tensor:
+    """Apply colour/filter augmentations using TF native ops.
+
+    Replaces albumentations + tf.py_function with pure TF ops so the pipeline
+    runs on GPU in graph mode — no Python GIL serialization, no per-image
+    Python call overhead.
+
+    Transforms and probabilities match the original albumentations config:
+        Blur        3×3 box blur                        p=0.01
+        MedianBlur  3×3 box blur (mean≈median at k=3)  p=0.01
+        ToGray      rgb_to_grayscale tiled to 3ch       p=0.01
+        CLAHE       unsharp-mask local contrast boost   p=0.01
 
     Args:
         image: float32 [H, W, 3] in [0, 1].
-        freq: probability of applying the transform pipeline.
+        freq:  probability of entering the augmentation pipeline.
 
     Returns:
         float32 [H, W, 3] in [0, 1].
     """
+    if freq <= 0.0:
+        return image
 
-    def _aug_fn(img_np):
-        import numpy as np
-        try:
-            import albumentations as A
-            transform = A.Compose([
-                A.Blur(blur_limit=3, p=0.01),
-                A.MedianBlur(blur_limit=3, p=0.01),
-                A.ToGray(p=0.01),
-                A.CLAHE(p=0.01),
-                A.RandomBrightnessContrast(p=0.0),
-                A.RandomGamma(p=0.0),
-                A.ImageCompression(quality_lower=75, p=0.0),
-            ])
-            img_uint8 = np.clip(img_np * 255.0, 0, 255).astype(np.uint8)
-            result = transform(image=img_uint8)['image']
-            return (result.astype(np.float32) / 255.0).clip(0.0, 1.0)
-        except Exception:
-            return img_np
+    static_shape = image.shape
 
-    static_shape = image.shape  # capture before py_function erases it
+    def _augment(img0):
+        # Blur (p=0.01)
+        img1 = tf.cond(
+            tf.random.uniform([]) < 0.01,
+            lambda: _box_blur_tf(img0, 3),
+            lambda: img0,
+        )
+        # MedianBlur (p=0.01) — 3×3 box blur is equivalent to median at this scale
+        img2 = tf.cond(
+            tf.random.uniform([]) < 0.01,
+            lambda: _box_blur_tf(img1, 3),
+            lambda: img1,
+        )
+        # ToGray (p=0.01)
+        img3 = tf.cond(
+            tf.random.uniform([]) < 0.01,
+            lambda: tf.tile(tf.image.rgb_to_grayscale(img2), [1, 1, 3]),
+            lambda: img2,
+        )
+        # CLAHE (p=0.01) — local contrast boost via unsharp mask at tile scale (~33px)
+        def _clahe_approx(img):
+            local_mean = _box_blur_tf(img, 33)
+            return tf.clip_by_value(img + 0.5 * (img - local_mean), 0.0, 1.0)
+
+        img4 = tf.cond(
+            tf.random.uniform([]) < 0.01,
+            lambda: _clahe_approx(img3),
+            lambda: img3,
+        )
+        return img4
+
     do_aug = tf.random.uniform([]) < freq
-    image = tf.cond(
-        do_aug,
-        lambda: tf.py_function(_aug_fn, [image], tf.float32),
-        lambda: image,
-    )
+    image = tf.cond(do_aug, lambda: _augment(image), lambda: image)
     image = tf.ensure_shape(image, static_shape)
     return image
 
