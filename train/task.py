@@ -109,6 +109,7 @@ class YoloV8Task:
             nesterov=opt_cfg.nesterov,
             weight_decay=opt_cfg.weight_decay,
             warmup_steps=opt_cfg.warmup_steps,
+            bias_lr_scale=self._config.task.smart_bias_lr,
         )
 
         ema = ExponentialMovingAverage(
@@ -167,6 +168,9 @@ class YoloV8Task:
             total, box, dfl, cls, dist, poly = self._loss_fn(feats, labels)
 
         grads = tape.gradient(total, model.trainable_variables)
+        clip_norm = self._config.task.gradient_clip_norm
+        if clip_norm and clip_norm > 0:
+            grads, _ = tf.clip_by_global_norm(grads, clip_norm)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
         return {

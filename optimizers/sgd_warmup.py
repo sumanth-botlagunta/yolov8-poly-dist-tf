@@ -43,6 +43,11 @@ class SGDTorch(tf.Module):
         nesterov: Use Nesterov look-ahead correction.
         weight_decay: L2 weight-decay coefficient applied to group-2 variables.
         warmup_steps: Number of steps to linearly ramp momentum to target value.
+        bias_lr_scale: Initial LR scale for bias/BN params during warmup.
+            Bias/BN groups start at this absolute LR and ramp DOWN to the
+            schedule LR; weight group starts at 0 and ramps UP.  After
+            warmup_steps all groups use the schedule LR identically.
+            Set to 0.0 to disable (all groups start at schedule LR).
     """
 
     def __init__(
@@ -53,14 +58,16 @@ class SGDTorch(tf.Module):
         nesterov: bool = True,
         weight_decay: float = 0.0005,
         warmup_steps: int = 7164,
+        bias_lr_scale: float = 0.1,
     ):
         super().__init__(name='sgd_torch')
-        self._lr_fn        = lr_fn
-        self._momentum     = momentum
+        self._lr_fn          = lr_fn
+        self._momentum       = momentum
         self._momentum_start = momentum_start
-        self._nesterov     = nesterov
-        self._weight_decay = weight_decay
-        self._warmup_steps = warmup_steps
+        self._nesterov       = nesterov
+        self._weight_decay   = weight_decay
+        self._warmup_steps   = warmup_steps
+        self._bias_lr_scale  = bias_lr_scale
 
         self.iterations = tf.Variable(0, trainable=False, dtype=tf.int64,
                                       name='sgd_step')
@@ -85,18 +92,20 @@ class SGDTorch(tf.Module):
         grads_and_vars: List[Tuple[Optional[tf.Tensor], tf.Variable]],
         **kwargs,
     ) -> None:
-        lr = self.lr
-        mu = self._current_momentum()
+        base_lr = self.lr
+        mu      = self._current_momentum()
+        t       = self._warmup_progress()
 
         for grad, var in grads_and_vars:
             if grad is None:
                 continue
 
-            group = _classify_var(var.name)
+            group  = _classify_var(var.name)
+            eff_lr = self._effective_lr(base_lr, t, group)
 
             if group == 2:
                 # Decoupled weight decay applied before gradient step
-                var.assign(var * (1.0 - lr * self._weight_decay))
+                var.assign(var * (1.0 - eff_lr * self._weight_decay))
 
             vel = self._get_or_create_velocity(var)
 
@@ -106,7 +115,7 @@ class SGDTorch(tf.Module):
 
             # Nesterov: effective update = μ·v_new + g; plain momentum: v_new
             update = mu * new_vel + grad if self._nesterov else new_vel
-            var.assign_sub(lr * update)
+            var.assign_sub(eff_lr * update)
 
         self.iterations.assign_add(1)
 
@@ -121,6 +130,7 @@ class SGDTorch(tf.Module):
             'nesterov':       self._nesterov,
             'weight_decay':   self._weight_decay,
             'warmup_steps':   self._warmup_steps,
+            'bias_lr_scale':  self._bias_lr_scale,
         }
 
     @classmethod
@@ -140,6 +150,27 @@ class SGDTorch(tf.Module):
             self._momentum_start + t * (self._momentum - self._momentum_start),
             tf.float32,
         )
+
+    def _warmup_progress(self) -> tf.Tensor:
+        """Return t in [0.0, 1.0]: fraction of warmup completed."""
+        step   = tf.cast(self.iterations, tf.float32)
+        warmup = tf.cast(self._warmup_steps, tf.float32)
+        return tf.minimum(step / tf.maximum(warmup, 1.0), 1.0)
+
+    def _effective_lr(self, base_lr: tf.Tensor, t: tf.Tensor, group: int) -> tf.Tensor:
+        """Per-param-group effective LR during warmup.
+
+        group 0 (BN) / 1 (bias): bias_lr_scale → base_lr  (ramps DOWN)
+        group 2 (weights):        0             → base_lr  (ramps UP)
+        After warmup (t == 1.0): all groups return base_lr.
+        """
+        if self._bias_lr_scale <= 0.0:
+            return base_lr
+        if group == 2:
+            return tf.where(t < 1.0, t * base_lr, base_lr)
+        else:
+            start = tf.cast(self._bias_lr_scale, tf.float32)
+            return tf.where(t < 1.0, start + t * (base_lr - start), base_lr)
 
     def _get_or_create_velocity(self, var) -> tf.Variable:
         """Return (or lazily create) the momentum slot for *var*."""
