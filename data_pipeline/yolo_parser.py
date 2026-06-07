@@ -208,6 +208,16 @@ class V8ParserExtended(Parser):
             boxes, classes, poly_labels, log_dist, n_gt
         )
 
+        m = self._max_num_instances
+        pad_crowd = tf.maximum(0, m - n_gt)
+        is_crowd_out = tf.reshape(
+            tf.concat([
+                tf.cast(is_crowd[:m], tf.bool),
+                tf.zeros([pad_crowd], tf.bool),
+            ], axis=0),
+            [m],
+        )
+
         labels = {
             'bbox':         boxes,
             'classes':      classes,
@@ -216,9 +226,7 @@ class V8ParserExtended(Parser):
             'ignore_bg':    tf.constant(0, dtype=tf.int64),
             'log_distance': log_dist,
             # Eval extras (not present in train labels)
-            'is_crowd':     tf.cast(is_crowd[:self._max_num_instances], tf.bool)
-                            if tf.size(is_crowd) > 0 else
-                            tf.zeros([self._max_num_instances], tf.bool),
+            'is_crowd':     is_crowd_out,
             'source_id':    data.get('source_id', tf.constant('')),
         }
         return image, labels

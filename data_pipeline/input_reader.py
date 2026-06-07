@@ -180,7 +180,7 @@ class InputReader:
             ds = (
                 ds
                 .map(_pre_resize_for_mosaic, num_parallel_calls=_AUTOTUNE)
-                .batch(4, drop_remainder=True)
+                .padded_batch(4, drop_remainder=True)
                 .map(mosaic_fn, num_parallel_calls=_AUTOTUNE)
                 .unbatch()
             )

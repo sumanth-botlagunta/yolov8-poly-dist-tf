@@ -432,7 +432,8 @@ class Mosaic:
         # Merge annotations from both
         for key in ['groundtruth_boxes', 'groundtruth_classes',
                     'groundtruth_is_crowd', 'groundtruth_area',
-                    'groundtruth_dontcare', 'groundtruth_polygons']:
+                    'groundtruth_dontcare', 'groundtruth_dists',
+                    'groundtruth_polygons']:
             if key in one and key in two:
                 result[key] = tf.concat([one[key], two[key]], axis=0)
 
