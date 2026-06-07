@@ -181,11 +181,11 @@ task:
     tfds_name: "cleaner_polygon2026:2.0.0"
     tfds_split: test
     tfds_data_dir: /home/user/tensorflow_datasets/
-    global_batch_size: 16
+    global_batch_size: 64
     is_training: false
     shuffle_buffer_size: 100
     prob_copy_n_paste: 0.0
-    drop_remainder: true
+    drop_remainder: false
     with_polygons: true
     with_distance: false
     poly_eval_gt_policy: polyyolo
