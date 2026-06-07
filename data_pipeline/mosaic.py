@@ -321,7 +321,9 @@ class Mosaic:
 
         # Merge annotations
         merged = self._merge_annotations(ann_list)
-        merged['image'] = canvas
+        merged['image']  = canvas
+        merged['height'] = tf.constant(H, tf.int32)
+        merged['width']  = tf.constant(W, tf.int32)
         return merged
 
     def _place_quadrant(
@@ -350,6 +352,7 @@ class Mosaic:
         is_crowd= ex.get('groundtruth_is_crowd', tf.zeros([0], tf.bool))
         area    = ex.get('groundtruth_area', tf.zeros([0]))
         dontcare= ex.get('groundtruth_dontcare', tf.zeros([0], tf.int64))
+        dists   = ex.get('groundtruth_dists', tf.zeros([0]))
         polygons= ex.get('groundtruth_polygons', tf.zeros([0, 2]))
 
         boxes_out, keep = _transform_boxes(
@@ -364,6 +367,7 @@ class Mosaic:
         is_crowd   = tf.boolean_mask(is_crowd,   keep)
         area       = tf.boolean_mask(area,       keep)
         dontcare   = tf.boolean_mask(dontcare,   keep)
+        dists      = tf.boolean_mask(dists,      keep)
 
         anns = {
             'groundtruth_boxes':    boxes_out,
@@ -371,6 +375,7 @@ class Mosaic:
             'groundtruth_is_crowd': is_crowd,
             'groundtruth_area':     area,
             'groundtruth_dontcare': dontcare,
+            'groundtruth_dists':    dists,
         }
 
         if self._with_polys and polygons.shape[-1] != 0:
