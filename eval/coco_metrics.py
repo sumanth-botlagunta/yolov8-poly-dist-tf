@@ -36,9 +36,19 @@ class COCOEvaluator:
                      normalized boxes to absolute pixel coordinates.
     """
 
-    def __init__(self, num_classes: int, image_size=(672, 672)):
-        self._num_classes = num_classes
-        self._H, self._W = image_size[0], image_size[1]
+    def __init__(
+        self,
+        num_classes: int,
+        image_size=(672, 672),
+        ignore_dontcare: bool = True,
+        ignore_iscrowds: bool = False,
+        iscrowds_labels: Optional[List[int]] = None,
+    ):
+        self._num_classes    = num_classes
+        self._H, self._W     = image_size[0], image_size[1]
+        self._ignore_dontcare = ignore_dontcare
+        self._ignore_iscrowds = ignore_iscrowds
+        self._iscrowds_labels = set(iscrowds_labels) if iscrowds_labels else set()
         self._dt_anns: List[dict] = []
         self._gt_anns: List[dict] = []
         self._gt_imgs: List[dict] = []
@@ -60,12 +70,21 @@ class COCOEvaluator:
                           'confidence' [B,N], 'num_detections' [B].
                           All boxes are yxyx-normalized.
             groundtruths: Dict with keys 'bbox' [B,M,4] yxyx-normalized,
-                          'classes' [B,M] int64, 'n_gt' [B].
+                          'classes' [B,M] int64, 'n_gt' [B],
+                          optionally 'is_crowd' [B,M] bool,
+                          optionally 'is_dontcare' [B,M] bool.
+
+        GT handling:
+            is_crowd + class in iscrowds_labels → skip GT entirely (not a missed detection).
+            is_dontcare → iscrowd=1 in COCO: absorbs overlapping detections (IoU>0.5)
+                          without counting them as FP, but is itself not a TP.
         """
         import tensorflow as tf
 
-        batch_size = int(predictions['num_detections'].shape[0])
-        H, W = self._H, self._W
+        batch_size   = int(predictions['num_detections'].shape[0])
+        H, W         = self._H, self._W
+        is_crowd_arr    = groundtruths.get('is_crowd')
+        is_dontcare_arr = groundtruths.get('is_dontcare')
 
         for i in range(batch_size):
             img_id  = self._img_id
@@ -76,16 +95,28 @@ class COCOEvaluator:
 
             # ---- GT annotations ----
             for j in range(n_gt):
+                cat       = int(groundtruths['classes'][i, j])
+                is_crowd  = bool(is_crowd_arr[i, j])    if is_crowd_arr    is not None else False
+                is_dc     = bool(is_dontcare_arr[i, j]) if is_dontcare_arr is not None else False
+
+                # iscrowd objects whose class is in the crowd-class list → skip entirely
+                if self._ignore_iscrowds and is_crowd and cat in self._iscrowds_labels:
+                    continue
+
                 y1, x1, y2, x2 = [float(v) for v in groundtruths['bbox'][i, j]]
-                cat = int(groundtruths['classes'][i, j])
                 xywh = [x1 * W, y1 * H, (x2 - x1) * W, (y2 - y1) * H]
+
+                # dontcare → iscrowd=1: pycocotools absorbs overlapping detections
+                # without counting them as FP or TP
+                iscrowd_val = 1 if (self._ignore_dontcare and is_dc) else 0
+
                 self._gt_anns.append({
                     'id':          self._ann_id,
                     'image_id':    img_id,
                     'category_id': cat,
                     'bbox':        xywh,
                     'area':        xywh[2] * xywh[3],
-                    'iscrowd':     0,
+                    'iscrowd':     iscrowd_val,
                 })
                 self._ann_id += 1
 
