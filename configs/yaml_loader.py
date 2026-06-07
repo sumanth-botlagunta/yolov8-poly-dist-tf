@@ -12,12 +12,10 @@ Usage:
 
 from __future__ import annotations
 
-import copy
 import dataclasses
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import dacite
 import yaml
 
 from configs.model_config import (
@@ -37,14 +35,10 @@ from configs.model_config import (
     NormActivationConfig,
     OptimizerConfig,
     ParserConfig,
+    RuntimeConfig,
     TaskConfig,
     TrainerConfig,
     WarmupConfig,
-)
-
-_DACITE_CONFIG = dacite.Config(
-    strict=False,
-    cast=[int, float, bool, str],
 )
 
 
@@ -64,15 +58,13 @@ def load_config_from_dict(raw: Dict[str, Any]) -> ExperimentConfig:
 
     The YAML produced by docs/experiment_config.yaml has a deeply-nested
     structure (runtime / task / trainer at the top level).  We extract the
-    task and trainer subtrees and map them onto the dataclasses.
+    task, trainer, and runtime subtrees and map them onto the dataclasses.
     """
-    task_raw = raw.get("task", {})
-    trainer_raw = raw.get("trainer", {})
+    task_cfg    = _build_task_config(raw.get("task", {}))
+    trainer_cfg = _build_trainer_config(raw.get("trainer", {}))
+    runtime_cfg = _build_runtime_config(raw.get("runtime", {}))
 
-    task_cfg = _build_task_config(task_raw)
-    trainer_cfg = _build_trainer_config(trainer_raw)
-
-    config = ExperimentConfig(task=task_cfg, trainer=trainer_cfg)
+    config = ExperimentConfig(task=task_cfg, trainer=trainer_cfg, runtime=runtime_cfg)
     _fill_derived_fields(config)
     return config
 
@@ -105,11 +97,23 @@ def _fill_derived_fields(config: ExperimentConfig) -> None:
 # Private helpers — one per major sub-tree
 # ---------------------------------------------------------------------------
 
+def _build_runtime_config(r: Dict[str, Any]) -> RuntimeConfig:
+    return RuntimeConfig(
+        distribution_strategy=r.get("distribution_strategy", "mirrored"),
+        num_gpus=r.get("num_gpus", -1),
+        mixed_precision_dtype=r.get("mixed_precision_dtype", "float32"),
+        run_eagerly=r.get("run_eagerly", False),
+        enable_xla=r.get("enable_xla", False),
+        num_cores_per_replica=r.get("num_cores_per_replica", 1),
+        num_packs=r.get("num_packs", 1),
+    )
+
+
 def _build_task_config(t: Dict[str, Any]) -> TaskConfig:
-    model_cfg = _build_model_config(t.get("model", {}), t)
-    loss_cfg = _build_loss_config(t.get("losses", {}))
+    model_cfg      = _build_model_config(t.get("model", {}), t)
+    loss_cfg       = _build_loss_config(t.get("losses", {}))
     train_data_cfg = _build_data_config(t.get("train_data", {}))
-    val_data_cfg = _build_data_config(t.get("validation_data", {}))
+    val_data_cfg   = _build_data_config(t.get("validation_data", {}))
 
     return TaskConfig(
         model=model_cfg,
@@ -127,16 +131,23 @@ def _build_task_config(t: Dict[str, Any]) -> TaskConfig:
         ignore_iscrowds=t.get("ignore_iscrowds", False),
         iscrowds_labels=t.get("iscrowds_labels", [6, 13, 24, 36, 37]),
         per_category_metrics=t.get("per_category_metrics", False),
+        gradient_clip_norm=t.get("gradient_clip_norm", 0.0),
+        smart_bias_lr=t.get("smart_bias_lr", 0.1),
+        find_best_score_thresh=t.get("find_best_score_thresh", True),
+        summary_types=t.get("summary_types", "scalar,image"),
+        summary_image_num=t.get("summary_image_num", 10),
+        summary_image_draw_box=t.get("summary_image_draw_box", True),
+        summary_image_draw_poly=t.get("summary_image_draw_poly", True),
     )
 
 
 def _build_model_config(m: Dict[str, Any], task: Dict[str, Any]) -> ModelConfig:
-    backbone_raw = m.get("backbone", {}).get("darknet", m.get("backbone", {}))
+    backbone_raw  = m.get("backbone", {}).get("darknet", m.get("backbone", {}))
     decoder_outer = m.get("decoder", {})
-    decoder_raw = decoder_outer.get("yolo_decoder", decoder_outer)
-    head_raw = m.get("head", {})
-    det_gen_raw = m.get("detection_generator", {})
-    norm_act_raw = task.get("norm_activation", {})
+    decoder_raw   = decoder_outer.get("yolo_decoder", decoder_outer)
+    head_raw      = m.get("head", {})
+    det_gen_raw   = m.get("detection_generator", {})
+    norm_act_raw  = task.get("norm_activation", {})
 
     backbone_cfg = BackboneConfig(
         model_id=backbone_raw.get("model_id", "cspdarknetv8s"),
@@ -157,8 +168,7 @@ def _build_model_config(m: Dict[str, Any], task: Dict[str, Any]) -> ModelConfig:
         use_separable_conv=decoder_raw.get("use_separable_conv", False),
     )
 
-    head_cfg = HeadConfig(smart_bias=head_raw.get("smart_bias", True))
-
+    head_cfg    = HeadConfig(smart_bias=head_raw.get("smart_bias", True))
     det_gen_cfg = DetectionGeneratorConfig(
         max_boxes=det_gen_raw.get("max_boxes", 300),
         nms_thresh=det_gen_raw.get("nms_thresh", 0.65),
@@ -166,7 +176,6 @@ def _build_model_config(m: Dict[str, Any], task: Dict[str, Any]) -> ModelConfig:
         nms_type=det_gen_raw.get("nms_type", "greedy"),
         pre_nms_points=det_gen_raw.get("pre_nms_points", 30000),
     )
-
     norm_act_cfg = NormActivationConfig(
         activation=norm_act_raw.get("activation", "relu"),
         norm_epsilon=norm_act_raw.get("norm_epsilon", 0.001),
@@ -221,7 +230,7 @@ def _build_loss_config(l: Dict[str, Any]) -> LossConfig:
 
 
 def _build_data_config(d: Dict[str, Any]) -> DataConfig:
-    parser_cfg = _build_parser_config(d.get("parser", {}))
+    parser_cfg    = _build_parser_config(d.get("parser", {}))
     dist_data_raw = d.get("distance_data")
     dist_data_cfg: Optional[DistanceDataConfig] = None
     if dist_data_raw:
@@ -234,11 +243,16 @@ def _build_data_config(d: Dict[str, Any]) -> DataConfig:
         global_batch_size=d.get("global_batch_size", 128),
         is_training=d.get("is_training", True),
         shuffle_buffer_size=d.get("shuffle_buffer_size", 1500),
+        drop_remainder=d.get("drop_remainder", True),
         tfds_sampling_weights=d.get("tfds_sampling_weights"),
         prob_copy_n_paste=d.get("prob_copy_n_paste", 0.2),
         tfds_for_cnp=d.get("tfds_for_cnp"),
         tfds_for_cnp_split=d.get("tfds_for_cnp_split"),
         seed=d.get("seed"),
+        with_polygons=d.get("with_polygons", True),
+        with_distance=d.get("with_distance", False),
+        poly_eval_gt_policy=d.get("poly_eval_gt_policy", "polyyolo"),
+        class_remap_json_path=d.get("class_remap_json_path"),
         parser=parser_cfg,
         distance_data=dist_data_cfg,
     )
@@ -254,6 +268,9 @@ def _build_distance_data_config(d: Dict[str, Any]) -> DistanceDataConfig:
         ignore_bg=d.get("ignore_bg", True),
         with_distance=d.get("with_distance", True),
         with_polygons=d.get("with_polygons", False),
+        drop_remainder=d.get("drop_remainder", True),
+        shuffle_buffer_size=d.get("shuffle_buffer_size", 200),
+        class_remap_json_path=d.get("class_remap_json_path"),
         parser=parser_cfg,
     )
 
@@ -287,26 +304,38 @@ def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
         dummy_distance=p.get("dummy_distance", True),
         with_polygons=p.get("with_polygons", True),
         albumentations_frequency=p.get("albumentations_frequency", 1.0),
+        aug_rand_angle=p.get("aug_rand_angle", 0.0),
+        aug_rand_perspective=p.get("aug_rand_perspective", 0.0),
+        jitter=p.get("jitter", 0.0),
+        random_pad=p.get("random_pad", False),
+        random_rotate=p.get("random_rotate", False),
+        area_thresh=p.get("area_thresh", 0.1),
+        eval_gray_border=p.get("eval_gray_border", False),
+        min_meter=p.get("min_meter", 0.5),
+        max_meter=p.get("max_meter", 10.0),
+        best_match_only=p.get("best_match_only", False),
+        use_tie_breaker=p.get("use_tie_breaker", True),
+        anchor_thresh=p.get("anchor_thresh", -0.01),
         mosaic=mosaic_cfg,
     )
 
 
 def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
-    opt_raw = t.get("optimizer_config", {})
-    ema_raw = opt_raw.get("ema", {})
-    lr_raw = opt_raw.get("learning_rate", {}).get(
+    opt_raw    = t.get("optimizer_config", {})
+    ema_raw    = opt_raw.get("ema", {})
+    lr_raw     = opt_raw.get("learning_rate", {}).get(
         "cosine", opt_raw.get("learning_rate", {})
     )
-    sgd_raw = opt_raw.get("optimizer", {}).get(
+    sgd_raw    = opt_raw.get("optimizer", {}).get(
         "sgd_torch", opt_raw.get("optimizer", {})
     )
     warmup_raw = t.get("warmup", {}).get("linear", t.get("warmup", {}))
 
-    ema_cfg = EmaConfig(
+    ema_cfg    = EmaConfig(
         average_decay=ema_raw.get("average_decay", 0.9999),
         dynamic_decay=ema_raw.get("dynamic_decay", True),
     )
-    lr_cfg = LrScheduleConfig(
+    lr_cfg     = LrScheduleConfig(
         initial_learning_rate=lr_raw.get("initial_learning_rate", 0.01),
         decay_steps=lr_raw.get("decay_steps", 716400),
         alpha=lr_raw.get("alpha", 0.01),
@@ -315,12 +344,14 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
         warmup_steps=warmup_raw.get("warmup_steps", 7164),
         warmup_learning_rate=warmup_raw.get("warmup_learning_rate", 0.0),
     )
-    opt_cfg = OptimizerConfig(
+    opt_cfg    = OptimizerConfig(
         momentum=sgd_raw.get("momentum", 0.937),
         momentum_start=sgd_raw.get("momentum_start", 0.8),
         nesterov=sgd_raw.get("nesterov", True),
         weight_decay=sgd_raw.get("weight_decay", 0.0005),
         warmup_steps=sgd_raw.get("warmup_steps", 7164),
+        weight_keys=sgd_raw.get("weight_keys", ["kernel", "weight"]),
+        bias_keys=sgd_raw.get("bias_keys", ["bias", "beta"]),
         ema=ema_cfg,
         learning_rate=lr_cfg,
         warmup=warmup_cfg,
@@ -330,8 +361,6 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
         train_epochs=t.get("train_epochs", 300),
         train_total_examples=t.get("train_total_examples", 0),
         validation_total_examples=t.get("validation_total_examples", 0),
-        # Derived fields — _fill_derived_fields will compute these from the above.
-        # If explicitly set in YAML they act as overrides (0 means "use computed value").
         checkpoint_interval=t.get("checkpoint_interval", 0),
         best_checkpoint_eval_metric=t.get("best_checkpoint_eval_metric", "F1score50"),
         best_checkpoint_metric_comp=t.get("best_checkpoint_metric_comp", "higher"),

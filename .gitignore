@@ -1,6 +1,6 @@
 # ── Project-specific excludes ────────────────────────────────────────────────
 .claude/
-docs/
+tmp_reference_docs/
 CLAUDE.md
 MASTER_PLAN.md
 

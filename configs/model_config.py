@@ -4,6 +4,7 @@ These mirror the YAML structure in docs/experiment_config.yaml and can be
 populated by parsing the YAML or constructed programmatically.
 
 Dataclasses:
+    RuntimeConfig
     NormActivationConfig
     BackboneConfig
     DecoderConfig
@@ -27,6 +28,17 @@ Dataclasses:
 
 import dataclasses
 from typing import Dict, List, Optional
+
+
+@dataclasses.dataclass
+class RuntimeConfig:
+    distribution_strategy: str = "mirrored"
+    num_gpus: int = -1
+    mixed_precision_dtype: str = "float32"
+    run_eagerly: bool = False
+    enable_xla: bool = False
+    num_cores_per_replica: int = 1
+    num_packs: int = 1
 
 
 @dataclasses.dataclass
@@ -152,6 +164,21 @@ class ParserConfig:
     dummy_distance: bool = True
     with_polygons: bool = True
     albumentations_frequency: float = 1.0
+    # Additional augmentation parameters (0.0/False = disabled by default)
+    aug_rand_angle: float = 0.0
+    aug_rand_perspective: float = 0.0
+    jitter: float = 0.0
+    random_pad: bool = False
+    random_rotate: bool = False
+    area_thresh: float = 0.1
+    eval_gray_border: bool = False
+    # Distance range (for distance parser only)
+    min_meter: float = 0.5
+    max_meter: float = 10.0
+    # Anchor-matching parameters (not used by TAL; kept for config completeness)
+    best_match_only: bool = False
+    use_tie_breaker: bool = True
+    anchor_thresh: float = -0.01
     mosaic: MosaicConfig = dataclasses.field(default_factory=MosaicConfig)
 
 
@@ -164,6 +191,9 @@ class DistanceDataConfig:
     ignore_bg: bool = True
     with_distance: bool = True
     with_polygons: bool = False
+    drop_remainder: bool = True
+    shuffle_buffer_size: int = 200
+    class_remap_json_path: Optional[str] = None
     parser: ParserConfig = dataclasses.field(default_factory=ParserConfig)
 
 
@@ -175,11 +205,16 @@ class DataConfig:
     global_batch_size: int = 128
     is_training: bool = True
     shuffle_buffer_size: int = 1500
+    drop_remainder: bool = True
     tfds_sampling_weights: Optional[List[float]] = None
     prob_copy_n_paste: float = 0.2
     tfds_for_cnp: Optional[str] = "cleaner_copy_paste:1.0.0"
     tfds_for_cnp_split: Optional[str] = "train_f"
     seed: Optional[int] = 1000
+    with_polygons: bool = True
+    with_distance: bool = False
+    poly_eval_gt_policy: str = "polyyolo"
+    class_remap_json_path: Optional[str] = None
     parser: ParserConfig = dataclasses.field(default_factory=ParserConfig)
     distance_data: Optional[DistanceDataConfig] = None
 
@@ -210,6 +245,8 @@ class OptimizerConfig:
     nesterov: bool = True
     weight_decay: float = 0.0005
     warmup_steps: int = 7164
+    weight_keys: List[str] = dataclasses.field(default_factory=lambda: ["kernel", "weight"])
+    bias_keys: List[str] = dataclasses.field(default_factory=lambda: ["bias", "beta"])
     ema: EmaConfig = dataclasses.field(default_factory=EmaConfig)
     learning_rate: LrScheduleConfig = dataclasses.field(default_factory=LrScheduleConfig)
     warmup: WarmupConfig = dataclasses.field(default_factory=WarmupConfig)
@@ -252,9 +289,17 @@ class TaskConfig:
         default_factory=lambda: [6, 13, 24, 36, 37]
     )
     per_category_metrics: bool = False
+    gradient_clip_norm: float = 0.0
+    smart_bias_lr: float = 0.1
+    find_best_score_thresh: bool = True
+    summary_types: str = "scalar,image"
+    summary_image_num: int = 10
+    summary_image_draw_box: bool = True
+    summary_image_draw_poly: bool = True
 
 
 @dataclasses.dataclass
 class ExperimentConfig:
     task: TaskConfig = dataclasses.field(default_factory=TaskConfig)
     trainer: TrainerConfig = dataclasses.field(default_factory=TrainerConfig)
+    runtime: RuntimeConfig = dataclasses.field(default_factory=RuntimeConfig)

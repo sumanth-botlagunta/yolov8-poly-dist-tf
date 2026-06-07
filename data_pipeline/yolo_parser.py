@@ -66,6 +66,8 @@ class V8ParserExtended(Parser):
         resize_with_random_method: bool = True,
         letter_box: bool = True,
         albumentations_frequency: float = 1.0,
+        area_thresh: float = 0.1,
+        eval_gray_border: bool = False,
     ):
         self._output_size = output_size          # [H, W]
         self._expanded_strides = expanded_strides
@@ -85,6 +87,8 @@ class V8ParserExtended(Parser):
         self._random_flip = random_flip
         self._letter_box = letter_box
         self._albumentations_frequency = albumentations_frequency
+        self._area_thresh = area_thresh
+        self._eval_gray_border = eval_gray_border
 
         self._n_angles = 360 // angle_step      # = 24 for angle_step=15
         self._poly_depth = self._n_angles * 3   # = 72
@@ -130,8 +134,15 @@ class V8ParserExtended(Parser):
             output_size=self._output_size,
         )
 
-        # 4. Clip boxes; filter degenerate boxes
+        # 4. Clip boxes; filter degenerate and too-small boxes
+        pre_areas = (
+            (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+        )
         boxes, keep = clip_boxes(boxes)
+        if self._area_thresh > 0.0:
+            post_areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+            ratio_ok = (post_areas / tf.maximum(pre_areas, 1e-6)) >= self._area_thresh
+            keep = tf.logical_and(keep, ratio_ok)
         boxes    = tf.boolean_mask(boxes,    keep)
         classes  = tf.boolean_mask(classes,  keep)
         polygons = tf.boolean_mask(polygons, keep)
@@ -193,6 +204,11 @@ class V8ParserExtended(Parser):
         polygons = clip_polygon_coords(polygons)
 
         image = tf.cast(image, tf.float32) / 255.0
+
+        # Gray border: replace letterbox-padding pixels (value ~0 from resize) with 0.5
+        if self._eval_gray_border:
+            gray_mask = tf.reduce_all(image < (8.0 / 255.0), axis=-1, keepdims=True)
+            image = tf.where(gray_mask, tf.fill(tf.shape(image), 0.5), image)
 
         n_gt = tf.shape(boxes)[0]
 

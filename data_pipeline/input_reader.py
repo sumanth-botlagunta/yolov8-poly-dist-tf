@@ -382,7 +382,10 @@ def build_input_reader_from_config(
             aug_scale_max=parser_cfg.aug_scale_max,
             random_flip=parser_cfg.random_flip,
             letter_box=parser_cfg.letter_box,
+            resize_with_random_method=parser_cfg.resize_with_random_method,
             albumentations_frequency=parser_cfg.albumentations_frequency,
+            area_thresh=parser_cfg.area_thresh,
+            eval_gray_border=parser_cfg.eval_gray_border,
         )
 
     # Mosaic (training only).
@@ -437,8 +440,8 @@ def build_input_reader_from_config(
             decoder=dist_decoder,
             parser=dist_parser,
             seed=data_cfg.seed,
-            shuffle_buffer_size=1500,
-            drop_remainder=True,
+            shuffle_buffer_size=dist_cfg.shuffle_buffer_size,
+            drop_remainder=dist_cfg.drop_remainder,
         )
 
     return InputReader(
@@ -458,6 +461,6 @@ def build_input_reader_from_config(
         cnp_decoder=cnp_decoder,
         seed=data_cfg.seed,
         shuffle_buffer_size=data_cfg.shuffle_buffer_size,
-        drop_remainder=True,
+        drop_remainder=data_cfg.drop_remainder,
         tfds_download=True,
     )

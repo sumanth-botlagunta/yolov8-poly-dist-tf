@@ -1,14 +1,14 @@
 """Training entry point for YOLOv8 polygon + distance model.
 
 Usage:
-    python scripts/train.py \
+    python scripts/run_train.py \
         --config configs/experiments/yolo/yolov8_poly_dist.yaml \
         --output_dir /tmp/yolo_run
 
 Flags:
     --config      Path to experiment YAML (required).
     --output_dir  Directory for checkpoints and TensorBoard events (required).
-    --debug       Run eagerly and enable verbose logging.
+    --debug       Run eagerly and enable verbose logging (overrides runtime config).
 """
 
 from absl import app, flags, logging
@@ -24,19 +24,129 @@ except flags.DuplicateFlagError:
     pass
 
 
-def main(_):
-    if FLAGS.debug:
+def _build_strategy(runtime_cfg) -> tf.distribute.Strategy:
+    """Build distribution strategy from RuntimeConfig."""
+    strategy_name = runtime_cfg.distribution_strategy.lower()
+    num_gpus      = runtime_cfg.num_gpus
+
+    if strategy_name == "one_device":
+        return tf.distribute.OneDeviceStrategy("/gpu:0")
+
+    # MirroredStrategy: use num_gpus GPUs if specified, else all available.
+    if num_gpus > 0:
+        gpus = tf.config.list_logical_devices('GPU')
+        devices = [g.name for g in gpus[:num_gpus]]
+        return tf.distribute.MirroredStrategy(devices=devices)
+
+    return tf.distribute.MirroredStrategy()
+
+
+def _validate_config(config, output_dir: str) -> None:
+    """Validate mandatory config fields before any GPU or model work begins.
+
+    Raises ValueError with a clear message on the first problem found so the
+    user sees exactly what is wrong before waiting for model build or TFDS load.
+    """
+    import os
+    errors = []
+
+    task    = config.task
+    trainer = config.trainer
+
+    # --- core training fields ---
+    if task.num_classes <= 0:
+        errors.append(f"task.num_classes must be > 0, got {task.num_classes}")
+    if trainer.train_total_examples <= 0:
+        errors.append(
+            f"trainer.train_total_examples must be > 0, got {trainer.train_total_examples}. "
+            "Set it to the total number of training images."
+        )
+    if trainer.train_epochs <= 0:
+        errors.append(f"trainer.train_epochs must be > 0, got {trainer.train_epochs}")
+
+    # --- dataset directories ---
+    for label, data_cfg in [
+        ("train_data",      task.train_data),
+        ("validation_data", task.validation_data),
+    ]:
+        d = data_cfg.tfds_data_dir
+        if not os.path.isdir(d):
+            errors.append(
+                f"task.{label}.tfds_data_dir does not exist: '{d}'. "
+                "Update the YAML or create/symlink the directory."
+            )
+
+    dist_data = getattr(task.train_data, 'distance_data', None)
+    if dist_data is not None:
+        d = dist_data.tfds_data_dir
+        if not os.path.isdir(d):
+            errors.append(
+                f"task.train_data.distance_data.tfds_data_dir does not exist: '{d}'"
+            )
+
+    # --- init checkpoint ---
+    ckpt = task.init_checkpoint
+    if ckpt:
+        index_file = ckpt + ".index"
+        if not os.path.exists(index_file):
+            errors.append(
+                f"task.init_checkpoint not found: '{ckpt}' "
+                f"(looked for '{index_file}'). "
+                "Update the path or remove the field to train from scratch."
+            )
+
+    # --- model consistency ---
+    if task.model.output_poly_size != (360 // task.model.angle_step):
+        errors.append(
+            f"task.model.output_poly_size ({task.model.output_poly_size}) "
+            f"must equal 360 // angle_step ({360 // task.model.angle_step})"
+        )
+
+    # --- output directory writable ---
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+    except OSError as e:
+        errors.append(f"Cannot create output_dir '{output_dir}': {e}")
+
+    if errors:
+        msg = "\n".join(f"  • {e}" for e in errors)
+        raise ValueError(f"Config validation failed ({len(errors)} error(s)):\n{msg}")
+
+    logging.info("Config validation passed.")
+
+
+def _apply_runtime_config(runtime_cfg, debug: bool) -> None:
+    """Apply framework-level settings from RuntimeConfig before building the model."""
+    run_eagerly = debug or runtime_cfg.run_eagerly
+    if run_eagerly:
         tf.config.run_functions_eagerly(True)
         logging.set_verbosity(logging.DEBUG)
 
+    if runtime_cfg.enable_xla:
+        tf.config.optimizer.set_jit(True)
+        logging.info("XLA JIT compilation enabled.")
+
+    if runtime_cfg.mixed_precision_dtype == "float16":
+        tf.keras.mixed_precision.set_global_policy("mixed_float16")
+        logging.info("Mixed precision: float16 policy active.")
+    elif runtime_cfg.mixed_precision_dtype == "bfloat16":
+        tf.keras.mixed_precision.set_global_policy("mixed_bfloat16")
+        logging.info("Mixed precision: bfloat16 policy active.")
+
+
+def main(_):
     from configs.yaml_loader import load_config
     from train.task import YoloV8Task
     from train.trainer import YoloV8Trainer
 
     config = load_config(FLAGS.config)
+    _validate_config(config, FLAGS.output_dir)
 
-    strategy = tf.distribute.MirroredStrategy()
-    logging.info("Running with %d replica(s).", strategy.num_replicas_in_sync)
+    _apply_runtime_config(config.runtime, FLAGS.debug)
+    strategy = _build_strategy(config.runtime)
+    logging.info("Distribution strategy: %s  (%d replica(s))",
+                 config.runtime.distribution_strategy,
+                 strategy.num_replicas_in_sync)
 
     task    = YoloV8Task(config)
     trainer = YoloV8Trainer(
