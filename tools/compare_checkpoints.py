@@ -71,18 +71,29 @@ def _normalize(name: str) -> str:
 # Loaders
 # ---------------------------------------------------------------------------
 
-def load_ckpt(path: str) -> Dict[str, Tuple[tuple, str]]:
-    """Return {name: (shape, dtype)} from a checkpoint (no optimizer slots)."""
+def load_ckpt(path: str) -> Tuple[Dict[str, Tuple[tuple, str]], List[str]]:
+    """Return ({name: (shape, dtype)}, scalar_meta_names) from a checkpoint.
+
+    Scalar () variables (global_step, optimizer scalars) are separated into
+    scalar_meta_names and excluded from the main comparison dict.
+    """
     import tensorflow as tf
-    reader = tf.train.load_checkpoint(path)
+    reader    = tf.train.load_checkpoint(path)
     shape_map = reader.get_variable_to_shape_map()
-    dtype_map  = reader.get_variable_to_dtype_map()
+    dtype_map = reader.get_variable_to_dtype_map()
     skip = {".OPTIMIZER_SLOT/", "_CHECKPOINTABLE_OBJECT_GRAPH", "save_counter"}
-    return {
-        name: (tuple(shape), dtype_map[name].name)
-        for name, shape in shape_map.items()
-        if not any(s in name for s in skip)
-    }
+
+    result: Dict[str, Tuple[tuple, str]] = {}
+    meta:   List[str] = []
+    for name, shape in shape_map.items():
+        if any(s in name for s in skip):
+            continue
+        shape_t = tuple(shape)
+        if len(shape_t) == 0:
+            meta.append(name)
+        else:
+            result[name] = (shape_t, dtype_map[name].name)
+    return result, sorted(meta)
 
 
 def load_model(config_path: str) -> Dict[str, Tuple[tuple, str]]:
@@ -182,18 +193,19 @@ def main() -> None:
     args = ap.parse_args()
 
     print(f"Loading:  {args.ckpt1}")
-    vars1 = load_ckpt(args.ckpt1)
-    print(f"  {len(vars1)} variables")
+    vars1, meta1 = load_ckpt(args.ckpt1)
+    print(f"  {len(vars1)} variables  ({len(meta1)} scalar metadata excluded)")
 
+    meta2: List[str] = []
     if args.ckpt2:
         print(f"Loading:  {args.ckpt2}")
-        vars2  = load_ckpt(args.ckpt2)
+        vars2, meta2 = load_ckpt(args.ckpt2)
         label2 = Path(args.ckpt2).name
     else:
         print(f"Building model from: {args.config}")
         vars2  = load_model(args.config)
         label2 = "current model"
-    print(f"  {len(vars2)} variables\n")
+    print(f"  {len(vars2)} variables  ({len(meta2)} scalar metadata excluded)\n")
 
     label1 = Path(args.ckpt1).name
     rows   = match_vars(vars1, vars2, args.modules)
@@ -214,6 +226,19 @@ def main() -> None:
 
     tbl.footer()
     tbl.summary(counts, len(rows))
+
+    # ---- scalar metadata section ----
+    all_meta = sorted(set(meta1) | set(meta2))
+    if all_meta:
+        set1, set2 = set(meta1), set(meta2)
+        print(f"\nScalar metadata variables (shape=(), excluded from comparison above):")
+        w = max((len(n) for n in all_meta), default=20)
+        print(f"  {'Name':<{w}}  {label1:>14}  {label2:>14}")
+        print(f"  {'-'*w}  {'-'*14}  {'-'*14}")
+        for name in all_meta:
+            in1 = "✓" if name in set1 else "—"
+            in2 = "✓" if name in set2 else "—"
+            print(f"  {name:<{w}}  {in1:>14}  {in2:>14}")
 
 
 if __name__ == "__main__":

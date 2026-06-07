@@ -84,15 +84,19 @@ def _is_config(path: str) -> bool:
     return path.endswith(".yaml") or path.endswith(".yml")
 
 
-def load_source(path: str) -> Tuple[str, List[Tuple[str, tuple]]]:
-    """Load a source and return (label, [(name, shape), ...]) sorted by normalized name."""
+def load_source(path: str) -> Tuple[str, List[Tuple[str, tuple]], List[str]]:
+    """Load a source and return (label, model_items, scalar_meta_names).
+
+    model_items  — [(name, shape), ...] with shape != (), sorted by normalized name.
+    scalar_meta_names — names of shape-() variables (global_step, optimizer scalars).
+    """
     if _is_config(path):
         return _load_config(path)
     else:
         return _load_ckpt(path)
 
 
-def _load_config(config_path: str) -> Tuple[str, List[Tuple[str, tuple]]]:
+def _load_config(config_path: str) -> Tuple[str, List[Tuple[str, tuple]], List[str]]:
     repo_root = str(Path(config_path).resolve().parents[3])
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
@@ -108,22 +112,30 @@ def _load_config(config_path: str) -> Tuple[str, List[Tuple[str, tuple]]]:
 
     label = Path(config_path).stem
     items = [(v.name.rstrip(":0"), tuple(v.shape)) for v in model.variables]
-    return label, items
+    return label, items, []   # configs have no scalar metadata
 
 
-def _load_ckpt(ckpt_path: str) -> Tuple[str, List[Tuple[str, tuple]]]:
+def _load_ckpt(ckpt_path: str) -> Tuple[str, List[Tuple[str, tuple]], List[str]]:
     import tensorflow as tf
     reader    = tf.train.load_checkpoint(ckpt_path)
     shape_map = reader.get_variable_to_shape_map()
     skip      = {".OPTIMIZER_SLOT/", "_CHECKPOINTABLE_OBJECT_GRAPH", "save_counter"}
-    items     = [
-        (name, tuple(shape))
-        for name, shape in shape_map.items()
-        if not any(s in name for s in skip)
-    ]
+
+    items: List[Tuple[str, tuple]] = []
+    meta:  List[str] = []
+    for name, shape in shape_map.items():
+        if any(s in name for s in skip):
+            continue
+        shape_t = tuple(shape)
+        if len(shape_t) == 0:
+            meta.append(name)          # scalar training metadata — excluded from comparison
+        else:
+            items.append((name, shape_t))
+
     items.sort(key=lambda t: _normalize(t[0]))
+    meta.sort()
     label = Path(ckpt_path).name
-    return label, items
+    return label, items, meta
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +180,29 @@ def align(
 # ---------------------------------------------------------------------------
 # Diagnostics
 # ---------------------------------------------------------------------------
+
+def print_scalar_meta(
+    meta1: List[str],
+    meta2: List[str],
+    label1: str,
+    label2: str,
+    use_colour: bool,
+) -> None:
+    """Print scalar () metadata variables found in either source."""
+    all_names = sorted(set(meta1) | set(meta2))
+    if not all_names:
+        return
+    set1, set2 = set(meta1), set(meta2)
+    w = max((len(n) for n in all_names), default=20)
+    w = max(w, 20)
+    print(f"\n{'Scalar metadata variables (shape=(), excluded from comparison)':}")
+    print(f"  {'Name':<{w}}  {label1:>10}  {label2:>10}")
+    print(f"  {'-'*w}  {'-'*10}  {'-'*10}")
+    for name in all_names:
+        in1 = "✓" if name in set1 else "—"
+        in2 = "✓" if name in set2 else "—"
+        print(f"  {name:<{w}}  {in1:>10}  {in2:>10}")
+
 
 def print_module_counts(
     items1: List[Tuple[str, tuple]],
@@ -274,18 +309,21 @@ def main() -> None:
     use_colour = not args.no_colour
 
     print(f"Loading src1: {args.src1}")
-    label1, items1 = load_source(args.src1)
-    print(f"  {len(items1)} variables  (source type: {'config' if _is_config(args.src1) else 'checkpoint'})")
+    label1, items1, meta1 = load_source(args.src1)
+    print(f"  {len(items1)} model variables  ({len(meta1)} scalar metadata excluded)"
+          f"  (source type: {'config' if _is_config(args.src1) else 'checkpoint'})")
 
     print(f"Loading src2: {args.src2}")
-    label2, items2 = load_source(args.src2)
-    print(f"  {len(items2)} variables  (source type: {'config' if _is_config(args.src2) else 'checkpoint'})\n")
+    label2, items2, meta2 = load_source(args.src2)
+    print(f"  {len(items2)} model variables  ({len(meta2)} scalar metadata excluded)"
+          f"  (source type: {'config' if _is_config(args.src2) else 'checkpoint'})\n")
 
     # ---- always print diagnostics first ----
     print_module_counts(items1, items2, label1, label2, use_colour)
     print_shape_histogram(items1, items2, label1, label2, use_colour)
 
     if args.stats_only:
+        print_scalar_meta(meta1, meta2, label1, label2, use_colour)
         return
 
     if len(items1) != len(items2):
@@ -317,6 +355,8 @@ def main() -> None:
 
     total = max(len(items1), len(items2))
     tbl.summary(counts, total)
+
+    print_scalar_meta(meta1, meta2, label1, label2, use_colour)
 
 
 if __name__ == "__main__":

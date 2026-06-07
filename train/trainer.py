@@ -141,11 +141,9 @@ class YoloV8Trainer:
         self._compiled_train_step = _compiled_train_step
         self._compiled_val_step   = _compiled_val_step
 
-        sgd = self._optimizer._optimizer
         self._ckpt = tf.train.Checkpoint(
             model=self._model,
-            sgd_step=sgd.iterations,
-            ema_step=self._optimizer._ema_step,
+            optimizer=self._optimizer,   # full EMA wrapper: saves shadow weights + SGD momentum
             global_step=self._global_step,
             best_metric=self._best_metric,
         )
