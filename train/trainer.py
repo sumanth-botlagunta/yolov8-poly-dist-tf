@@ -86,7 +86,7 @@ class YoloV8Trainer:
                 self._global_step.assign_add(1)
                 python_step += 1
 
-                if python_step % trainer_cfg.summary_interval == 0:
+                if python_step % trainer_cfg.checkpoint_interval == 0:
                     self._log_step(step_losses, python_step)
 
                 if python_step % trainer_cfg.checkpoint_interval == 0:
