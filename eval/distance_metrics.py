@@ -70,7 +70,7 @@ class DistanceEvaluator:
             Dict with keys 'dist_mae' and 'dist_rmse'.
         """
         if not self._pred:
-            log.warning("DistanceEvaluator.evaluate() called with no valid samples.")
+            log.debug("DistanceEvaluator.evaluate() called with no valid samples.")
             return {'dist_mae': 0.0, 'dist_rmse': 0.0}
 
         pred_all = np.exp(np.concatenate(self._pred))

@@ -217,7 +217,8 @@ class YoloV8Task:
             num_classes=task_cfg.num_classes,
             image_size=tuple(img_size),
         )
-        dist_ev = DistanceEvaluator() if task_cfg.with_distance else None
+        val_has_distance = getattr(self._config.task.validation_data, 'with_distance', False)
+        dist_ev = DistanceEvaluator() if (task_cfg.with_distance and val_has_distance) else None
         poly_ev = PolygonEvaluator(image_size=tuple(img_size)) if task_cfg.with_polygons else None
 
         for preds, labels in zip(
@@ -254,4 +255,9 @@ class YoloV8Task:
             metrics.update(dist_ev.evaluate())
         if poly_ev is not None:
             metrics.update(poly_ev.evaluate())
+
+        if self._config.task.per_category_metrics:
+            per_cat = coco_ev.per_category_ap50()
+            metrics.update({f'cls/{c}': v for c, v in per_cat.items()})
+
         return metrics

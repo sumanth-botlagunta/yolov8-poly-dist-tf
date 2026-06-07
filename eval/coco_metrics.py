@@ -46,6 +46,7 @@ class COCOEvaluator:
         # annotation with id=0 would be treated as unmatched.  Start at 1.
         self._img_id  = 1
         self._ann_id  = 1
+        self._ev50    = None
 
     # ------------------------------------------------------------------
     # Accumulation
@@ -157,40 +158,59 @@ class COCOEvaluator:
             ev50.evaluate()
             ev50.accumulate()
 
-        f1_50 = self._peak_f1(ev50)
+        f1_50, best_thresh = self._peak_f1(ev50)
+        self._ev50 = ev50  # keep for per_category_ap50()
 
         return {
-            'mAP':        map_val,
-            'mAP50':      map50_val,
-            'AR100':      ar100_val,
-            'F1score50':  f1_50,
+            'mAP':              map_val,
+            'mAP50':            map50_val,
+            'AR100':            ar100_val,
+            'F1score50':        f1_50,
+            'best_conf_thresh': best_thresh,
         }
+
+    def per_category_ap50(self) -> Dict[int, float]:
+        """Per-category AP@50.  Call after evaluate()."""
+        ev50 = getattr(self, '_ev50', None)
+        if ev50 is None or ev50.eval is None:
+            return {}
+        prec = ev50.eval['precision']  # [T=1, R=101, K, A=1, M=1]
+        result: Dict[int, float] = {}
+        for k, cat_id in enumerate(ev50.params.catIds):
+            p = prec[0, :, k, 0, 2]
+            valid = p[p >= 0]
+            result[int(cat_id)] = float(valid.mean()) if valid.size > 0 else 0.0
+        return result
 
     def reset(self) -> None:
         """Clear all accumulated predictions and GT."""
         self._dt_anns.clear()
         self._gt_anns.clear()
         self._gt_imgs.clear()
-        self._img_id = 0
-        self._ann_id = 0
+        self._img_id = 1
+        self._ann_id = 1
+        self._ev50   = None
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _peak_f1(coco_eval) -> float:
-        """Mean peak-F1 over all classes from a COCOeval run at single IoU."""
-        # precision shape: [T, R, K, A, M] — T=1 (single IoU), R=101 recall pts
+    def _peak_f1(coco_eval):
+        """Mean peak-F1 and best confidence threshold over all classes.
+
+        Returns:
+            (mean_peak_f1: float, best_conf_thresh: float)
+        """
         precision = coco_eval.eval.get('precision')
         if precision is None or precision.size == 0:
-            return 0.0
+            return 0.0, 0.0
 
-        # precision[0, :, :, 0, 2] → [R, K] at IoU=0.5, all areas, maxDets=100
         prec = precision[0, :, :, 0, 2]   # [101, num_classes]
         recall_thrs = coco_eval.params.recThrs  # [101]
 
-        class_f1 = []
+        class_f1        = []
+        best_recall_idx = []
         for k in range(prec.shape[1]):
             p = prec[:, k]
             r = recall_thrs
@@ -199,8 +219,12 @@ class COCOEvaluator:
                 continue
             p, r = p[valid], r[valid]
             denom = p + r
-            # Avoid division by zero
-            f1 = np.where(denom > 0, 2 * p * r / denom, 0.0)
-            class_f1.append(float(f1.max()))
+            with np.errstate(divide='ignore', invalid='ignore'):
+                f1 = np.where(denom > 0, 2 * p * r / denom, 0.0)
+            peak_idx = int(f1.argmax())
+            class_f1.append(float(f1[peak_idx]))
+            best_recall_idx.append(float(r[peak_idx]))
 
-        return float(np.mean(class_f1)) if class_f1 else 0.0
+        mean_f1 = float(np.mean(class_f1)) if class_f1 else 0.0
+        best_thresh = float(np.mean(best_recall_idx)) if best_recall_idx else 0.0
+        return mean_f1, best_thresh

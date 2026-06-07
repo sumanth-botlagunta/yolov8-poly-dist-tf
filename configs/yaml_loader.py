@@ -72,7 +72,33 @@ def load_config_from_dict(raw: Dict[str, Any]) -> ExperimentConfig:
     task_cfg = _build_task_config(task_raw)
     trainer_cfg = _build_trainer_config(trainer_raw)
 
-    return ExperimentConfig(task=task_cfg, trainer=trainer_cfg)
+    config = ExperimentConfig(task=task_cfg, trainer=trainer_cfg)
+    _fill_derived_fields(config)
+    return config
+
+
+def _fill_derived_fields(config: ExperimentConfig) -> None:
+    """Compute steps_per_loop, train_steps, validation_steps from primary YAML values.
+
+    Derived fields are overwritten every time so they stay consistent when
+    batch size or epoch count changes without manually updating the YAML.
+    Checkpoint_interval defaults to one epoch (steps_per_loop) if not set.
+    """
+    t  = config.trainer
+    td = config.task.train_data
+    vd = config.task.validation_data
+
+    if t.train_total_examples > 0 and td.global_batch_size > 0:
+        t.steps_per_loop = t.train_total_examples // td.global_batch_size
+
+    if t.steps_per_loop > 0:
+        t.train_steps = t.steps_per_loop * t.train_epochs
+
+    if t.validation_total_examples > 0 and vd.global_batch_size > 0:
+        t.validation_steps = t.validation_total_examples // vd.global_batch_size
+
+    if t.checkpoint_interval == 0 and t.steps_per_loop > 0:
+        t.checkpoint_interval = t.steps_per_loop
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +126,7 @@ def _build_task_config(t: Dict[str, Any]) -> TaskConfig:
         ignore_dontcare=t.get("ignore_dontcare", True),
         ignore_iscrowds=t.get("ignore_iscrowds", False),
         iscrowds_labels=t.get("iscrowds_labels", [6, 13, 24, 36, 37]),
+        per_category_metrics=t.get("per_category_metrics", False),
     )
 
 
@@ -301,10 +328,11 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
 
     return TrainerConfig(
         train_epochs=t.get("train_epochs", 300),
-        train_steps=t.get("train_steps", 716400),
-        steps_per_loop=t.get("steps_per_loop", 2388),
-        checkpoint_interval=t.get("checkpoint_interval", 2388),
-        validation_interval=t.get("validation_interval", 2388),
+        train_total_examples=t.get("train_total_examples", 0),
+        validation_total_examples=t.get("validation_total_examples", 0),
+        # Derived fields — _fill_derived_fields will compute these from the above.
+        # If explicitly set in YAML they act as overrides (0 means "use computed value").
+        checkpoint_interval=t.get("checkpoint_interval", 0),
         best_checkpoint_eval_metric=t.get("best_checkpoint_eval_metric", "F1score50"),
         best_checkpoint_metric_comp=t.get("best_checkpoint_metric_comp", "higher"),
         max_to_keep=t.get("max_to_keep", 300),

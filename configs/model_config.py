@@ -218,10 +218,13 @@ class OptimizerConfig:
 @dataclasses.dataclass
 class TrainerConfig:
     train_epochs: int = 300
-    train_steps: int = 716400
-    steps_per_loop: int = 2388
-    checkpoint_interval: int = 2388
-    validation_interval: int = 2388
+    train_total_examples: int = 0
+    validation_total_examples: int = 0
+    # Derived — computed by _fill_derived_fields in yaml_loader from the above
+    train_steps: int = 0
+    steps_per_loop: int = 0
+    validation_steps: int = 0
+    checkpoint_interval: int = 0
     best_checkpoint_eval_metric: str = "F1score50"
     best_checkpoint_metric_comp: str = "higher"
     max_to_keep: int = 300
@@ -248,6 +251,7 @@ class TaskConfig:
     iscrowds_labels: List[int] = dataclasses.field(
         default_factory=lambda: [6, 13, 24, 36, 37]
     )
+    per_category_metrics: bool = False
 
 
 @dataclasses.dataclass
