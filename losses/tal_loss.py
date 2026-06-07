@@ -108,6 +108,7 @@ class TaskAlignedLossExtended:
         poly_dist_gain: float = 0.45,
         poly_conf_gain: float = 0.2,
         poly_angle_gain: float = 0.4,
+        poly_gain: float = 0.5,
         tal_alpha: float = 0.5,
         tal_beta: float = 6.0,
         topk: int = 10,
@@ -125,6 +126,7 @@ class TaskAlignedLossExtended:
         self.poly_dist_gain = poly_dist_gain
         self.poly_conf_gain = poly_conf_gain
         self.poly_angle_gain= poly_angle_gain
+        self.poly_gain      = poly_gain
         self.with_polygons  = with_polygons
         self.with_distance  = with_distance
         self.reg_max        = reg_max
@@ -489,8 +491,10 @@ class TaskAlignedLossExtended:
         dfl_loss_w  = self.dfl_gain  * dfl_loss
         cls_loss_w  = self.cls_gain  * cls_loss
         dist_loss_w = self.dist_gain * dist_loss_val
-        # poly gains already applied inside _polygon_loss
+        # poly_gain is the overall polygon loss multiplier; component gains
+        # (angle/dist/conf) are already applied inside _polygon_loss
+        poly_loss_w = self.poly_gain * poly_loss_val
 
-        total_loss = box_loss_w + dfl_loss_w + cls_loss_w + dist_loss_w + poly_loss_val
+        total_loss = box_loss_w + dfl_loss_w + cls_loss_w + dist_loss_w + poly_loss_w
 
-        return total_loss, box_loss_w, dfl_loss_w, cls_loss_w, dist_loss_w, poly_loss_val
+        return total_loss, box_loss_w, dfl_loss_w, cls_loss_w, dist_loss_w, poly_loss_w
