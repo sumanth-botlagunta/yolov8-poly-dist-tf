@@ -423,11 +423,21 @@ class TaskAlignedLossExtended:
             axis=-1,
         )  # [B, M, 4] xyxy pixels
 
-        M_val   = tf.shape(gt_bboxes_norm)[1]
-        mask_gt = tf.sequence_mask(n_gt, maxlen=M_val)   # [B, M] bool
+        # Trim GT tensors to the actual max GT count in this batch.
+        # max_num_instances pads to M=300, but typical batches have M_eff<<300.
+        # Each [B, A, M] intermediate tensor in the assigner shrinks by M/M_eff
+        # (typically 15-60x), which is the dominant memory cost.
+        M_eff = tf.maximum(tf.cast(tf.reduce_max(n_gt), tf.int32), 1)
 
-        gt_polys = batch.get("polygons")      if self.with_polygons else None
-        gt_dists = batch.get("log_distance")  if self.with_distance else None
+        gt_labels    = gt_labels[:, :M_eff]
+        gt_bboxes_px = gt_bboxes_px[:, :M_eff, :]
+        mask_gt      = tf.sequence_mask(n_gt, maxlen=M_eff)   # [B, M_eff] bool
+
+        gt_polys_raw = batch.get("polygons")
+        gt_dists_raw = batch.get("log_distance")
+
+        gt_polys = gt_polys_raw[:, :M_eff, :] if (self.with_polygons and gt_polys_raw is not None) else None
+        gt_dists = gt_dists_raw[:, :M_eff]    if (self.with_distance and gt_dists_raw is not None) else None
 
         # ── 4. TAL assignment (stop-gradient) ─────────────────────────
         (
