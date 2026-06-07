@@ -164,5 +164,6 @@ Run with `/test` or `pytest tests/unit tests/smoke -v`.
 ## Dependencies
 
 See `requirements.txt`. Core: `tensorflow==2.16.1`, `tensorflow-datasets>=4.9.0`,
-`albumentations`, `opencv-python`, `pycocotools`, `scikit-image`, `dacite` (config loading),
-`PyYAML`, `absl-py`, `numpy`; `pytest` / `pytest-cov` for tests.
+`albumentations`, `opencv-python-headless` (no libGL system dep — works on CI/servers),
+`pycocotools`, `scikit-image`, `dacite` (config loading), `PyYAML`, `absl-py`, `numpy`;
+`pytest` / `pytest-cov` for tests.

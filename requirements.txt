@@ -4,7 +4,9 @@ tensorflow-datasets>=4.9.0
 
 # Image augmentation
 albumentations>=1.3.0
-opencv-python>=4.9.0
+# headless build: no libGL system dep required (works on CI/servers); same cv2 API
+# minus GUI windows, which this codebase never uses. Also what albumentations depends on.
+opencv-python-headless>=4.9.0
 
 # Evaluation
 pycocotools>=2.0.7
