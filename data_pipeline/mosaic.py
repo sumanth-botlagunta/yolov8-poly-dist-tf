@@ -75,8 +75,8 @@ def _transform_boxes(
     scale: tf.Tensor,
     pad_top: tf.Tensor,
     pad_left: tf.Tensor,
-    quad_h: tf.Tensor,
-    quad_w: tf.Tensor,
+    new_h: tf.Tensor,
+    new_w: tf.Tensor,
     offset_y: tf.Tensor,
     offset_x: tf.Tensor,
     H_out: tf.Tensor,
@@ -85,8 +85,11 @@ def _transform_boxes(
 ) -> Tuple[tf.Tensor, tf.Tensor]:
     """Transform boxes from input-normalised to output-normalised coordinates.
 
-    The input image was letterbox-resized to (quad_h, quad_w) with the given
-    scale and padding, then placed at (offset_y, offset_x) in the output.
+    The input image was letterbox-resized so its content occupies (new_h, new_w)
+    pixels with the given padding, then placed at (offset_y, offset_x) in the
+    output. ``new_h``/``new_w`` are the *exact* scaled dimensions returned by
+    ``_letterbox_resize_to`` (not re-derived from padding, which is off by up to
+    1px for odd letterbox padding).
 
     Returns:
         boxes_out: float32 [N, 4] clipped to [0,1]
@@ -98,25 +101,12 @@ def _transform_boxes(
     pad_left_f = tf.cast(pad_left, tf.float32)
     off_y_f    = tf.cast(offset_y, tf.float32)
     off_x_f    = tf.cast(offset_x, tf.float32)
-    # Normalised scale factors: how input-normalised [0,1] maps to output-normalised [0,1]
-    # Input height h_in maps to new_h = h_in * scale pixels in the quadrant.
-    # In quadrant coords: y_quad = y_in * new_h = y_in * scale * h_in (not what we need)
-    # Actually: boxes are normalised by INPUT size, so:
-    #   y_quad_px = y_in_norm * h_in → resized to y_quad_norm * new_h
-    #   We compute everything in output pixel space.
-    #   y_in_norm → y_quad_px_after_pad = y_in_norm * new_h + pad_top
-    #             → y_out_px = y_quad_px_after_pad + offset_y
-    #             → y_out_norm = y_out_px / H_out
-    # But new_h = h_in * scale, and since boxes are normalised we write:
+    # Boxes are normalised by INPUT size. The input content occupies new_h × new_w
+    # pixels inside the quadrant after letterbox resize, offset by (pad_top, pad_left),
+    # then placed at (offset_y, offset_x) in the output:
     #   y_out_norm = (y_in_norm * new_h + pad_top + offset_y) / H_out
-    # We need new_h — we can compute it: new_h = round(h_in * scale), but h_in is
-    # not available here.  Instead: new_h = quad_h - 2*pad_top (approximately).
-    # More precisely: new_h ≤ quad_h and new_w ≤ quad_w with pads centering them.
-    # We already receive pad_top, pad_left, quad_h, quad_w:
-    new_h_f = tf.cast(quad_h, tf.float32) - 2.0 * pad_top_f
-    new_w_f = tf.cast(quad_w, tf.float32) - 2.0 * pad_left_f
-    new_h_f = tf.maximum(new_h_f, 1.0)
-    new_w_f = tf.maximum(new_w_f, 1.0)
+    new_h_f = tf.cast(new_h, tf.float32)
+    new_w_f = tf.cast(new_w, tf.float32)
 
     ymin_out = (boxes[:, 0] * new_h_f + pad_top_f  + off_y_f) / H_out_f
     xmin_out = (boxes[:, 1] * new_w_f + pad_left_f + off_x_f) / W_out_f
@@ -150,8 +140,8 @@ def _transform_polygons(
     polygons: tf.Tensor,
     pad_top: tf.Tensor,
     pad_left: tf.Tensor,
-    quad_h: tf.Tensor,
-    quad_w: tf.Tensor,
+    new_h: tf.Tensor,
+    new_w: tf.Tensor,
     offset_y: tf.Tensor,
     offset_x: tf.Tensor,
     H_out: tf.Tensor,
@@ -161,6 +151,7 @@ def _transform_polygons(
 
     Args:
         polygons: float32 [N, max_v] flat xy pairs, -1 padded.
+        new_h, new_w: exact scaled content dimensions from ``_letterbox_resize_to``.
 
     Returns:
         float32 [N, max_v] transformed, clipped to [0,1] (invalid → -1).
@@ -171,10 +162,8 @@ def _transform_polygons(
     pad_left_f = tf.cast(pad_left, tf.float32)
     off_y_f    = tf.cast(offset_y, tf.float32)
     off_x_f    = tf.cast(offset_x, tf.float32)
-    new_h_f = tf.cast(quad_h, tf.float32) - 2.0 * pad_top_f
-    new_w_f = tf.cast(quad_w, tf.float32) - 2.0 * pad_left_f
-    new_h_f = tf.maximum(new_h_f, 1.0)
-    new_w_f = tf.maximum(new_w_f, 1.0)
+    new_h_f = tf.cast(new_h, tf.float32)
+    new_w_f = tf.cast(new_w, tf.float32)
 
     N   = tf.shape(polygons)[0]
     max_v = tf.shape(polygons)[1]
@@ -344,7 +333,7 @@ class Mosaic:
         img = ex['image']  # uint8 [h, w, 3]
 
         # Letterbox-resize to quadrant size
-        img_q, _scale, pad_top, pad_left, _nh, _nw = _letterbox_resize_to(img, qh, qw)
+        img_q, _scale, pad_top, pad_left, new_h, new_w = _letterbox_resize_to(img, qh, qw)
 
         # Transform boxes
         boxes   = ex.get('groundtruth_boxes', tf.zeros([0, 4]))
@@ -357,7 +346,7 @@ class Mosaic:
 
         boxes_out, keep = _transform_boxes(
             boxes, _scale, pad_top, pad_left,
-            qh, qw, off_y, off_x, H_out, W_out,
+            new_h, new_w, off_y, off_x, H_out, W_out,
             area_thresh=self._area_thresh,
         )
 
@@ -381,7 +370,7 @@ class Mosaic:
         if self._with_polys and polygons.shape[-1] != 0:
             polygons_out = _transform_polygons(
                 polygons, pad_top, pad_left,
-                qh, qw, off_y, off_x, H_out, W_out,
+                new_h, new_w, off_y, off_x, H_out, W_out,
             )
             polygons_out = tf.boolean_mask(polygons_out, keep)
             anns['groundtruth_polygons'] = polygons_out

@@ -62,6 +62,11 @@ def polygon_dist_loss(
     Returns:
         Scalar loss.
     """
+    # CONVENTION: this SUMS the L1 error over the V=24 vertices (reduce_sum), whereas
+    # polygon_angle_loss AVERAGES over vertices (reduce_mean). dist/conf are therefore
+    # ~24× larger than angle before gains; the configured poly gains (dist=0.45,
+    # angle=0.4, conf=0.2) bake in that factor. Changing the vertex count rescales this
+    # loss — re-check the gains if you do. Tracked for unification; see plan Part 2.4.
     fg_float = tf.cast(fg_mask, tf.float32)[:, :, tf.newaxis]    # [B, A, 1]
     l1 = tf.abs(pd_dist - target_dist) * fg_float                 # [B, A, V]
     return tf.reduce_sum(l1) / target_scores_sum
@@ -84,6 +89,8 @@ def polygon_conf_loss(
     Returns:
         Scalar loss.
     """
+    # CONVENTION: SUMS BCE over the V=24 vertices (like polygon_dist_loss, unlike the
+    # mean used by polygon_angle_loss). See the note in polygon_dist_loss.
     bce = tf.nn.sigmoid_cross_entropy_with_logits(
         labels=target_conf, logits=pd_conf
     )  # [B, A, V]

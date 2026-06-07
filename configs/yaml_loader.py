@@ -43,13 +43,39 @@ from configs.model_config import (
 
 
 def load_config(yaml_path: str | Path) -> ExperimentConfig:
-    """Parse *yaml_path* and return a fully-populated ExperimentConfig."""
-    yaml_path = Path(yaml_path)
+    """Parse *yaml_path* and return a fully-populated ExperimentConfig.
+
+    A config may set a top-level ``base: <relative path>`` to inherit from another
+    config; its own keys are then deep-merged on top (override wins). This lets a
+    thin variant (e.g. a bf16 runtime override) reuse a full experiment without
+    duplicating it. ``base`` may itself chain to another ``base``.
+    """
+    raw = _load_raw(Path(yaml_path))
+    return load_config_from_dict(raw)
+
+
+def _load_raw(yaml_path: Path) -> Dict[str, Any]:
+    """Read a YAML file into a dict, resolving an optional ``base:`` include."""
     if not yaml_path.exists():
         raise FileNotFoundError(f"Config file not found: {yaml_path}")
     with open(yaml_path) as f:
         raw = yaml.safe_load(f) or {}
-    return load_config_from_dict(raw)
+    base_ref = raw.pop("base", None)
+    if base_ref is None:
+        return raw
+    base_raw = _load_raw((yaml_path.parent / base_ref).resolve())
+    return _deep_merge(base_raw, raw)
+
+
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge ``override`` onto ``base`` (override wins; dicts merge)."""
+    merged = dict(base)
+    for key, val in override.items():
+        if isinstance(val, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], val)
+        else:
+            merged[key] = val
+    return merged
 
 
 def load_config_from_dict(raw: Dict[str, Any]) -> ExperimentConfig:

@@ -159,10 +159,20 @@ class TaskAlignedAssigner:
             target_dists = tf.zeros([B, A, 1], dtype=tf.float32)
 
         # ── 8. Soft target_scores: one-hot × normalized alignment ────────
+        # Matches Ultralytics YOLOv8: the soft target is scaled by the GT's
+        # localization quality (pos_overlaps = per-GT max IoU over candidates), so
+        # well-localized objects get higher classification targets. Omitting
+        # pos_overlaps would flatten every assigned anchor's target to a max of 1.0
+        # and drop the IoU-quality weighting of the classification loss.
         align_max_per_gt = tf.reduce_max(
             align_spatial, axis=1, keepdims=True
         )  # [B, 1, M]
-        align_norm = align_spatial / (align_max_per_gt + self.eps)  # [B, A, M]
+        pos_overlaps = tf.reduce_max(
+            iou * tf.cast(candidate_mask, tf.float32), axis=1, keepdims=True
+        )  # [B, 1, M]
+        align_norm = (
+            align_spatial * pos_overlaps / (align_max_per_gt + self.eps)
+        )  # [B, A, M]
 
         gt_idx_oh    = tf.one_hot(target_gt_idx, M)                           # [B, A, M]
         assigned_align = tf.reduce_sum(align_norm * gt_idx_oh, axis=-1)       # [B, A]

@@ -177,6 +177,7 @@ class TaskAlignedLossExtended:
         self,
         pd_bboxes: tf.Tensor,
         target_bboxes: tf.Tensor,
+        target_scores: tf.Tensor,   # [B, A, C] — per-anchor weighting (Ultralytics)
         target_scores_sum: tf.Tensor,
         fg_mask: tf.Tensor,
         pd_box_raw: tf.Tensor,
@@ -185,14 +186,19 @@ class TaskAlignedLossExtended:
     ) -> Tuple[tf.Tensor, tf.Tensor]:
         """CIoU loss + DFL loss for foreground anchors.
 
+        Both terms are weighted per-anchor by ``sum(target_scores, -1)`` so that
+        better-aligned anchors dominate the box gradient, matching the reference
+        Ultralytics YOLOv8 recipe (``(loss * weight).sum() / target_scores_sum``).
+
         Returns:
             (ciou_loss, dfl_loss) both scalar tensors.
         """
         fg_float = tf.cast(fg_mask, tf.float32)           # [B, A]
+        weight   = tf.reduce_sum(target_scores, axis=-1)  # [B, A]
 
         # ── CIoU ──────────────────────────────────────────────────────
         ciou = _ciou_loss(pd_bboxes, target_bboxes)        # [B, A]
-        ciou_loss = tf.reduce_sum(ciou * fg_float) / target_scores_sum
+        ciou_loss = tf.reduce_sum(ciou * weight * fg_float) / target_scores_sum
 
         # ── DFL ───────────────────────────────────────────────────────
         # Target LTRB offsets in feature-map units
@@ -231,7 +237,7 @@ class TaskAlignedLossExtended:
 
         dfl_raw  = -(weight_left * log_p_fl + weight_right * log_p_cl)   # [B, A, 4]
         dfl_mean = tf.reduce_mean(dfl_raw, axis=-1)                       # [B, A]
-        dfl_loss = tf.reduce_sum(dfl_mean * fg_float) / target_scores_sum
+        dfl_loss = tf.reduce_sum(dfl_mean * weight * fg_float) / target_scores_sum
 
         return ciou_loss, dfl_loss
 
@@ -271,7 +277,13 @@ class TaskAlignedLossExtended:
         fg_mask: tf.Tensor,
         target_scores_sum: tf.Tensor,
     ) -> tf.Tensor:
-        """L1 loss on log-scale distances, masked to valid GT entries (> -10.0)."""
+        """L1 loss on log-scale distances, masked to valid GT entries (> -10.0).
+
+        CONVENTION: normalized by ``n_valid`` (the *count* of valid foreground entries,
+        i.e. a per-valid-object mean), NOT by ``target_scores_sum`` like box/cls/dfl.
+        This keeps the distance term on its own scale; ``dist_gain`` is calibrated to
+        that mean. Tracked for possible unification — see plan Part 2.4.
+        """
         valid_mask = (
             (target_dist > INVALID_DISTANCE_SENTINEL) &
             tf.expand_dims(fg_mask, axis=-1)
@@ -464,7 +476,7 @@ class TaskAlignedLossExtended:
 
         # ── 5. Component losses ────────────────────────────────────────
         ciou_loss, dfl_loss = self._box_loss(
-            pd_bboxes, target_bboxes, target_scores_sum, fg_mask,
+            pd_bboxes, target_bboxes, target_scores, target_scores_sum, fg_mask,
             pd_box_raw, anc_strides, anc_points,
         )
 

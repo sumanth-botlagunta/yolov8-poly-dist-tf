@@ -1,0 +1,18 @@
+# Experiment: yolov8_poly_dist_bf16
+#
+# Identical to yolov8_poly_dist but runs in bfloat16 mixed precision with XLA JIT
+# for faster training on Tensor-Core GPUs (A100/H100/V100). bfloat16 needs no loss
+# scaling (unlike float16), so no other change is required.
+#
+# Validation procedure before trusting this config for a full run:
+#   1. /train this config for a few hundred steps.
+#   2. Confirm no NaN/Inf in the loss and that box/cls/dfl curves track the float32
+#      baseline (yolov8_poly_dist.yaml).
+#   3. /benchmark to record the throughput gain.
+# If loss is unstable, fall back to mixed_precision_dtype: float32 (keep enable_xla).
+
+base: yolov8_poly_dist.yaml
+
+runtime:
+  mixed_precision_dtype: bfloat16
+  enable_xla: true

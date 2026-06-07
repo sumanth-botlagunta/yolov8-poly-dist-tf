@@ -62,17 +62,18 @@ class ExponentialMovingAverage(tf.Module):
             )
         return tf.constant(self._average_decay, dtype=tf.float32)
 
-    def update_average(self, var: tf.Variable, value: tf.Tensor) -> None:
-        """Update one shadow variable: shadow = decay * shadow + (1-decay) * value."""
-        for v, shadow in zip(self._model_vars, self._shadows):
-            if v is var:
-                decay = self._get_decay()
-                shadow.assign(decay * shadow + (1.0 - decay) * value)
-                return
-
     def swap_weights(self, model: tf.keras.Model) -> None:
         """Swap all model variables with their shadow counterparts in-place."""
-        for var, shadow in zip(model.variables, self._shadows):
+        model_vars = model.variables
+        if len(model_vars) != len(self._shadows):
+            raise ValueError(
+                "EMA shadow/model variable count mismatch: "
+                f"{len(self._shadows)} shadows vs {len(model_vars)} model variables. "
+                "The model must be fully built BEFORE constructing the EMA wrapper "
+                "(otherwise zip() would silently truncate and skip swapping some "
+                "weights during evaluation)."
+            )
+        for var, shadow in zip(model_vars, self._shadows):
             live = tf.identity(var)
             var.assign(tf.identity(shadow))
             shadow.assign(live)
@@ -80,6 +81,8 @@ class ExponentialMovingAverage(tf.Module):
     def apply_gradients(self, grads_and_vars, **kwargs):
         """Apply gradients to real weights, then update all shadow weights."""
         result = self._optimizer.apply_gradients(grads_and_vars, **kwargs)
+        # Increment BEFORE computing decay (matches Ultralytics ModelEMA): the first
+        # averaging update therefore uses decay = (1+1)/(10+1), not (1+0)/(10+0).
         self._ema_step.assign_add(1)
         decay = self._get_decay()
         for var, shadow in zip(self._model_vars, self._shadows):
