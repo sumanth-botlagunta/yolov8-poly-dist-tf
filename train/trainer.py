@@ -80,14 +80,16 @@ class YoloV8Trainer:
 
             # ---- training ----
             step_losses = {}
+            python_step = int(self._global_step)  # one GPU-CPU sync per epoch
             for inputs in self._train_ds:
-                step_losses = self._task.train_step(
-                    inputs, self._model, self._optimizer
-                )
+                step_losses = self._compiled_train_step(inputs)
                 self._global_step.assign_add(1)
-                self._log_step(step_losses)
+                python_step += 1
 
-                if int(self._global_step) % trainer_cfg.checkpoint_interval == 0:
+                if python_step % trainer_cfg.summary_interval == 0:
+                    self._log_step(step_losses, python_step)
+
+                if python_step % trainer_cfg.checkpoint_interval == 0:
                     self._save_checkpoint()
 
             # ---- validation (EMA weights) ----
@@ -118,10 +120,19 @@ class YoloV8Trainer:
             self._model     = self._task.build_model()
             self._task.initialize(self._model)
             self._optimizer = self._task.build_optimizer()
+            self._task._loss_fn = self._task.build_losses()
 
         task_cfg = self._config.task
         self._train_ds = self._task.build_inputs(task_cfg.train_data)
         self._val_ds   = self._task.build_inputs(task_cfg.validation_data)
+
+        _task, _model, _optimizer = self._task, self._model, self._optimizer
+
+        @tf.function
+        def _compiled_train_step(inputs):
+            return _task.train_step(inputs, _model, _optimizer)
+
+        self._compiled_train_step = _compiled_train_step
 
         sgd = self._optimizer._optimizer
         self._ckpt = tf.train.Checkpoint(
@@ -187,8 +198,7 @@ class YoloV8Trainer:
     # Logging
     # ------------------------------------------------------------------
 
-    def _log_step(self, losses: dict) -> None:
-        step = int(self._global_step)
+    def _log_step(self, losses: dict, step: int) -> None:
         with self._tb_writer.as_default():
             for k, v in losses.items():
                 tf.summary.scalar(f'train/{k}', v, step=step)
