@@ -925,6 +925,45 @@ def _cmd_list(args: argparse.Namespace) -> None:
         print(f"{name:<80} {str(shape):<20} {dtype}")
 
 
+def _cmd_dump(args: argparse.Namespace) -> None:
+    """Print every weight variable grouped by module — full names, no truncation.
+
+    Intended for sharing the legacy checkpoint's structure (e.g. photographing
+    the terminal). Optimizer slots and the object-graph marker are excluded.
+    One variable per line as ``name <TAB> shape`` so long names never truncate.
+    """
+    variables = list_checkpoint_variables(args.ckpt)
+
+    def _keep(name: str) -> bool:
+        if "OPTIMIZER_SLOT" in name or "_CHECKPOINTABLE_OBJECT_GRAPH" in name:
+            return False
+        if name in ("save_counter", "global_step"):
+            return False
+        return name.split("/")[0] in ("backbone", "decoder", "head")
+
+    rows = sorted((n, sh) for n, (sh, _dt) in variables.items() if _keep(n))
+    by_mod: Dict[str, list] = {}
+    for n, sh in rows:
+        by_mod.setdefault(n.split("/")[0], []).append((n, sh))
+
+    lines = [f"Checkpoint: {args.ckpt}",
+             f"Weight variables: {len(rows)}", ""]
+    for mod in ("backbone", "decoder", "head"):
+        items = by_mod.get(mod, [])
+        lines.append(f"################ {mod.upper()} ({len(items)} vars) ################")
+        for n, sh in items:
+            lines.append(f"{n}\t{tuple(sh)}")
+        lines.append("")
+
+    text = "\n".join(lines)
+    print(text)
+    if args.output:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text)
+        print(f"\n(written to {args.output})")
+
+
 def _build_model_from_config(config_path: str):
     """Load YAML config and return a built+materialised YoloV8 (+ model_cfg)."""
     import sys
@@ -1147,6 +1186,15 @@ def main() -> None:
     p_list = sub.add_parser("list", help="List all variables in an old checkpoint")
     p_list.add_argument("--ckpt", required=True, help="Path prefix to old checkpoint")
 
+    # dump subcommand — full untruncated names grouped by module
+    p_dump = sub.add_parser(
+        "dump",
+        help="Print all weight variables grouped by module, full names + shapes "
+             "(no truncation). Useful for sharing the legacy checkpoint structure.",
+    )
+    p_dump.add_argument("--ckpt", required=True, help="Path prefix to old checkpoint")
+    p_dump.add_argument("--output", default=None, help="Optional .txt path to also save the dump")
+
     # map subcommand
     p_map = sub.add_parser("map", help="Dry-run: show the old→new variable mapping")
     p_map.add_argument("--ckpt", required=True)
@@ -1201,6 +1249,7 @@ def main() -> None:
     args = parser.parse_args()
     {
         "list": _cmd_list,
+        "dump": _cmd_dump,
         "map": _cmd_map,
         "mapping": _cmd_mapping,
         "report": _cmd_report,
