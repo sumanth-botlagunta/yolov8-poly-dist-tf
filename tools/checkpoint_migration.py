@@ -22,6 +22,29 @@ confused. Old variables with no structural match are reported as possible
 architecture changes — never silently copied. This is the default ``structural``
 strategy; ``--strategy name`` keeps the legacy fuzzy name matcher as a fallback.
 
+Curated legacy map (recommended for the ckpt-319992 legacy checkpoint)
+---------------------------------------------------------------------
+The legacy checkpoint names variables completely differently AND at different
+nesting levels (``backbone/layer_with_weights-N/...``,
+``head/_head/{level}/cv3/...``), so neither name nor traversal-order matching is
+reliable. ``tools/checkpoint_weight_map.py`` holds a hand-curated structural map
+that resolves each variable into confident / suggested / ambiguous tiers and
+copies only shape-verified pairs. The ``"map"`` strategy uses it, and ``"auto"``
+(default) selects it whenever the checkpoint looks legacy.
+
+Module rule (39-class): a 39-class model migrates ALL modules (backbone +
+decoder + head); any other class count migrates backbone + decoder only (the
+head is re-trained). See :func:`select_modules_39`.
+
+Workflow for the legacy checkpoint:
+    # See exactly what maps cleanly and what needs manual help:
+    python tools/checkpoint_migration.py report \
+        --ckpt <legacy_ckpt> --config configs/experiments/yolo/yolov8_poly_dist.yaml
+    # Add MANUAL_OVERRIDES for anything AMBIGUOUS, then migrate:
+    python tools/checkpoint_migration.py migrate --strategy map \
+        --ckpt <legacy_ckpt> --config configs/experiments/yolo/yolov8_poly_dist.yaml \
+        --output /tmp/migrated/ckpt --mapping-json /tmp/map.json
+
 Usage:
     # Step 1 — inspect variables in the old checkpoint:
     python tools/checkpoint_migration.py list \
@@ -567,12 +590,153 @@ def _write_mapping_json(
     log.info("Variable mapping written to: %s", json_path)
 
 
+def select_modules_39(new_model, requested: Optional[List[str]]) -> Tuple[List[str], str]:
+    """Module selection by the 39-class rule.
+
+    If ``requested`` is given it is honoured. Otherwise: a 39-class model copies
+    all modules (backbone + decoder + head); any other class count copies only
+    backbone + decoder (the head is re-trained because its class width differs).
+    """
+    if requested is not None:
+        return list(requested), f"user-specified modules: {list(requested)}"
+    head = getattr(new_model, "head", None)
+    num_classes = getattr(head, "num_classes", None)
+    if num_classes == 39:
+        return (
+            ["backbone", "decoder", "head"],
+            "num_classes == 39 -> migrating all modules (backbone + decoder + head)",
+        )
+    return (
+        ["backbone", "decoder"],
+        f"num_classes = {num_classes} (!= 39) -> migrating backbone + decoder only; "
+        "head will be re-trained",
+    )
+
+
+def _detect_strategy(reader) -> str:
+    """Pick 'map' for legacy object checkpoints, else 'structural'."""
+    for key in reader.get_variable_to_shape_map():
+        if "layer_with_weights" in key or "_head/" in key:
+            return "map"
+    return "structural"
+
+
+def migrate_with_map(
+    old_ckpt_path: str,
+    new_model,
+    output_ckpt_path: str,
+    modules: Optional[List[str]] = None,
+    mapping_json: Optional[str] = None,
+    include_suggested: bool = True,
+) -> Dict[str, int]:
+    """Migrate using the curated structural weight map (legacy -> new).
+
+    Copies ``confident`` (and, unless disabled, ``suggested``) pairs whose module
+    is in the selected set, verifying shapes. Ambiguous/unmatched variables are
+    reported and left at their initial values. See ``tools/checkpoint_weight_map``.
+    """
+    import tensorflow as tf
+
+    reader = tf.train.load_checkpoint(old_ckpt_path)
+    stats = apply_weight_map(
+        reader, new_model, modules=modules,
+        mapping_json=mapping_json, include_suggested=include_suggested,
+    )
+
+    output_path = Path(output_ckpt_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tf.train.Checkpoint(model=new_model).write(output_ckpt_path)
+    log.info("Migrated checkpoint saved to: %s", output_ckpt_path)
+    return stats
+
+
+def apply_weight_map(
+    reader,
+    new_model,
+    modules: Optional[List[str]] = None,
+    mapping_json: Optional[str] = None,
+    include_suggested: bool = True,
+) -> Dict[str, int]:
+    """Resolve the curated map for *reader* and assign weights into *new_model*.
+
+    Separated from disk I/O so it can be unit-tested with a fake reader exposing
+    ``get_variable_to_shape_map()`` and ``get_tensor(key)``. Returns the
+    ``{loaded, skipped, not_found}`` stats; does not save a checkpoint.
+    """
+    from tools import checkpoint_weight_map as wm
+
+    resolved_modules, reason = select_modules_39(new_model, modules)
+    log.info("Module selection: %s", reason)
+
+    old_recs, skipped = wm.old_records(reader)
+    new_recs = wm.new_records(new_model)
+    resolution = wm.resolve(old_recs, new_recs)
+
+    mods = set(resolved_modules)
+    pairs = list(resolution["confident"])
+    if include_suggested:
+        pairs += resolution["suggested"]
+    pairs = [p for p in pairs if p["module"] in mods]
+
+    log.info(
+        "Map resolution: confident=%d suggested=%d ambiguous=%d "
+        "unmatched_old=%d unmatched_new=%d (skipped non-weight=%d)",
+        len(resolution["confident"]), len(resolution["suggested"]),
+        len(resolution["ambiguous"]), len(resolution["unmatched_old"]),
+        len(resolution["unmatched_new"]), len(skipped),
+    )
+    if resolution["ambiguous"]:
+        log.warning(
+            "%d variables are AMBIGUOUS and were NOT copied. Run the `report` "
+            "subcommand and add entries to MANUAL_OVERRIDES in "
+            "tools/checkpoint_weight_map.py.", len(resolution["ambiguous"]),
+        )
+
+    if mapping_json:
+        import json
+        payload = {
+            "pairs": [
+                {"old_key": p["key"], "new_path": p["path"],
+                 "shape": list(p["shape"]), "tier": p["tier"], "module": p["module"]}
+                for p in pairs
+            ],
+            "ambiguous": resolution["ambiguous"],
+            "unmatched_old": resolution["unmatched_old"],
+            "unmatched_new": resolution["unmatched_new"],
+        }
+        out = Path(mapping_json)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, indent=2))
+        log.info("Variable mapping written to: %s", mapping_json)
+
+    stats = {"loaded": 0, "skipped": 0, "not_found": 0}
+    for p in pairs:
+        try:
+            tensor = reader.get_tensor(p["key"])
+        except Exception as e:
+            log.warning("Could not read %s: %s", p["key"], e)
+            stats["not_found"] += 1
+            continue
+        var = p["var"]
+        if tuple(var.shape) != tuple(tensor.shape):
+            log.warning("Shape mismatch %s: %s vs %s — skipping",
+                        p["path"], var.shape, tensor.shape)
+            stats["skipped"] += 1
+            continue
+        var.assign(tensor)
+        stats["loaded"] += 1
+
+    log.info("Assignment complete: loaded=%d skipped=%d not_found=%d",
+             stats["loaded"], stats["skipped"], stats["not_found"])
+    return stats
+
+
 def migrate_checkpoint(
     old_ckpt_path: str,
     new_model,                  # tf.keras.Model
     output_ckpt_path: str,
     modules: Optional[List[str]] = None,
-    strategy: str = "structural",
+    strategy: str = "auto",
     mapping_json: Optional[str] = None,
 ) -> Dict[str, int]:
     """Load *old_ckpt_path*, assign matching weights to *new_model*, save.
@@ -590,19 +754,31 @@ def migrate_checkpoint(
         Only load variables belonging to these module names. When ``None``
         (default) the modules are auto-selected by comparing the old and new
         classification head widths (see :func:`resolve_modules`).
-    strategy : {"structural", "name"}
-        ``"structural"`` (default) matches variables by DFS structure + role +
-        shape — name independent and the recommended path. ``"name"`` falls back
-        to the legacy fuzzy name matcher (:func:`build_name_mapping`).
+    strategy : {"auto", "map", "structural", "name"}
+        ``"auto"`` (default) inspects the checkpoint: legacy object checkpoints
+        (``layer_with_weights``/``_head``) use ``"map"``; otherwise ``"structural"``.
+        ``"map"`` uses the curated structural weight map for the legacy→new
+        migration (:mod:`tools.checkpoint_weight_map`) and the 39-class module
+        rule (:func:`select_modules_39`). ``"structural"`` matches by DFS
+        structure + role + shape. ``"name"`` is the legacy fuzzy name matcher.
     mapping_json : str, optional
-        If set (structural strategy only), write the resolved old→new variable
-        mapping and per-module diagnostics to this JSON path for auditing/reuse.
+        Write the resolved old→new variable mapping (and diagnostics) to JSON.
 
     Returns
     -------
     dict with keys ``loaded``, ``skipped``, ``not_found``.
     """
     import tensorflow as tf
+
+    if strategy == "auto":
+        strategy = _detect_strategy(tf.train.load_checkpoint(old_ckpt_path))
+        log.info("Auto-detected migration strategy: %s", strategy)
+
+    if strategy == "map":
+        return migrate_with_map(
+            old_ckpt_path, new_model, output_ckpt_path,
+            modules=modules, mapping_json=mapping_json,
+        )
 
     old_vars = list_checkpoint_variables(old_ckpt_path)
     new_var_dict: Dict[str, tf.Variable] = {
@@ -782,11 +958,70 @@ def _cmd_mapping(args: argparse.Namespace) -> None:
           f"to {args.output}")
 
 
+def _cmd_report(args: argparse.Namespace) -> None:
+    """Debug report for the curated map: confident / suggested / ambiguous / unmatched.
+
+    Use this against the REAL legacy checkpoint to see exactly what maps cleanly
+    and what needs a MANUAL_OVERRIDES entry in tools/checkpoint_weight_map.py.
+    """
+    import tensorflow as tf
+    from tools import checkpoint_weight_map as wm
+
+    model, _ = _build_model_from_config(args.config)
+    resolved_modules, reason = select_modules_39(model, args.modules)
+
+    reader = tf.train.load_checkpoint(args.ckpt)
+    old_recs, skipped = wm.old_records(reader)
+    new_recs = wm.new_records(model)
+    res = wm.resolve(old_recs, new_recs)
+
+    print(f"\nModule selection: {reason}")
+    print(f"Legacy weight vars parsed: {len(old_recs)}  (skipped non-weight: {len(skipped)})")
+    print(f"New model weight vars:     {len(new_recs)}\n")
+    print(f"  CONFIDENT : {len(res['confident'])}")
+    print(f"  SUGGESTED : {len(res['suggested'])}  (same-shape siblings paired by index)")
+    print(f"  AMBIGUOUS : {len(res['ambiguous'])}  (NEED MANUAL_OVERRIDES)")
+    print(f"  unmatched old: {len(res['unmatched_old'])}  | unmatched new: {len(res['unmatched_new'])}")
+
+    if res["suggested"]:
+        print("\n--- SUGGESTED (review these) ---")
+        for p in res["suggested"][:60]:
+            print(f"  [{p['module']}] {str(p['shape']):<22} {p['key']}\n        -> {p['path']}")
+    if res["ambiguous"]:
+        print("\n--- AMBIGUOUS (add to MANUAL_OVERRIDES) ---")
+        for a in res["ambiguous"]:
+            print(f"  {a['scope']}  {a['shape']}")
+            print(f"    old: {a['key']}")
+            for c in a["candidates"]:
+                print(f"    cand-> {c}")
+    if res["unmatched_old"]:
+        print("\n--- UNMATCHED OLD (no new target found) ---")
+        for k in res["unmatched_old"][:40]:
+            print(f"  {k}")
+    if res["unmatched_new"]:
+        print("\n--- UNMATCHED NEW (no legacy source; left at init) ---")
+        for p in res["unmatched_new"][:40]:
+            print(f"  {p}")
+
+    if args.output:
+        import json
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps({
+            "confident": [{"old": p["key"], "new": p["path"], "shape": list(p["shape"])} for p in res["confident"]],
+            "suggested": [{"old": p["key"], "new": p["path"], "shape": list(p["shape"])} for p in res["suggested"]],
+            "ambiguous": res["ambiguous"],
+            "unmatched_old": res["unmatched_old"],
+            "unmatched_new": res["unmatched_new"],
+        }, indent=2))
+        print(f"\nFull report written to {args.output}")
+
+
 def _cmd_migrate(args: argparse.Namespace) -> None:
     model, _ = _build_model_from_config(args.config)
 
-    # args.modules is None unless the user forced it → migrate_checkpoint
-    # auto-selects modules from the class count when None.
+    # args.modules is None unless the user forced it → 39-class rule (map strategy)
+    # or class-count auto-selection (structural/name strategies).
     stats = migrate_checkpoint(
         old_ckpt_path=args.ckpt,
         new_model=model,
@@ -833,15 +1068,29 @@ def main() -> None:
     p_jsn.add_argument("--output", required=True, help="Output JSON path")
     p_jsn.add_argument("--modules", nargs="+", default=None, help=_MODULES_HELP)
 
+    # report subcommand — curated-map debug report
+    p_rep = sub.add_parser(
+        "report",
+        help="Curated-map debug report (confident/suggested/ambiguous/unmatched)",
+    )
+    p_rep.add_argument("--ckpt", required=True, help="Legacy checkpoint path prefix")
+    p_rep.add_argument("--config", required=True, help="Experiment YAML config path")
+    p_rep.add_argument("--modules", nargs="+", default=None,
+                       help="Override modules (default: 39-class rule).")
+    p_rep.add_argument("--output", default=None, help="Optional JSON report path")
+
     # migrate subcommand
     p_mig = sub.add_parser("migrate", help="Migrate old checkpoint to new model")
     p_mig.add_argument("--ckpt", required=True)
     p_mig.add_argument("--config", required=True)
     p_mig.add_argument("--output", required=True, help="Output checkpoint path prefix")
-    p_mig.add_argument("--modules", nargs="+", default=None, help=_MODULES_HELP)
+    p_mig.add_argument("--modules", nargs="+", default=None,
+                       help="Override modules (default: 39-class rule for map; "
+                            "class-count auto for structural/name).")
     p_mig.add_argument(
-        "--strategy", choices=["structural", "name"], default="structural",
-        help="structural (default, name-independent) or name (legacy fuzzy)."
+        "--strategy", choices=["auto", "map", "structural", "name"], default="auto",
+        help="auto (default; map for legacy checkpoints, else structural), "
+             "map (curated legacy->new), structural, or name (legacy fuzzy)."
     )
     p_mig.add_argument(
         "--mapping-json", default=None,
@@ -853,6 +1102,7 @@ def main() -> None:
         "list": _cmd_list,
         "map": _cmd_map,
         "mapping": _cmd_mapping,
+        "report": _cmd_report,
         "migrate": _cmd_migrate,
     }[args.command](args)
 
