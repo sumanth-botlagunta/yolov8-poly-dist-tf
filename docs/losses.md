@@ -2,7 +2,10 @@
 
 All under `losses/`. The total loss is a Task-Aligned Learning (TAL) detection loss plus
 polygon and distance terms. Entry point: `tal_loss.py:TaskAlignedLossExtended.__call__`,
-which returns `(total, box, dfl, cls, dist, poly)`.
+which returns a **9-tuple**:
+`(total, box, dfl, cls, dist, poly, poly_angle_raw, poly_dist_raw, poly_conf_raw)`.
+The last three are raw pre-gain polygon sub-losses for TensorBoard logging only — they do
+not re-enter `total_loss`.
 
 ## Task-Aligned assignment — `tal_assigner.py:TaskAlignedAssigner`
 Pure (stop-gradient) label assignment per the Ultralytics YOLOv8 recipe:
@@ -31,16 +34,19 @@ samples) masks the class loss to foreground anchors only.
 
 ## Polygon — `polygon_loss.py`
 Three per-vertex components over the 24 bins:
-- `polygon_angle_loss` — sigmoid-CE over angle bins, **averaged** over vertices (`reduce_mean`).
-- `polygon_dist_loss` — L1 on radial distance, **summed** over vertices (`reduce_sum`).
-- `polygon_conf_loss` — BCE on vertex validity, **summed** over vertices (`reduce_sum`).
-Combined in `tal_loss.py:_polygon_loss` with the component gains, then multiplied by the overall
-`poly_gain`.
+- `polygon_angle_loss` — sigmoid-CE over angle bins, **averaged** over vertices (`reduce_mean`),
+  divided by `target_scores_sum`.
+- `polygon_dist_loss` — L2 on `(target − softplus(pred))`, **averaged** over vertices
+  (`reduce_mean`), divided by `num_objs`.
+- `polygon_conf_loss` — BCE on vertex validity, **averaged** over vertices (`reduce_mean`),
+  divided by `num_objs`.
+Combined in `tal_loss.py:_polygon_loss` with the component gains; the overall `poly_gain`
+multiplier is applied inside `_polygon_loss`.
 
 ## Distance — `distance_loss.py:distance_l1_loss`
 L1 on log-scale distance, masked to valid foreground entries (`target > -10.0` sentinel),
-normalized by the **count of valid entries** (`n_valid`) — a per-valid-object mean. Valid range
-`[0.5, 10.0]` m.
+normalized by **total GT object count** (`num_objs` = all GTs in the batch, including
+detection-stream GTs with sentinel distance). Valid range `[0.5, 10.0]` m.
 
 ## Gains (from the experiment YAML)
 `iou=7.5, cls=0.5, dfl=1.5, dist=1.0, poly_dist=0.45, poly_angle=0.4, poly_conf=0.2`, plus an
@@ -48,25 +54,24 @@ overall `poly_gain=0.5`. The detection gains are the Ultralytics defaults and ar
 the weighted formulation above.
 
 ## Normalization conventions — important
-Not all terms share the same denominator/reduction. **These are intentional and documented**, but
-mean the gains are not directly comparable across heads:
+Not all terms share the same denominator/reduction. **These are intentional**, but mean the gains
+are not directly comparable across heads:
 
 | Term | Denominator | Vertex reduction |
 |------|-------------|------------------|
 | box CIoU / DFL | `target_scores_sum`, per-anchor weighted | — |
 | cls | `target_scores_sum` | — |
-| distance | `n_valid` (count) | — |
+| distance | `num_objs` (total batch GT count) | — |
 | polygon angle | `target_scores_sum` | **mean** over 24 |
-| polygon dist / conf | `target_scores_sum` | **sum** over 24 |
+| polygon dist / conf | `num_objs` | **mean** over 24 |
 
 Consequences:
-- `dist_gain` is on a different scale than the detection gains (per-valid-object mean).
-- poly dist/conf are ~24× poly angle before gains; the poly gains absorb that ×24 factor. **Do not
-  change the vertex count without re-checking the gains.**
+- `dist_gain` and the poly dist/conf gains are on a different scale than the detection gains
+  (they divide by `num_objs`, not `target_scores_sum`).
+- Polygon angle uses `target_scores_sum` while dist/conf use `num_objs` — the gains encode this
+  difference. **Do not change the vertex count without re-checking the gains.**
 
-These are pinned by `tests/test_polygon_loss_conventions.py`. Unifying them (e.g. all on
-`target_scores_sum` + `reduce_mean`) is deferred to a future gain sweep, because it changes loss
-magnitudes and forces re-tuning every gain + a re-validation run.
+These conventions are pinned by `tests/test_polygon_loss_conventions.py`.
 
 ## Tests
 - `tests/test_loss_reference_parity.py` — pins the `pos_overlaps` scaling and the per-anchor

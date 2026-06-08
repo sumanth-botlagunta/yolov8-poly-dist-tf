@@ -149,7 +149,9 @@ python tools/eval.py \
     --output_json /tmp/results.json
 ```
 
-Metrics reported: **mAP** (0.50:0.95), **mAP50**, **AR100**, **F1@50**, **dist_MAE**, **dist_RMSE** (meters), **poly_mIoU**, **poly_AP50**.
+Metrics reported: **mAP** (0.50:0.95), **mAP50**, **AR100**, **F1@50**,
+**dist_mae**, **dist_rmse**, **dist_absrel**, **dist_abs_near**, **dist_absrel_near**,
+**dist_abs_far**, **dist_absrel_far** (meters), **poly_mIoU**, **poly_AP50**.
 
 ---
 
@@ -204,6 +206,7 @@ configs/
   model_config.py          All config dataclasses
   yaml_loader.py           YAML → ExperimentConfig via dacite
   registry.py              Registry for backbone / decoder / head classes
+  class_map.py             DETECTION_CLASSES list + SERVINGBOT_CLASS_REMAP {0: 35}
 
 data_pipeline/
   tfds_decoders.py         PolygonDecoder, ServingBotDetDecoder, CopyPasteDecoder
@@ -218,13 +221,13 @@ models/
   backbone.py              CSPDarkNetV8 (C2f blocks, SPPF)
   decoder.py               FPN-PAN decoder with C2f stacks
   head.py                  YoloV8Head — 6 branches, smart bias init
-  detection_generator.py   YoloV8Layer — DFL decode + class-agnostic NMS
+  detection_generator.py   YoloV8Layer — DFL decode + per-class NMS (score_thresh=0.05)
   yolo_v8.py               YoloV8 model + build_yolov8() factory
 
 losses/
   tal_assigner.py          TaskAlignedAssigner (score^0.5 × IoU^6, top-k=10)
   tal_loss.py              TaskAlignedLossExtended (CIoU + DFL + BCE + polygon + distance)
-  polygon_loss.py          Angle CE + radial L1 + vertex BCE
+  polygon_loss.py          Angle CE + radial L2/softplus + vertex BCE
   distance_loss.py         L1 on log-scale, sentinel-masked
 
 optimizers/
@@ -246,15 +249,18 @@ scripts/
 
 tools/
   checkpoint_migration.py  List / map / migrate old checkpoints (fuzzy name matching)
+  checkpoint_weight_map.py Generate/verify the frozen weight map (336 variables)
+  legacy_weight_map_frozen.py Frozen reference map for checkpoint migration
   compare_checkpoints.py   Diff two checkpoints (weights / metrics)
   trace_shapes.py          Trace tensor shapes through the pipeline
   benchmark_pipeline.py    Data pipeline throughput benchmark
-  eval.py                  Standalone evaluation script
+  eval.py                  Standalone evaluation script (--per_category, --output_dir)
   export_saved_model.py    Export SavedModel + optional TFLite
+  continuous_eval.py       Watch output_dir for new checkpoints, auto-evaluate each
 
 tests/
-  unit/                    Per-component unit tests (89 passing)
-  integration/             End-to-end pipeline tests (14 passing)
+  unit/                    Per-component unit tests (124 collected)
+  integration/             End-to-end pipeline tests (25 collected)
   smoke/                   10-step training loop + @pytest.mark.smoke real-data tests
 ```
 
@@ -307,7 +313,7 @@ trainer:
 |-------|--------|-------|
 | TFDS input | `[N, max_vertices+2]` xy normalized, padded with -1 | Raw dataset format |
 | PolyYOLO (training GT) | `[N, 72]` = `[dist, angle_norm, conf] × 24` interleaved | Origin implicit (cx, cy of box); see `losses/tal_loss.py:_polygon_loss` |
-| Prediction output | `[B, max_det, 24, 3]` = `(conf, dist, angle_logit)` | From detection_generator |
+| Prediction output | `[B, max_det, 24, 3]` = `(conf, dist, angle)` all activated | From detection_generator — conf is sigmoid, apply threshold directly |
 | Cartesian (eval) | `[N, max_vertices, 2]` yx denormalized | For mask IoU |
 
 Vertex angles are fixed: `θᵢ = i × 2π/24` for i = 0…23. Distance regressor predicts the radial distance at each angle; angle head selects the dominant bin via softmax.
