@@ -63,6 +63,35 @@ class TestV8ParserExtended(unittest.TestCase):
         self.assertEqual(int(self.labels["n_gt"]), 2)
 
 
+class TestLetterboxPolygonTransform(unittest.TestCase):
+    """Eval-path letterbox must transform polygons with the same scale+pad as boxes.
+
+    Regression guard: previously _letterbox_resize moved boxes but left polygons in
+    pre-letterbox space, so for non-square inputs the radial GT was computed from
+    misaligned coordinates.
+    """
+
+    def test_polygon_vertex_tracks_box_edge(self):
+        parser = _det_parser()
+        # Non-square input (40h x 80w) → letterbox to 64x64 pads top/bottom.
+        image = tf.constant(np.full((40, 80, 3), 100, np.uint8))
+        # Box spanning y in [0, 1]; polygon vertex at (x=0.5, y=0.0) == box top edge.
+        boxes = tf.constant([[0.0, 0.2, 1.0, 0.8]], dtype=tf.float32)
+        polys = tf.constant([[0.5, 0.0, -1.0, -1.0]], dtype=tf.float32)  # one vertex + pad
+
+        _, out_boxes, out_polys = parser._letterbox_resize(image, boxes, polys)
+        ob = out_boxes.numpy()[0]
+        op = out_polys.numpy()[0]
+
+        # Box top (ymin) and the y=0 polygon vertex must map to the same y.
+        self.assertAlmostEqual(op[1], ob[0], places=5)
+        # The padding vertex stays the -1 sentinel.
+        self.assertAlmostEqual(op[2], -1.0, places=6)
+        self.assertAlmostEqual(op[3], -1.0, places=6)
+        # Letterbox actually padded (top edge pushed inward from 0).
+        self.assertGreater(ob[0], 0.0)
+
+
 def _dist_data(dists, h=80, w=80):
     n = len(dists)
     return {

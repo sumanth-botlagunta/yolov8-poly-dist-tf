@@ -62,8 +62,13 @@ Prefer `bfloat16` (no loss scaling) over `float16`. Validate on a few hundred st
 curves tracking the float32 baseline) before a full run; benchmark with `/benchmark`.
 
 ## Distributed training
-`distribution_strategy: mirrored` shards the global batch across replicas (per-replica batch =
-`global_batch_size / num_replicas`). The model is built inside `strategy.scope()`.
+**Single-device only at present.** The model is built inside `strategy.scope()`, but the custom
+training loop runs the step directly (no `strategy.run` / `experimental_distribute_dataset`) and
+the loss normalizers (`num_objs`, `target_scores_sum`) are computed per-batch, not globally
+all-reduced. Multi-replica training would therefore be silently incorrect, so the trainer
+**raises `NotImplementedError` when `num_replicas_in_sync > 1`** rather than train a wrong model.
+To enable multi-GPU, dispatch the step via `strategy.run`, distribute the dataset, and all-reduce
+the normalizers across replicas before dividing.
 
 ## Derived fields
 `steps_per_loop`, `train_steps`, and `validation_steps` are computed from

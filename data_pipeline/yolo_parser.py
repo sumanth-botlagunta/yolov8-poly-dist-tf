@@ -197,8 +197,8 @@ class V8ParserExtended(Parser):
         """Parse a single evaluation example (letterbox resize only)."""
         image, boxes, classes, polygons, is_crowd = self._extract_fields(data)
 
-        # Letterbox resize to output size
-        image, boxes = self._letterbox_resize(image, boxes)
+        # Letterbox resize to output size (transforms boxes AND polygons together)
+        image, boxes, polygons = self._letterbox_resize(image, boxes, polygons)
 
         # Clip polygons to output bounds (after resize)
         polygons = clip_polygon_coords(polygons)
@@ -331,9 +331,16 @@ class V8ParserExtended(Parser):
         # Confidence: 1.0 if any valid vertex was assigned to this bin
         conf_bins = tf.cast(max_dists > 0.0, tf.float32)  # [N, n_angles]
 
-        # Dominant bin (max dist across all bins) → one-hot angle label
+        # Dominant bin (max dist across all bins) → one-hot angle label.
+        # Guard: a box with no valid vertices has all-zero max_dists, so argmax
+        # would return bin 0 and emit a spurious angle_norm=1.0 there — driving the
+        # polygon angle loss toward bin 0 on polygon-less objects. Gate the one-hot
+        # on "has at least one vertex" so empty polygons get an all-zero angle target.
         dominant_bin = tf.argmax(max_dists, axis=1, output_type=tf.int32)  # [N]
-        angle_bins = tf.one_hot(dominant_bin, n_angles)  # [N, n_angles]
+        has_vertex = tf.cast(
+            tf.reduce_max(max_dists, axis=1, keepdims=True) > 0.0, tf.float32
+        )  # [N, 1]
+        angle_bins = tf.one_hot(dominant_bin, n_angles) * has_vertex  # [N, n_angles]
 
         # Interleave [dist0, angle_norm0, conf0, dist1, angle_norm1, conf1, ...]
         result = tf.stack([max_dists, angle_bins, conf_bins], axis=-1)  # [N, n_angles, 3]
@@ -362,9 +369,14 @@ class V8ParserExtended(Parser):
         )
 
     def _letterbox_resize(
-        self, image: tf.Tensor, boxes: tf.Tensor
-    ) -> Tuple[tf.Tensor, tf.Tensor]:
-        """Letterbox-resize image to self._output_size with gray padding."""
+        self, image: tf.Tensor, boxes: tf.Tensor, polygons: tf.Tensor
+    ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+        """Letterbox-resize image to self._output_size with gray padding.
+
+        Boxes AND polygon vertices are remapped through the same scale + pad so
+        they stay aligned in the output normalized space. Invalid polygon
+        vertices (-1 sentinel) are preserved.
+        """
         h_out, w_out = self._output_size[0], self._output_size[1]
         h_in = tf.cast(tf.shape(image)[0], tf.float32)
         w_in = tf.cast(tf.shape(image)[1], tf.float32)
@@ -404,7 +416,19 @@ class V8ParserExtended(Parser):
         xmax = boxes[:, 3] * new_w_f / w_out_f + pad_lft_f / w_out_f
         boxes = tf.stack([ymin, xmin, ymax, xmax], axis=1)
 
-        return image, boxes
+        # Adjust polygon vertices with the same scale + pad. polygons is
+        # [N, max_vertices+2] flat (x, y) pairs, -1 padded for invalid vertices.
+        n_inst = tf.shape(polygons)[0]
+        pts    = tf.reshape(polygons, [n_inst, -1, 2])        # [N, P, 2] (x, y)
+        valid  = pts[:, :, 0] >= 0.0                           # [N, P]
+        px = pts[:, :, 0] * new_w_f / w_out_f + pad_lft_f / w_out_f
+        py = pts[:, :, 1] * new_h_f / h_out_f + pad_top_f / h_out_f
+        neg1 = tf.fill(tf.shape(px), -1.0)
+        px = tf.where(valid, px, neg1)
+        py = tf.where(valid, py, neg1)
+        polygons = tf.reshape(tf.stack([px, py], axis=-1), tf.shape(polygons))
+
+        return image, boxes, polygons
 
     # ------------------------------------------------------------------
     # Private helpers

@@ -64,5 +64,32 @@ class TestPreprocessPolygonsV2(unittest.TestCase):
         self.assertEqual(int(self.angle.sum()), 1)
 
 
+class TestEmptyPolygonAngleTarget(unittest.TestCase):
+    """A box with NO valid vertices must produce an all-zero angle target.
+
+    Regression guard for the argmax(all-zeros)=bin0 bug, which emitted a spurious
+    angle_norm=1.0 at bin 0 and drove polygon_angle_loss on polygon-less objects.
+    """
+
+    def test_no_vertices_angle_all_zero(self):
+        parser = _make_parser()
+        box = tf.constant([[0.0, 0.0, 1.0, 1.0]], dtype=tf.float32)
+        # All vertices invalid (-1 padded).
+        empty_poly = tf.constant([[-1.0] * 8], dtype=tf.float32)
+        out = parser._preprocess_polygons_v2(box, empty_poly, angle_step=15).numpy()
+        angle = out[0, 1::3]
+        conf  = out[0, 2::3]
+        dist  = out[0, 0::3]
+        self.assertEqual(int(angle.sum()), 0, "empty polygon must have no dominant angle bin")
+        np.testing.assert_array_equal(conf, 0.0)
+        np.testing.assert_array_equal(dist, 0.0)
+
+    def test_present_polygon_still_has_one_hot(self):
+        """The guard must NOT suppress the angle target when a vertex exists."""
+        parser = _make_parser()
+        out = parser._preprocess_polygons_v2(_BOX, _POLY, angle_step=15).numpy()
+        self.assertEqual(int(out[0, 1::3].sum()), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
