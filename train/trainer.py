@@ -63,6 +63,21 @@ class YoloV8Trainer:
         self._strategy    = strategy or tf.distribute.MirroredStrategy()
         self._resume_from = resume_from
 
+        # NOTE: this custom loop builds the model under strategy.scope() but runs
+        # the train step directly (no strategy.run / experimental_distribute_dataset),
+        # and the loss normalizers (num_objs, target_scores_sum) are per-batch, not
+        # globally all-reduced. Multi-replica training would therefore be silently
+        # incorrect (per-replica normalization + ungathered gradients). Fail loudly
+        # until real distribution is wired up rather than train a wrong model.
+        if self._strategy.num_replicas_in_sync > 1:
+            raise NotImplementedError(
+                "Multi-replica training is not supported by this trainer: the step "
+                "is not dispatched via strategy.run and loss normalizers are "
+                f"per-replica (num_replicas_in_sync={self._strategy.num_replicas_in_sync}). "
+                "Run single-device, or implement distributed dispatch + globally "
+                "all-reduced normalizers first."
+            )
+
         self._model        = None
         self._optimizer    = None
         self._train_ds     = None
@@ -151,10 +166,15 @@ class YoloV8Trainer:
                     return
 
             # ---- validation (EMA weights) ----
+            # try/finally so a failure inside validation can never leave the EMA
+            # (shadow) weights swapped in as the live weights — that state would
+            # silently corrupt subsequent training and any checkpoint saved after.
             val_start = time.time()
             self._optimizer.swap_weights(self._model)
-            val_metrics = self._run_validation()
-            self._optimizer.swap_weights(self._model)
+            try:
+                val_metrics = self._run_validation()
+            finally:
+                self._optimizer.swap_weights(self._model)
             val_time = time.time() - val_start
 
             # ---- best checkpoint ----
@@ -477,10 +497,14 @@ class YoloV8Trainer:
         metric_val   = float(self._best_metric)
         best_dir     = os.path.join(self._output_dir, f'best_{metric_name}')
         os.makedirs(best_dir, exist_ok=True)
+        # try/finally: a write failure (e.g. disk full) must not leave EMA weights
+        # swapped in as the live weights.
         self._optimizer.swap_weights(self._model)
-        best_ckpt = tf.train.Checkpoint(model=self._model)
-        best_ckpt.write(os.path.join(best_dir, 'ckpt'))
-        self._optimizer.swap_weights(self._model)
+        try:
+            best_ckpt = tf.train.Checkpoint(model=self._model)
+            best_ckpt.write(os.path.join(best_dir, 'ckpt'))
+        finally:
+            self._optimizer.swap_weights(self._model)
 
         # Write a human-readable metadata file alongside the checkpoint.
         meta_path = os.path.join(best_dir, 'best_info.yaml')

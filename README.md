@@ -151,7 +151,7 @@ python tools/eval.py \
 
 Metrics reported: **mAP** (0.50:0.95), **mAP50**, **AR100**, **F1@50**,
 **dist_mae**, **dist_rmse**, **dist_absrel**, **dist_abs_near**, **dist_absrel_near**,
-**dist_abs_far**, **dist_absrel_far** (meters), **poly_mIoU**, **poly_AP50**.
+**dist_abs_far**, **dist_absrel_far** (meters), **poly_mIoU**, **poly_recall50**.
 
 ---
 
@@ -237,7 +237,7 @@ optimizers/
 eval/
   coco_metrics.py          COCOEvaluator (mAP, mAP50, AR100, F1@50)
   distance_metrics.py      DistanceEvaluator (MAE, RMSE in meters)
-  polygon_metrics.py       PolygonEvaluator (mask IoU via cv2.fillPoly, poly_AP50)
+  polygon_metrics.py       PolygonEvaluator (mask IoU via cv2.fillPoly, poly_recall50)
 
 train/
   task.py                  YoloV8Task — build, train_step, validation_step, evaluators
@@ -325,7 +325,7 @@ Vertex angles are fixed: `θᵢ = i × 2π/24` for i = 0…23. Distance regresso
 | Symptom | Likely cause / fix |
 |---------|--------------------|
 | `Failed to load TFDS dataset ...` at startup | The TFDS dataset/version isn't on disk or `tfds_data_dir` is wrong. Run `/check-env` to verify dataset availability and the `TFDS_DATA_DIR` path. The distance dataset (`servingbot_polygon`) is **training-only** — don't reference it from a validation split. |
-| OOM during training | Lower `train_data.global_batch_size`, reduce input size, or train with fewer GPUs per step. With multiple GPUs the global batch is sharded across replicas (`MirroredStrategy`); the per-replica batch is `global_batch_size / num_replicas`. |
+| OOM during training | Lower `train_data.global_batch_size` or reduce input size. Training is **single-device only** — the trainer raises `NotImplementedError` if more than one replica is visible (multi-GPU dispatch + global loss normalization are not yet implemented). |
 | `NaN` loss after a few steps | Usually too-high LR or unstable mixed precision. Use the default `float32` config to isolate, prefer `bfloat16` over `float16` if enabling mixed precision (no loss scaling needed), and confirm GT boxes/polygons are valid (no degenerate zero-area boxes). |
 | Config load error (`missing field` / `unexpected key`) | A YAML key has no matching dataclass field (or vice-versa). Configs are validated by `scripts/run_train.py:_validate_config`; check the failing key against `configs/model_config.py`. |
 | Eval metrics look identical to raw weights | EMA weights may not be swapped in. EMA is swapped before validation and back after (`optimizers/ema.py:swap_weights`); confirm the optimizer is the EMA wrapper. |

@@ -3,16 +3,24 @@
 Converts PolyYOLO radial-format predictions to Cartesian masks and computes
 mask IoU against GT polygon masks.  Matches predictions to GT via bbox IoU > 0.5.
 
-PolyYOLO radial format (from detection_generator output):
-    polygons: [B, max_boxes, 24, 3]  where [..., :] = (conf, dist, angle_logits)
-    - dist:  radial distance for each of 24 vertices (15° spacing, 0° = right)
-    - angle_logits: 24-bin softmax over dominant angle direction (not used in decode)
-    - conf:  per-vertex confidence
+Prediction format (from detection_generator output):
+    pred_polygons: [B, max_boxes, 24, 3]  where [..., :] = (conf, dist, angle)
+    - dist:  radial distance for each of 24 vertices, in **normalized** image units
+    - conf / angle: per-vertex confidence and dominant-angle channel (not used here)
+
+GT format (from yolo_parser._preprocess_polygons_v2):
+    gt_polygons: [B, max_gt, 72] = [dist, angle_norm, conf] x 24 interleaved
+    - dist (channel 0::3): radial distance per bin, in **normalized** image units
+    - angle_norm (1::3): one-hot dominant bin; conf (2::3): per-bin validity
+
+Both prediction and GT radial distances are normalized [0, ~1.4] relative to the
+box-center origin (matching the parser).  They are scaled to pixels per-axis at
+rasterization time, so non-square inputs stay self-consistent with the parser.
 
 Vertex angles: theta_i = i * 2*pi / 24  (i = 0..23, 0 = right, CCW)
 
 Classes:
-    PolygonEvaluator: Accumulates matched polygon pairs, computes mIoU and AP50.
+    PolygonEvaluator: Accumulates matched polygon pairs, computes mIoU and recall.
 """
 
 import logging
@@ -28,21 +36,27 @@ _ANGLE_STEP   = 2 * math.pi / _NUM_VERTICES   # radians per vertex
 
 
 def _radial_to_cartesian(
-    cx: float, cy: float,
+    cx_n: float, cy_n: float,
     radii: np.ndarray,
+    w: int, h: int,
 ) -> np.ndarray:
-    """Convert 24 radial distances to Cartesian (x, y) polygon vertices.
+    """Convert 24 normalized radial distances to Cartesian pixel vertices.
+
+    The origin and radii are in **normalized** image coordinates (matching the
+    parser's PolyYOLO encoding).  Vertices are reconstructed in normalized space
+    and then scaled to pixels per-axis (``* w`` / ``* h``).
 
     Args:
-        cx, cy:  Polygon origin in pixel coordinates.
-        radii:   Shape [24], radial distance per vertex.
+        cx_n, cy_n:  Polygon origin in normalized [0, 1] coordinates.
+        radii:       Shape [24], normalized radial distance per vertex.
+        w, h:        Image width / height in pixels.
 
     Returns:
         Array of shape [24, 2] in pixel coordinates (x, y).
     """
     angles = np.arange(_NUM_VERTICES, dtype=np.float32) * _ANGLE_STEP
-    xs = cx + radii * np.cos(angles)
-    ys = cy + radii * np.sin(angles)
+    xs = (cx_n + radii * np.cos(angles)) * w
+    ys = (cy_n + radii * np.sin(angles)) * h
     return np.stack([xs, ys], axis=1)   # [24, 2]
 
 
@@ -138,7 +152,7 @@ class PolygonEvaluator:
             pred_scores:    [B, max_det] confidence.
             num_detections: [B] valid detection count.
             gt_boxes:       [B, max_gt, 4] yxyx-normalized.
-            gt_polygons:    [B, max_gt, 72] PolyYOLO [dx0,dy0,c0,...].
+            gt_polygons:    [B, max_gt, 72] PolyYOLO [dist,angle_norm,conf] x 24.
             n_gt:           [B] valid GT count.
         """
         B = int(num_detections.shape[0])
@@ -172,25 +186,23 @@ class PolygonEvaluator:
                     p_poly = np.asarray(pred_polygons[i, di])   # [24, 3]
                     g_poly = np.asarray(gt_polygons[i, best_gt])  # [72]
 
-                    # Prediction: use dist channel ([24, 1])
+                    # Prediction: dist is channel 1 of (conf, dist, angle), normalized.
                     p_dist = np.maximum(p_poly[:, 1], 0.0)   # [24]
 
-                    # GT: extract dx,dy → radial distance
-                    dx = g_poly[0::3]   # [24]
-                    dy = g_poly[1::3]   # [24]
-                    g_dist = np.sqrt(dx ** 2 + dy ** 2)      # [24]
+                    # GT: dist is channel 0::3 of [dist, angle_norm, conf] x 24, normalized.
+                    g_dist = np.maximum(g_poly[0::3], 0.0)   # [24]
 
-                    # Bbox centres as polygon origins (in pixels)
+                    # Bbox centres as polygon origins (normalized; scaled to px in helper)
                     y1, x1, y2, x2 = db[di]
-                    cx_p = (x1 + x2) / 2 * self._W
-                    cy_p = (y1 + y2) / 2 * self._H
+                    cx_p = (x1 + x2) / 2.0
+                    cy_p = (y1 + y2) / 2.0
 
                     y1g, x1g, y2g, x2g = gb[best_gt]
-                    cx_g = (x1g + x2g) / 2 * self._W
-                    cy_g = (y1g + y2g) / 2 * self._H
+                    cx_g = (x1g + x2g) / 2.0
+                    cy_g = (y1g + y2g) / 2.0
 
-                    p_verts = _radial_to_cartesian(cx_p, cy_p, p_dist)
-                    g_verts = _radial_to_cartesian(cx_g, cy_g, g_dist)
+                    p_verts = _radial_to_cartesian(cx_p, cy_p, p_dist, self._W, self._H)
+                    g_verts = _radial_to_cartesian(cx_g, cy_g, g_dist, self._W, self._H)
 
                     p_mask = _polygon_to_mask(p_verts, self._H, self._W)
                     g_mask = _polygon_to_mask(g_verts, self._H, self._W)
@@ -206,20 +218,23 @@ class PolygonEvaluator:
     # ------------------------------------------------------------------
 
     def evaluate(self) -> Dict[str, float]:
-        """Compute polygon mIoU and AP50.
+        """Compute polygon mIoU and recall@50.
 
-        poly_mIoU: mean mask IoU over all matched (prediction, GT) pairs.
-        poly_AP50: fraction of GT objects matched at bbox IoU >= 0.5.
+        poly_mIoU:     mean mask IoU over all matched (prediction, GT) pairs.
+        poly_recall50: fraction of GT objects matched at bbox IoU >= 0.5. This is
+                       recall, NOT average precision — it has no precision term and
+                       no score-threshold sweep, so a prediction-flooding model can
+                       inflate it. Use poly_mIoU for mask quality.
 
         Returns:
-            Dict with 'poly_mIoU' and 'poly_AP50'.
+            Dict with 'poly_mIoU' and 'poly_recall50'.
         """
         if not self._mask_ious:
-            return {'poly_mIoU': 0.0, 'poly_AP50': 0.0}
+            return {'poly_mIoU': 0.0, 'poly_recall50': 0.0}
 
-        miou  = float(np.mean(self._mask_ious))
-        ap50  = self._n_matched / self._n_gt_total if self._n_gt_total > 0 else 0.0
-        return {'poly_mIoU': miou, 'poly_AP50': float(ap50)}
+        miou    = float(np.mean(self._mask_ious))
+        recall  = self._n_matched / self._n_gt_total if self._n_gt_total > 0 else 0.0
+        return {'poly_mIoU': miou, 'poly_recall50': float(recall)}
 
     def reset(self) -> None:
         """Clear accumulated data."""

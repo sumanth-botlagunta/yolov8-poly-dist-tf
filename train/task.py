@@ -199,8 +199,10 @@ class YoloV8Task:
         images, labels = inputs
         original_deploy = model.deploy
         model.deploy = True
-        predictions = model(images, training=False)
-        model.deploy = original_deploy
+        try:
+            predictions = model(images, training=False)
+        finally:
+            model.deploy = original_deploy
         return {'predictions': predictions, 'labels': labels}
 
     def aggregate_logs(self, state, step_outputs):
@@ -238,16 +240,35 @@ class YoloV8Task:
             coco_ev.update(preds, labels)
 
             if dist_ev is not None:
-                # Per-image: match first GT distance to highest-confidence detection
+                # Per-image: match each GT to its highest-IoU detection (bbox IoU
+                # >= 0.5), then compare that detection's predicted distance to the
+                # GT distance. Feeding all-vs-all positionally would mis-pair (or
+                # crash when n_gt > n_det), so we build explicit 1:1 matched pairs.
+                from eval.polygon_metrics import _bbox_iou_matrix
+
                 n_gt  = labels['n_gt'].numpy()
                 gt_ld = labels['log_distance'].numpy()        # [B, M]
+                gt_bx = labels['bbox'].numpy()                # [B, M, 4] yxyx-norm
                 pd_d  = preds['distance'].numpy()             # [B, max_det]
+                pd_bx = preds['bbox'].numpy()                 # [B, max_det, 4]
                 nd    = preds['num_detections'].numpy()       # [B]
                 for i in range(len(n_gt)):
-                    if n_gt[i] > 0 and nd[i] > 0:
+                    ng, ndi = int(n_gt[i]), int(nd[i])
+                    if ng == 0 or ndi == 0:
+                        continue
+                    iou = _bbox_iou_matrix(gt_bx[i, :ng], pd_bx[i, :ndi])  # [ng, ndi]
+                    matched_det = set()
+                    pred_pairs, gt_pairs = [], []
+                    for g in range(ng):
+                        d = int(iou[g].argmax())
+                        if iou[g, d] >= 0.5 and d not in matched_det:
+                            matched_det.add(d)
+                            pred_pairs.append(pd_d[i, d])
+                            gt_pairs.append(gt_ld[i, g])
+                    if pred_pairs:
                         dist_ev.update(
-                            pd_d[i, :nd[i]],
-                            gt_ld[i, :n_gt[i]],
+                            np.asarray(pred_pairs, dtype=np.float32),
+                            np.asarray(gt_pairs, dtype=np.float32),
                         )
 
             if poly_ev is not None:
