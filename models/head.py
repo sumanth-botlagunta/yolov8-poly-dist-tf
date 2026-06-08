@@ -8,7 +8,7 @@ Six output heads per FPN level (strides 8, 16, 32):
     poly_conf:  float32 [batch, H, W, 24]   per-vertex confidence
     dist:       float32 [batch, H, W,  1]   object distance (log-scale)
 
-Head architecture (matching legacy):
+Head architecture:
     cv2feat: 2 × Conv(4*reg_max + 3*poly_size, 3×3) — shared stem for box and all poly branches
     cv3:     2 × Conv(128, 3×3)                      — cls stem (fixed 128 ch at all levels)
     cv4:     num_dist_block × Conv(128, 3×3)          — dist stem (fixed 128 ch at all levels)
@@ -41,8 +41,7 @@ class YoloV8Head(tf.keras.layers.Layer):
     """Multi-branch detection head for YOLOv8.
 
     Box and all polygon branches share a common cv2feat stem so that the
-    same intermediate features feed box regression and polygon prediction —
-    matching the legacy architecture.
+    same intermediate features feed box regression and polygon prediction.
 
     cv2feat hidden channels = 4*reg_max + 3*output_poly_size (136 for defaults).
     cls and dist stems always use 128 channels regardless of FPN level.

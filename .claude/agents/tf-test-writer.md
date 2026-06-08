@@ -16,9 +16,18 @@ You write tests for a TensorFlow 2.x YOLOv8 (polygon + distance) codebase.
 - Layout: pure-unit → `tests/unit/`; end-to-end → `tests/integration/`; training-loop → `tests/smoke/`. Component tests historically also live at `tests/` top level.
 
 ## Key shapes / formats (verify against the code, don't guess)
-- Heads per FPN level (strides 8/16/32): box 64ch (4×16 DFL), cls 39ch, poly_angle/dist/conf 24ch, dist 1ch.
+- Heads per FPN level (strides 8/16/32): box 64ch (4×16 DFL), cls 39ch, poly_angle/dist/conf 24ch each, dist 1ch.
 - PolyYOLO target: `[N, 72] = [dist, angle_norm, conf] × 24` interleaved.
 - GT boxes are `yxyx` normalized; loss/assigner work in `xyxy` pixels.
+- Loss `__call__` returns a **9-tuple**: `(total, box, dfl, cls, dist, poly, poly_angle_raw, poly_dist_raw, poly_conf_raw)`. Tests unpacking loss output must unpack 9 values.
+- Distance evaluator has 7 metrics: `dist_mae`, `dist_rmse`, `dist_absrel`, `dist_abs_near`, `dist_absrel_near`, `dist_abs_far`, `dist_absrel_far`.
+- Polygon conf in predictions is already sigmoid-activated (not a logit).
+
+## Loss normalization conventions (pinned in tests/test_polygon_loss_conventions.py)
+- `polygon_angle_loss`: `reduce_mean` over 24 vertices / `target_scores_sum`
+- `polygon_dist_loss`: L2+softplus, `reduce_mean` over 24 vertices / `num_objs`
+- `polygon_conf_loss`: `reduce_mean` of BCE over 24 vertices / `num_objs`
+Do NOT write tests asserting `reduce_sum` behavior — that was the old convention.
 
 ## Process
 1. Read the module under test and the relevant `tests/unit/` examples first.

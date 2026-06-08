@@ -15,7 +15,7 @@ python -c "import tensorflow as tf; print('TF:', tf.__version__); print('GPUs:',
 python -c "import tensorflow as tf; print(tf.sysconfig.get_build_info())"
 
 # 3. Package imports
-python -c "import wandb, dacite, yaml, albumentations, cv2, pycocotools; print('all imports OK')"
+python -c "import dacite, yaml, albumentations, cv2, pycocotools, sklearn; print('all imports OK')"
 
 # 4. TFDS dataset availability
 python -c "

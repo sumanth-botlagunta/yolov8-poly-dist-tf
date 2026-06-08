@@ -165,7 +165,7 @@ class YoloV8Task:
         images, labels = inputs
         with tf.GradientTape() as tape:
             feats = model(images, training=True)
-            total, box, dfl, cls, dist, poly = self._loss_fn(feats, labels)
+            total, box, dfl, cls, dist, poly, poly_a, poly_d, poly_c = self._loss_fn(feats, labels)
 
         grads = tape.gradient(total, model.trainable_variables)
         clip_norm = self._config.task.gradient_clip_norm
@@ -174,12 +174,15 @@ class YoloV8Task:
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
         return {
-            'total_loss': total,
-            'box_loss':   box,
-            'dfl_loss':   dfl,
-            'cls_loss':   cls,
-            'dist_loss':  dist,
-            'poly_loss':  poly,
+            'total_loss':      total,
+            'box_loss':        box,
+            'dfl_loss':        dfl,
+            'cls_loss':        cls,
+            'dist_loss':       dist,
+            'poly_loss':       poly,
+            'poly_angle_loss': poly_a,
+            'poly_dist_loss':  poly_d,
+            'poly_conf_loss':  poly_c,
         }
 
     def validation_step(
@@ -265,7 +268,9 @@ class YoloV8Task:
             metrics.update(poly_ev.evaluate())
 
         if self._config.task.per_category_metrics:
-            per_cat = coco_ev.per_category_ap50()
-            metrics.update({f'cls/{c}': v for c, v in per_cat.items()})
+            per_cat = coco_ev.per_category_full_metrics()
+            for cat_id, cat_m in per_cat.items():
+                for mn, mv in cat_m.items():
+                    metrics[f'cls/{cat_id}/{mn}'] = mv
 
         return metrics

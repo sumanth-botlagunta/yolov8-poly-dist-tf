@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Implemented and actively trained.** This is a working TensorFlow 2.16 codebase, not a
 plan. Source lives under `data_pipeline/`, `models/`, `losses/`, `optimizers/`, `eval/`,
-`train/`, `configs/`, `scripts/`, and `tools/`, with a `tests/` suite and two notebooks.
+`train/`, `configs/`, `scripts/`, and `tools/`, with a `tests/` suite and notebooks.
 
 The authoritative hyperparameter reference is the experiment YAML you train with, e.g.
 `configs/experiments/yolo/yolov8_poly_dist.yaml`. Developer docs live in `docs/`
@@ -71,11 +71,16 @@ polygon loss.
 **Loss normalization conventions** (`losses/tal_loss.py`, `losses/polygon_loss.py`):
 - Box CIoU, DFL, and cls divide by `target_scores_sum = max(sum(target_scores), 1)`; box and
   DFL are additionally weighted per-anchor by `sum(target_scores, -1)`.
-- Distance L1 divides by the count of valid foreground entries (`n_valid`), not
-  `target_scores_sum` — a deliberate per-valid-object mean. (Tracked inconsistency; see plan.)
-- Polygon **angle** uses `reduce_mean` over the 24 vertices, while **dist** and **conf** use
-  `reduce_sum`. The poly gains therefore bake in an implicit ×24 factor for dist/conf — do not
-  change vertex count without re-checking the gains.
+- Distance L1 divides by `num_objs` (total GT object count in the batch, both detection and
+  distance streams). The valid-sentinel mask (`gt_distance > -10.0`) is applied to the
+  numerator inside `distance_l1_loss`; detection-stream GTs contribute zero to the numerator.
+- Polygon **angle** uses `reduce_mean` over the 24 vertices, normalized by `target_scores_sum`.
+- Polygon **dist** uses L2+softplus: `mean((target - softplus(pred))²)` over 24 vertices,
+  normalized by `num_objs`. Formula matches old-codebase MSE convention.
+- Polygon **conf** uses `reduce_mean` of BCE over 24 vertices, normalized by `num_objs`.
+- All three polygon sub-losses (`poly_angle_loss`, `poly_dist_loss`, `poly_conf_loss`) are
+  logged separately to TensorBoard; the combined `poly_loss` is their gain-weighted sum
+  multiplied by `poly_gain`.
 
 Distance loss: L1 on log-scale, masked to samples where `gt_distance > -10.0` (invalid sentinel = -10.0). Valid distance range: [0.5, 10.0] meters.
 
@@ -121,12 +126,13 @@ configs/
   model_config.py      # config dataclasses
   yaml_loader.py       # YAML → dataclasses via dacite
   registry.py
+  class_map.py         # DETECTION_CLASSES list (39 class names, index = category_id)
   data/ model/ optimizer/ experiments/yolo/   # composable YAML fragments
 scripts/
   run_train.py         # entry point (config load, validation, strategy, runtime flags)
 tools/
   benchmark_pipeline.py checkpoint_migration.py compare_checkpoints.py
-  eval.py export_saved_model.py trace_shapes.py
+  eval.py export_saved_model.py trace_shapes.py continuous_eval.py
 tests/                 # unit/ integration/ smoke/ + component tests
 ```
 
@@ -160,6 +166,8 @@ Run with `/test` or `pytest tests/unit tests/smoke -v`.
 - **Smart bias init**: class bias = `log(5 / num_classes / (640/stride)^2)`; box bias = 1.0
 - **Init checkpoint**: loads only backbone + decoder weights; head is randomly initialized
 - **Backbone config**: despite `depth_scale: 1.0` / `width_scale: 1.0` in the YAML, model_id is `cspdarknetv8s` (small) — the model_id takes precedence
+- **Polygon conf in predictions**: `predictions['polygons'][:, :, :, 0]` values are already sigmoid-activated by the detection generator — they are not raw logits. Apply your threshold directly.
+- **Polygon sub-losses are logged separately**: TensorBoard tags `train/poly_angle_loss`, `train/poly_dist_loss`, and `train/poly_conf_loss` allow diagnosing which polygon component is not converging.
 
 ## Dependencies
 
