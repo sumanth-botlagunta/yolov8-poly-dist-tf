@@ -73,18 +73,25 @@ MANUAL_OVERRIDES: Dict[str, str] = {
 
 # Legacy head sub-path -> (semantic_name) used by the new head attributes.
 # Order of the regexes matters (longest / most specific first).
+# Separators between the group name and its layer index vary across checkpoints
+# (``cv2feat_layer_with_weights-0`` vs ``cv2feat/layer_with_weights-0`` vs
+# ``cv2feat/0``), so the patterns accept ``_``, ``/`` or ``layer_with_weights-``.
+def _sub(group: str, idx: int) -> str:
+    return rf"{group}[_/](?:layer_with_weights[-_])?0*{idx}(?:/|$)"
+
+
 _OLD_HEAD_SEMANTIC: List[Tuple[str, str]] = [
-    (r"cv2feat_layer_with_weights-0", "cv2feat_s1"),
-    (r"cv2feat_layer_with_weights-1", "cv2feat_s2"),
-    (r"cv3/layer_with_weights-0",     "cls_s1"),
-    (r"cv3/layer_with_weights-1",     "cls_s2"),
-    (r"cv3/layer_with_weights-2",     "cls_pred"),
-    (r"cv4/layer_with_weights-0",     "dist_s0"),
-    (r"cv4/layer_with_weights-1",     "dist_pred"),
-    (r"poly_angle",                   "pa_pred"),
-    (r"poly_dist",                    "pd_pred"),
-    (r"poly_conf",                    "pc_pred"),
-    (r"(^|/)box(/|$)",                "box_pred"),
+    (_sub("cv2feat", 0), "cv2feat_s1"),
+    (_sub("cv2feat", 1), "cv2feat_s2"),
+    (_sub("cv3", 0),     "cls_s1"),
+    (_sub("cv3", 1),     "cls_s2"),
+    (_sub("cv3", 2),     "cls_pred"),
+    (_sub("cv4", 0),     "dist_s0"),
+    (_sub("cv4", 1),     "dist_pred"),
+    (r"poly_angle",      "pa_pred"),
+    (r"poly_dist",       "pd_pred"),
+    (r"poly_conf",       "pc_pred"),
+    (r"(^|/)box(/|$)",   "box_pred"),
 ]
 
 # New head semantics that exist per level (subset present depends on config).
@@ -103,6 +110,46 @@ _NEW_HEAD_SEMANTICS = (
 def strip_attr_suffix(key: str) -> str:
     """Drop the object-checkpoint ``/.ATTRIBUTES/VARIABLE_VALUE`` tail."""
     return re.split(r"/\.ATTRIBUTES", key, maxsplit=1)[0]
+
+
+def _checkpoint_order(reader) -> Dict[str, int]:
+    """Return ``{checkpoint_key: tracking_order_index}`` from the object graph.
+
+    TF2 object checkpoints store the trackable tree in the order layers/variables
+    were created. A DFS over it gives each variable a deterministic *architecture
+    order* index — the real construction order, not the alphabetical order of the
+    flat variable map. This is what lets us pair same-shape siblings correctly.
+    """
+    order: Dict[str, int] = {}
+    try:
+        from tensorflow.core.protobuf import (  # type: ignore
+            trackable_object_graph_pb2 as tog,
+        )
+        og = tog.TrackableObjectGraph()
+        og.ParseFromString(reader.get_tensor("_CHECKPOINTABLE_OBJECT_GRAPH"))
+        nodes = og.nodes
+        visited = {0}
+        counter = [0]
+
+        def walk(node_id: int) -> None:
+            node = nodes[node_id]
+            for attr in node.attributes:
+                if attr.name == "VARIABLE_VALUE":
+                    order[attr.checkpoint_key] = counter[0]
+                    counter[0] += 1
+            for child in node.children:
+                if child.node_id in visited:
+                    continue
+                visited.add(child.node_id)
+                walk(child.node_id)
+
+        for child in nodes[0].children:
+            if child.node_id not in visited:
+                visited.add(child.node_id)
+                walk(child.node_id)
+    except Exception:  # pragma: no cover - defensive across TF versions
+        pass
+    return order
 
 
 def role_of(name_or_tail: str) -> Optional[str]:
@@ -190,7 +237,7 @@ def new_records(model) -> List[dict]:
             block = _new_block_name(path, module_name)
             if block not in order:
                 order[block] = len(order)
-        for v in module.variables:
+        for seq, v in enumerate(module.variables):
             path = _resolve_path(v, module_name, path_map)
             block = _new_block_name(path, module_name)
             recs.append({
@@ -200,6 +247,7 @@ def new_records(model) -> List[dict]:
                 "shape": tuple(v.shape),
                 "var": v,
                 "path": path,
+                "seq": seq,  # creation order within the module
             })
 
     head = getattr(model, "head", None)
@@ -265,6 +313,7 @@ def old_records(reader) -> Tuple[List[dict], List[str]]:
     fields as the matching new records plus ``key`` (the exact checkpoint key).
     """
     shape_map = reader.get_variable_to_shape_map()
+    order_map = _checkpoint_order(reader)
     recs: List[dict] = []
     skipped: List[str] = []
 
@@ -277,6 +326,8 @@ def old_records(reader) -> Tuple[List[dict], List[str]]:
             continue
         struct = strip_attr_suffix(key)
         shape_t = tuple(shape)
+        # architecture/tracking order from the object graph (fallback: large)
+        order = order_map.get(key, 1_000_000 + len(recs))
 
         if module == "head":
             parsed = _parse_old_head(struct)
@@ -286,7 +337,7 @@ def old_records(reader) -> Tuple[List[dict], List[str]]:
             level, sem, role = parsed
             recs.append({
                 "module": "head", "level": level, "semantic": sem,
-                "role": role, "shape": shape_t, "key": key,
+                "role": role, "shape": shape_t, "key": key, "order": order,
             })
             continue
 
@@ -300,11 +351,10 @@ def old_records(reader) -> Tuple[List[dict], List[str]]:
         if role is None:
             skipped.append(key)
             continue
-        # index hint for same-shape siblings: bottleneck + conv-unit numbers
         recs.append({
             "module": module, "block_ord": block_ord,
             "role": role, "shape": shape_t, "key": key,
-            "idx_hint": _old_index_hint(struct),
+            "order": order, "idx_hint": _old_index_hint(struct),
         })
     return recs, skipped
 
@@ -386,33 +436,20 @@ def resolve(old_recs: List[dict], new_recs: List[dict]) -> dict:
 
         for sig, olds in old_by_sig.items():
             news = new_by_sig.get(sig, [])
-            if len(olds) == 1 and len(news) == 1:
-                confident.append(_pair(olds[0], news[0], "shape-unique"))
-                used_new.add(id(news[0]["var"]))
-            elif len(olds) == len(news) and len(olds) > 1:
-                # same-shape siblings (e.g. C2f bottleneck cv1/cv2). If both sides
-                # carry fully-parsed, distinct index hints that form a bijection,
-                # the pairing is deterministic -> CONFIDENT. Otherwise fall back to
-                # order-based SUGGESTED for the user to review.
-                o_idx = {tuple(o.get("idx_hint", ())): o for o in olds}
-                n_idx = {_new_index_hint(n["path"]): n for n in news}
-                fully_indexed = (
-                    len(o_idx) == len(olds) and len(n_idx) == len(news)
-                    and set(o_idx) == set(n_idx)
-                    and all(-1 not in k for k in o_idx)
-                )
-                if fully_indexed:
-                    for k, o in o_idx.items():
-                        n = n_idx[k]
-                        confident.append(_pair(o, n, "index-exact"))
-                        used_new.add(id(n["var"]))
-                else:
-                    o_sorted = sorted(olds, key=lambda r: r.get("idx_hint", ()))
-                    n_sorted = sorted(news, key=lambda r: _new_index_hint(r["path"]))
-                    for o, n in zip(o_sorted, n_sorted):
-                        suggested.append(_pair(o, n, "index"))
-                        used_new.add(id(n["var"]))
+            if len(olds) == len(news) and len(olds) >= 1:
+                # Within a block, the k-th variable of a given (role, shape) in the
+                # legacy ARCHITECTURE ORDER (object-graph tracking order) is the
+                # k-th such variable in the new model's CREATION ORDER. Pairing by
+                # that order resolves same-shape siblings (e.g. C2f bottleneck
+                # cv1/cv2) deterministically — no shape-only guessing.
+                o_sorted = sorted(olds, key=lambda r: r.get("order", 1 << 30))
+                n_sorted = sorted(news, key=lambda r: r.get("seq", 1 << 30))
+                tier = "shape-unique" if len(olds) == 1 else "order"
+                for o, n in zip(o_sorted, n_sorted):
+                    confident.append(_pair(o, n, tier))
+                    used_new.add(id(n["var"]))
             else:
+                # count mismatch within (block, role, shape) -> genuine divergence
                 for o in olds:
                     ambiguous.append({
                         "key": o["key"], "shape": o["shape"],

@@ -1014,8 +1014,20 @@ def _cmd_report(args: argparse.Namespace) -> None:
     cov = wm.coverage(res, new_recs, resolved_modules)
 
     print(f"\nModule selection: {reason}")
-    print(f"Legacy weight vars parsed: {len(old_recs)}  (skipped non-weight: {len(skipped)})")
+    print(f"Legacy weight vars parsed: {len(old_recs)}  (unparsed weight-module keys: {len(skipped)})")
     print(f"New model weight vars:     {len(new_recs)}\n")
+
+    # Surface unparsed weight-module keys (these are the real culprit when head
+    # vars go missing — paste them so the parser can be fixed to the exact format).
+    skipped_weight = [k for k in skipped if k.split("/")[0] in ("backbone", "decoder", "head")]
+    if skipped_weight:
+        print(f"--- UNPARSED weight-module keys ({len(skipped_weight)}) ---")
+        for k in skipped_weight[:60]:
+            print(f"  {k}")
+        if len(skipped_weight) > 60:
+            print(f"  ... and {len(skipped_weight) - 60} more")
+        print()
+
     print(f"  CONFIDENT : {len(res['confident'])}")
     print(f"  SUGGESTED : {len(res['suggested'])}  (same-shape siblings paired by index)")
     print(f"  AMBIGUOUS : {len(res['ambiguous'])}  (NEED MANUAL_OVERRIDES)")
