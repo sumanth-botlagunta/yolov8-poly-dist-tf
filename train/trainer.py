@@ -178,8 +178,17 @@ class YoloV8Trainer:
             val_time = time.time() - val_start
 
             # ---- best checkpoint ----
-            metric_val = val_metrics.get(trainer_cfg.best_checkpoint_eval_metric, 0.0)
-            if metric_val > float(self._best_metric):
+            best_metric_name = trainer_cfg.best_checkpoint_eval_metric
+            if best_metric_name not in val_metrics:
+                # Missing key (typo, or the metric's head is disabled) would silently
+                # default to 0.0 and never save a best checkpoint — surface it loudly.
+                log.warning(
+                    "best_checkpoint_eval_metric '%s' not in validation metrics %s; "
+                    "no best checkpoint will be saved this epoch.",
+                    best_metric_name, sorted(val_metrics.keys()),
+                )
+            metric_val = val_metrics.get(best_metric_name, 0.0)
+            if best_metric_name in val_metrics and metric_val > float(self._best_metric):
                 self._best_metric.assign(metric_val)
                 self._save_best_checkpoint(epoch=epoch + 1, step=python_step)
 
@@ -192,6 +201,13 @@ class YoloV8Trainer:
             if python_step != last_saved_step:
                 self._save_checkpoint()
                 last_saved_step = python_step
+
+            # Honor a preemption signal that arrived during validation / checkpointing.
+            # Validation can take minutes; without this check a SIGTERM during it would
+            # not be acted on until the next epoch's first step — past the grace window.
+            if self._shutdown_requested:
+                log.info("Graceful shutdown after epoch %d validation.", epoch + 1)
+                return
 
             # ---- timing & logging ----
             epoch_time     = time.time() - epoch_start

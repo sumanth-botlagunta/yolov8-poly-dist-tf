@@ -133,12 +133,14 @@ class V8DistanceParser(Parser):
     def _encode_log_distance(self, distances: tf.Tensor) -> tf.Tensor:
         """Clip distances to [min_meter, max_meter] then take log.
 
-        Invalid distances (< 0) are encoded as -10.0.
+        Invalid distances (<= 0) are encoded as -10.0. A distance of exactly 0.0
+        is physically invalid (an object at zero range), so it is treated as a
+        sentinel rather than clipped up to min_meter and contributing to the loss.
 
         Returns:
             float32 [N]
         """
-        valid_mask = distances >= 0.0
+        valid_mask = distances > 0.0
         clipped = tf.clip_by_value(distances, self._min_meter, self._max_meter)
         log_dist = tf.math.log(clipped)
         # Replace invalid entries with the sentinel.
@@ -172,8 +174,10 @@ class V8DistanceParser(Parser):
         w_in = tf.cast(tf.shape(image)[1], tf.float32)
 
         scale = tf.minimum(h_out / h_in, w_out / w_in)
-        new_h = tf.cast(tf.round(h_in * scale), tf.int32)
-        new_w = tf.cast(tf.round(w_in * scale), tf.int32)
+        # Guard against a 0-size resize on degenerate (e.g. 1px) inputs, matching
+        # V8ParserExtended._letterbox_resize. tf.image.resize raises on a 0 dim.
+        new_h = tf.maximum(tf.cast(tf.round(h_in * scale), tf.int32), 1)
+        new_w = tf.maximum(tf.cast(tf.round(w_in * scale), tf.int32), 1)
 
         image = tf.image.resize(image, [new_h, new_w], method='bilinear')
         image = tf.cast(image, tf.uint8)

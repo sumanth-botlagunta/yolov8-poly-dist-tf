@@ -307,9 +307,11 @@ def hsv_augment(
     if hue > 0.0:
         image = tf.image.random_hue(image, hue)
     if sat > 0.0:
-        # sat is the direct multiplicative factor: gain ∈ [sat, 1/sat] (symmetric in log space).
-        sat_lower = min(sat, 1.0 / sat)
-        sat_upper = max(sat, 1.0 / sat)
+        # Ultralytics convention: gain ∈ [1−sat, 1+sat], allowing strong desaturation.
+        # Must match distance_parser._augment_color so both streams see the same
+        # saturation distribution for the same config value.
+        sat_lower = max(0.0, 1.0 - sat)
+        sat_upper = 1.0 + sat
         image = tf.image.random_saturation(image, sat_lower, sat_upper)
     if val > 0.0:
         image = tf.image.random_brightness(image, val)
