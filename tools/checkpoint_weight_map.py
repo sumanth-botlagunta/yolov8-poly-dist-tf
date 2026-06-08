@@ -213,6 +213,62 @@ def _new_block_name(path: str, module: str) -> str:
     return segs[1] if len(segs) > 1 else segs[0]
 
 
+_LEAF_LAYER = re.compile(r"^(conv2d|conv|batch_normalization|bn)(_\d+)?$")
+
+
+def _new_subblock(path: str, module: str) -> str:
+    """Conv-unit sub-block of a new backbone/decoder variable.
+
+    Returns '' for a plain ConvBnAct block, 'cv1'/'cv2' for C2f/SPPF outer convs,
+    and 'bn{i}/cv{k}' for bottleneck convs — i.e. the path between the top block
+    and the leaf conv/bn layer. Works for both ``v.path`` (``.../cv1/conv2d/...``)
+    and the attribute-tree fallback (``.../cv1/conv/...``).
+    """
+    p = re.sub(r"^yolo_v8/", "", path)
+    segs = p.split("/")
+    if module in segs:
+        segs = segs[segs.index(module) + 1:]
+    if len(segs) < 2:
+        return ""
+    rest = segs[1:]  # drop the top block name
+    for i, s in enumerate(rest):
+        if _LEAF_LAYER.match(s):
+            return "/".join(rest[:i])
+    return "/".join(rest[:-1])  # fallback: drop the role
+
+
+def _legacy_subblock(struct: str) -> Optional[str]:
+    """Translate a legacy backbone/decoder key to the NEW sub-block vocabulary.
+
+    The legacy C2f conv names are architecturally inverted; the correspondence is
+    fixed by data-flow role (see tools/legacy_checkpoint_structure.md):
+        _route/_conv2 -> cv1,  _connect/_conv1 -> cv2,
+        _model_to_wrap/{i}/_conv{k} -> bn{i}/cv{k},
+        _conv1 -> cv1, _conv2 -> cv2  (SPPF),  plain block -> ''.
+    Returns None if the sub-path is unrecognised (so it is reported, not guessed).
+    """
+    m = re.search(r"layer_with_weights-\d+/(.*)$", struct)
+    if not m:
+        return None
+    rest = m.group(1)
+    # strip the trailing conv/<role> or bn/<role> leaf
+    rest = re.sub(r"/?(conv|bn)/[^/]+$", "", rest)
+    if rest == "":
+        return ""                       # plain ConvBnAct block
+    if rest.startswith("_route"):
+        return "cv1"
+    if rest.startswith("_connect"):
+        return "cv2"
+    mm = re.match(r"_model_to_wrap/(\d+)/_conv(\d+)$", rest)
+    if mm:
+        return f"bn{mm.group(1)}/cv{mm.group(2)}"
+    if rest == "_conv1":
+        return "cv1"                    # SPPF input conv
+    if rest == "_conv2":
+        return "cv2"                    # SPPF output conv
+    return None
+
+
 # ---------------------------------------------------------------------------
 # New-model records (authoritative)
 # ---------------------------------------------------------------------------
@@ -243,6 +299,7 @@ def new_records(model) -> List[dict]:
             recs.append({
                 "module": module_name,
                 "block_ord": order[block],
+                "subblock": _new_subblock(path, module_name),
                 "role": role_of(getattr(v, "name", "") or path),
                 "shape": tuple(v.shape),
                 "var": v,
@@ -348,42 +405,15 @@ def old_records(reader) -> Tuple[List[dict], List[str]]:
             continue
         block_ord = int(m.group(1))
         role = role_of(struct.split("/")[-1])
-        if role is None:
+        subblock = _legacy_subblock(struct)
+        if role is None or subblock is None:
             skipped.append(key)
             continue
         recs.append({
-            "module": module, "block_ord": block_ord,
-            "role": role, "shape": shape_t, "key": key,
-            "order": order, "idx_hint": _old_index_hint(struct),
+            "module": module, "block_ord": block_ord, "subblock": subblock,
+            "role": role, "shape": shape_t, "key": key, "order": order,
         })
     return recs, skipped
-
-
-def _old_index_hint(struct: str) -> Tuple[int, ...]:
-    """Best-effort conv-unit index for disambiguating same-shape siblings.
-
-    Combines the bottleneck index (model_to_wrap/<i>/) and the conv index
-    (_conv<k> / cv<k>) so two identical-shape convs in a block can be ordered.
-    """
-    hint: List[int] = []
-    mt = re.search(r"model_to_wrap/(\d+)/", struct)
-    hint.append(int(mt.group(1)) if mt else -1)
-    cv = re.search(r"_conv(\d+)|/cv(\d+)/|connect_conv(\d+)|route_conv(\d+)", struct)
-    if cv:
-        hint.append(next(int(g) for g in cv.groups() if g is not None))
-    else:
-        hint.append(-1)
-    return tuple(hint)
-
-
-def _new_index_hint(path: str) -> Tuple[int, ...]:
-    p = re.sub(r"^yolo_v8/", "", path)
-    hint: List[int] = []
-    bn = re.search(r"/bn(\d+)/", p)
-    hint.append(int(bn.group(1)) if bn else -1)
-    cv = re.search(r"/cv(\d+)/", p)
-    hint.append(int(cv.group(1)) if cv else -1)
-    return tuple(hint)
 
 
 # ---------------------------------------------------------------------------
@@ -425,37 +455,27 @@ def resolve(old_recs: List[dict], new_recs: List[dict]) -> dict:
 
     # ---- BACKBONE / DECODER: by (module, block_ord, role, shape) ----
     for module in ("backbone", "decoder"):
-        new_by_sig: Dict[tuple, List[dict]] = {}
+        # Exact architectural key: (block ordinal, conv-unit sub-block, role).
+        # The sub-block resolves same-shape siblings by their position in the
+        # architecture (cv1 vs cv2, bn0/cv1 vs bn0/cv2), NOT by shape — see
+        # tools/legacy_checkpoint_structure.md.
+        new_by_sig: Dict[tuple, dict] = {}
         for r in new_recs:
             if r["module"] == module:
-                new_by_sig.setdefault((r["block_ord"], r["role"], r["shape"]), []).append(r)
-        old_by_sig: Dict[tuple, List[dict]] = {}
-        for r in old_recs:
-            if r["module"] == module:
-                old_by_sig.setdefault((r["block_ord"], r["role"], r["shape"]), []).append(r)
+                new_by_sig[(r["block_ord"], r["subblock"], r["role"])] = r
 
-        for sig, olds in old_by_sig.items():
-            news = new_by_sig.get(sig, [])
-            if len(olds) == len(news) and len(olds) >= 1:
-                # Within a block, the k-th variable of a given (role, shape) in the
-                # legacy ARCHITECTURE ORDER (object-graph tracking order) is the
-                # k-th such variable in the new model's CREATION ORDER. Pairing by
-                # that order resolves same-shape siblings (e.g. C2f bottleneck
-                # cv1/cv2) deterministically — no shape-only guessing.
-                o_sorted = sorted(olds, key=lambda r: r.get("order", 1 << 30))
-                n_sorted = sorted(news, key=lambda r: r.get("seq", 1 << 30))
-                tier = "shape-unique" if len(olds) == 1 else "order"
-                for o, n in zip(o_sorted, n_sorted):
-                    confident.append(_pair(o, n, tier))
-                    used_new.add(id(n["var"]))
+        for o in (r for r in old_recs if r["module"] == module):
+            sig = (o["block_ord"], o["subblock"], o["role"])
+            n = new_by_sig.get(sig)
+            if n is not None and n["shape"] == o["shape"]:
+                confident.append(_pair(o, n, "arch"))
+                used_new.add(id(n["var"]))
             else:
-                # count mismatch within (block, role, shape) -> genuine divergence
-                for o in olds:
-                    ambiguous.append({
-                        "key": o["key"], "shape": o["shape"],
-                        "scope": f"{module} block{sig[0]} {sig[1]} {sig[2]}",
-                        "candidates": [n["path"] for n in news],
-                    })
+                ambiguous.append({
+                    "key": o["key"], "shape": o["shape"],
+                    "scope": f"{module} block{o['block_ord']} {o['subblock']} {o['role']}",
+                    "candidates": [n["path"]] if n is not None else [],
+                })
 
     # ---- apply MANUAL_OVERRIDES (win over everything) ----
     new_by_path = {r["path"]: r for r in new_recs}

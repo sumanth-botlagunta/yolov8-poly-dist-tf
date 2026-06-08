@@ -118,6 +118,8 @@ def test_head_maps_fully_confident():
 # ---------------------------------------------------------------------------
 
 def test_backbone_decoder_resolver_recovers_truth():
+    """A synthetic legacy enumeration carrying the architectural sub-block maps
+    1:1 to the new vars (confident, no ambiguous)."""
     model = _build(num_classes=39)
     new_recs = wm.new_records(model)
     bd = [r for r in new_recs if r["module"] in ("backbone", "decoder")]
@@ -125,60 +127,48 @@ def test_backbone_decoder_resolver_recovers_truth():
     fake_old, truth = [], {}
     for i, r in enumerate(bd):
         conv_or_bn = "conv" if r["role"] in ("kernel", "bias") else "bn"
-        key = (f"{r['module']}/layer_with_weights-{r['block_ord']}/synth{i}/"
+        key = (f"{r['module']}/layer_with_weights-{r['block_ord']}/x{i}/"
                f"{conv_or_bn}/{r['role']}/.ATTRIBUTES/VARIABLE_VALUE")
         fake_old.append({
-            "module": r["module"], "block_ord": r["block_ord"], "role": r["role"],
-            "shape": r["shape"], "key": key, "idx_hint": wm._new_index_hint(r["path"]),
+            "module": r["module"], "block_ord": r["block_ord"],
+            "subblock": r["subblock"], "role": r["role"],
+            "shape": r["shape"], "key": key,
         })
         truth[key] = r["path"]
 
     res = wm.resolve(fake_old, new_recs)
-    pairs = res["confident"] + res["suggested"]
     assert len(res["ambiguous"]) == 0
-    assert all(truth[p["key"]] == p["path"] for p in pairs)
-    assert len(pairs) == len(fake_old)
+    assert len(res["confident"]) == len(fake_old)
+    assert all(truth[p["key"]] == p["path"] for p in res["confident"])
 
 
 # ---------------------------------------------------------------------------
-# apply_weight_map copies values into the correct new variables
+# legacy C2f sub-block translation (architecture, not shape)
 # ---------------------------------------------------------------------------
 
-def test_index_siblings_promote_to_confident_and_exact():
-    """Same-shape C2f siblings with clean bottleneck indices are CONFIDENT/EXACT."""
-    model = _build(num_classes=39)
-    new_recs = wm.new_records(model)
-    bd = [r for r in new_recs if r["module"] in ("backbone", "decoder")]
+def test_legacy_c2f_subblock_translation():
+    """The inverted legacy C2f names map to the right new conv units."""
+    f = wm._legacy_subblock
+    assert f("backbone/layer_with_weights-2/_route/_conv2/conv/kernel") == "cv1"
+    assert f("backbone/layer_with_weights-2/_connect/_conv1/conv/kernel") == "cv2"
+    assert f("backbone/layer_with_weights-2/_model_to_wrap/0/_conv1/conv/kernel") == "bn0/cv1"
+    assert f("backbone/layer_with_weights-4/_model_to_wrap/1/_conv2/bn/gamma") == "bn1/cv2"
+    assert f("backbone/layer_with_weights-9/_conv1/conv/kernel") == "cv1"   # SPPF
+    assert f("backbone/layer_with_weights-9/_conv2/bn/beta") == "cv2"
+    assert f("backbone/layer_with_weights-0/conv/kernel") == ""              # plain
+    assert f("backbone/layer_with_weights-0/bn/gamma") == ""
 
-    fake_old = []
-    for i, r in enumerate(bd):
-        nh = wm._new_index_hint(r["path"])  # (bn_i, cv_k)
-        cob = "conv" if r["role"] in ("kernel", "bias") else "bn"
-        if nh[0] >= 0:                       # bottleneck conv -> legacy model_to_wrap
-            sub = f"model_to_wrap/{nh[0]}/_conv{nh[1]}"
-        elif nh[1] >= 0:                     # outer cv (shape-unique anyway)
-            sub = f"_connect_conv{nh[1]}"
-        else:
-            sub = f"x{i}"
-        key = (f"{r['module']}/layer_with_weights-{r['block_ord']}/{sub}/"
-               f"{cob}/{r['role']}/.ATTRIBUTES/VARIABLE_VALUE")
-        fake_old.append({
-            "module": r["module"], "block_ord": r["block_ord"], "role": r["role"],
-            "shape": r["shape"], "key": key,
-            "idx_hint": wm._old_index_hint(wm.strip_attr_suffix(key)),
-        })
 
-    res = wm.resolve(fake_old, new_recs)
-    assert len(res["ambiguous"]) == 0
-    # every bottleneck sibling pairing must be confident (index-exact), not suggested
-    sib_paths = {r["path"] for r in bd if wm._new_index_hint(r["path"])[0] >= 0}
-    conf_paths = {p["path"] for p in res["confident"]}
-    assert sib_paths <= conf_paths, "bottleneck siblings should be confident via index"
-
-    cov = wm.coverage(res, new_recs, ["backbone", "decoder"])
-    assert cov["backbone"]["covered"] == cov["backbone"]["total"]
-    assert cov["decoder"]["covered"] == cov["decoder"]["total"]
-    assert cov["_complete"] is True
+def test_new_subblock_extraction():
+    """New paths parse to the matching sub-block vocabulary."""
+    g = wm._new_subblock
+    assert g("backbone/stem_conv1/conv2d/kernel", "backbone") == ""
+    assert g("backbone/stem_c2f/cv1/conv2d/kernel", "backbone") == "cv1"
+    assert g("backbone/stem_c2f/cv2/conv2d/kernel", "backbone") == "cv2"
+    assert g("backbone/stem_c2f/bn0/cv1/conv2d/kernel", "backbone") == "bn0/cv1"
+    assert g("backbone/stem_c2f/bn0/cv2/batch_normalization/gamma", "backbone") == "bn0/cv2"
+    # attribute-tree fallback form (no .path)
+    assert g("backbone/stem_c2f/bn0/cv1/conv/_kernel", "backbone") == "bn0/cv1"
 
 
 def test_apply_weight_map_transfers_values():
@@ -212,3 +202,92 @@ def test_apply_weight_map_transfers_values():
     assert stats["skipped"] == 0 and stats["not_found"] == 0
     for i, (key, r) in enumerate(cases):
         assert np.allclose(r["var"].numpy(), 0.5 + 0.1 * i), f"value not transferred: {key}"
+
+
+# ---------------------------------------------------------------------------
+# Full legacy-checkpoint simulation: exact 1:1 for ALL 3 modules
+# ---------------------------------------------------------------------------
+
+def _legacy_key_for(rec, bord_name):
+    """Reconstruct the exact legacy checkpoint key for a new variable record.
+
+    Mirrors tools/legacy_checkpoint_structure.md so the whole mapping can be
+    validated against realistic legacy names without the real checkpoint.
+    """
+    import re
+
+    def leaf(role):
+        return f"conv/{role}" if role in ("kernel", "bias") else f"bn/{role}"
+
+    if rec["module"] == "head":
+        sem = {
+            "cv2feat_s1": "cv2feat/layer_with_weights-0",
+            "cv2feat_s2": "cv2feat/layer_with_weights-1",
+            "box_pred": "box",
+            "cls_s1": "cv3/layer_with_weights-0",
+            "cls_s2": "cv3/layer_with_weights-1",
+            "cls_pred": "cv3/layer_with_weights-2",
+            "dist_s0": "cv4/layer_with_weights-0",
+            "dist_pred": "cv4/layer_with_weights-1",
+            "pa_pred": "poly_angle", "pd_pred": "poly_dist", "pc_pred": "poly_conf",
+        }[rec["semantic"]]
+        tail = (leaf(rec["role"]) if rec["semantic"] in
+                ("cv2feat_s1", "cv2feat_s2", "cls_s1", "cls_s2", "dist_s0")
+                else f"conv/{rec['role']}")
+        return f"head/_head/{rec['level']}/{sem}/{tail}/.ATTRIBUTES/VARIABLE_VALUE"
+
+    mod, bo, sb, role = rec["module"], rec["block_ord"], rec["subblock"], rec["role"]
+    base = f"{mod}/layer_with_weights-{bo}"
+    bn = bord_name[(mod, bo)]
+    if sb == "":
+        sub = ""
+    elif "sppf" in bn:
+        sub = "/_conv1" if sb == "cv1" else "/_conv2"
+    elif sb == "cv1":
+        sub = "/_route/_conv2"
+    elif sb == "cv2":
+        sub = "/_connect/_conv1"
+    else:
+        m = re.match(r"bn(\d+)/cv(\d+)", sb)
+        sub = f"/_model_to_wrap/{m.group(1)}/_conv{m.group(2)}"
+    return f"{base}{sub}/{leaf(role)}/.ATTRIBUTES/VARIABLE_VALUE"
+
+
+def test_full_legacy_simulation_exact_all_modules():
+    """Generate exact legacy names for all 336 vars and assert EXACT 1:1 + values."""
+    import re
+    model = _build(num_classes=39)
+    new_recs = wm.new_records(model)
+
+    bord_name = {}
+    for r in new_recs:
+        if r["module"] in ("backbone", "decoder"):
+            p = re.sub(r"^yolo_v8/", "", r["path"]).split("/")
+            name = p[p.index(r["module"]) + 1] if r["module"] in p else p[1]
+            bord_name[(r["module"], r["block_ord"])] = name
+
+    shapes, tensors, keymap = {}, {}, {}
+    for i, r in enumerate(new_recs):
+        key = _legacy_key_for(r, bord_name)
+        shapes[key] = list(r["shape"])
+        tensors[key] = np.full(r["shape"], (i % 97) * 0.01 + 0.001, dtype=np.float32)
+        keymap[key] = r
+        r["var"].assign(tf.zeros_like(r["var"]))
+
+    reader = _FakeReader(shapes, tensors)
+    stats = apply_weight_map(reader, model, modules=None)
+    assert stats == {"loaded": len(new_recs), "skipped": 0, "not_found": 0}
+
+    old_recs, skipped = wm.old_records(reader)
+    res = wm.resolve(old_recs, new_recs)
+    assert len(skipped) == 0
+    assert len(res["ambiguous"]) == 0
+    assert len(res["suggested"]) == 0
+    cov = wm.coverage(res, new_recs, ["backbone", "decoder", "head"])
+    assert cov["_exact"] is True
+    for m in ("backbone", "decoder", "head"):
+        assert cov[m]["confident"] == cov[m]["total"]
+
+    # every variable received its exact stamped value
+    for key, r in keymap.items():
+        assert np.allclose(r["var"].numpy(), tensors[key]), f"value mismatch: {key}"
