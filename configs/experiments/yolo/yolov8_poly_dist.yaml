@@ -65,6 +65,7 @@ task:
       max_boxes: 300
       nms_thresh: 0.65
       iou_thresh: 0.001
+      score_thresh: 0.05
       nms_type: greedy
       pre_nms_points: 30000
       topN_per_anchor: 1
@@ -84,9 +85,9 @@ task:
     poly_conf_gain: 0.2
     poly_angle_gain: 0.4
     poly_gain: 0.5
-    tal_alpha: 1.0
+    tal_alpha: 0.5
     tal_beta: 6.0
-    topk: 13
+    topk: 10
     max_delta: .inf
     acsl:
       use_acsl: false
