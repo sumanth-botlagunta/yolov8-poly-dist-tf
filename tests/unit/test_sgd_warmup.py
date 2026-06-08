@@ -123,6 +123,25 @@ class TestSGDTorch(unittest.TestCase):
         sgd.apply_gradients([(tf.ones_like(w), w)])
         self.assertEqual(len(sgd._velocities), 1)
 
+    def test_build_precreates_zero_slots(self):
+        """build() eagerly creates zero-initialized slots (for tf.distribute)."""
+        sgd = _make_sgd()
+        w1 = tf.Variable([1.0, 2.0], name='a/kernel')
+        w2 = tf.Variable([3.0], name='b/bias')
+        sgd.build([w1, w2])
+        self.assertEqual(len(sgd._velocities), 2)
+        for vel in sgd._velocities:
+            self.assertAlmostEqual(float(tf.reduce_sum(tf.abs(vel))), 0.0)
+
+    def test_all_reduce_gradients_noop_single_replica(self):
+        """Outside a multi-replica context, gradients pass through unchanged."""
+        sgd = _make_sgd()
+        w = tf.Variable([1.0, 2.0])
+        g = tf.constant([0.5, -0.5])
+        out = sgd._all_reduce_gradients([(g, w)])
+        np.testing.assert_array_equal(out[0][0].numpy(), g.numpy())
+        self.assertIs(out[0][1], w)
+
     def test_get_config_round_trip(self):
         """get_config returns all constructor hyperparameters."""
         sgd = _make_sgd(warmup_steps=500, weight_decay=0.001)

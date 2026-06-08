@@ -22,8 +22,15 @@
 `test_distance_evaluator.py`, `test_ema.py`, `test_model_forward.py`,
 `test_polygon_evaluator.py`, `test_sgd_warmup.py`, `test_tal_assigner.py`, `test_viz_utils.py`.
 
-**Integration test files (3 files):** `test_full_pipeline.py`, `test_checkpoint_migration.py`,
-`test_weight_map_migration.py`.
+**Integration test files (4 files):** `test_full_pipeline.py`, `test_checkpoint_migration.py`,
+`test_weight_map_migration.py`, `test_multigpu.py`.
+
+`test_multigpu.py` runs a real 2-replica `MirroredStrategy` on two **virtual CPU devices** to
+validate the distributed-training machinery (global-count loss normalizers, cross-replica
+gradient all-reduce, EMA + pre-built optimizer slots under `strategy.run`). It must run in a
+**fresh process** — splitting the CPU into logical devices only works before TF's device context
+is initialized, so in the shared suite run it self-skips. CI runs it as a separate step:
+`pytest tests/integration/test_multigpu.py`.
 
 ## Running
 
