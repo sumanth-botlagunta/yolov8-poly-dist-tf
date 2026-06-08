@@ -325,7 +325,7 @@ Vertex angles are fixed: `θᵢ = i × 2π/24` for i = 0…23. Distance regresso
 | Symptom | Likely cause / fix |
 |---------|--------------------|
 | `Failed to load TFDS dataset ...` at startup | The TFDS dataset/version isn't on disk or `tfds_data_dir` is wrong. Run `/check-env` to verify dataset availability and the `TFDS_DATA_DIR` path. The distance dataset (`servingbot_polygon`) is **training-only** — don't reference it from a validation split. |
-| OOM during training | Lower `train_data.global_batch_size` or reduce input size. Training is **single-device only** — the trainer raises `NotImplementedError` if more than one replica is visible (multi-GPU dispatch + global loss normalization are not yet implemented). |
+| OOM during training | Lower `train_data.global_batch_size` or reduce input size. Multi-GPU `MirroredStrategy` is supported and shards each global batch across replicas (per-replica batch = `global_batch_size / num_replicas`); keep the global batch divisible by the replica count. |
 | `NaN` loss after a few steps | Usually too-high LR or unstable mixed precision. Use the default `float32` config to isolate, prefer `bfloat16` over `float16` if enabling mixed precision (no loss scaling needed), and confirm GT boxes/polygons are valid (no degenerate zero-area boxes). |
 | Config load error (`missing field` / `unexpected key`) | A YAML key has no matching dataclass field (or vice-versa). Configs are validated by `scripts/run_train.py:_validate_config`; check the failing key against `configs/model_config.py`. |
 | Eval metrics look identical to raw weights | EMA weights may not be swapped in. EMA is swapped before validation and back after (`optimizers/ema.py:swap_weights`); confirm the optimizer is the EMA wrapper. |

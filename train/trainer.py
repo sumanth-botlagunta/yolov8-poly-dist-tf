@@ -63,20 +63,16 @@ class YoloV8Trainer:
         self._strategy    = strategy or tf.distribute.MirroredStrategy()
         self._resume_from = resume_from
 
-        # NOTE: this custom loop builds the model under strategy.scope() but runs
-        # the train step directly (no strategy.run / experimental_distribute_dataset),
-        # and the loss normalizers (num_objs, target_scores_sum) are per-batch, not
-        # globally all-reduced. Multi-replica training would therefore be silently
-        # incorrect (per-replica normalization + ungathered gradients). Fail loudly
-        # until real distribution is wired up rather than train a wrong model.
-        if self._strategy.num_replicas_in_sync > 1:
-            raise NotImplementedError(
-                "Multi-replica training is not supported by this trainer: the step "
-                "is not dispatched via strategy.run and loss normalizers are "
-                f"per-replica (num_replicas_in_sync={self._strategy.num_replicas_in_sync}). "
-                "Run single-device, or implement distributed dispatch + globally "
-                "all-reduced normalizers first."
-            )
+        # Multi-replica (MirroredStrategy) training is supported: the train step is
+        # dispatched via strategy.run, the loss normalizers (num_objs,
+        # target_scores_sum) are all-reduced to global counts, and SGDTorch
+        # all-reduces gradients across replicas. The single-replica path is a no-op
+        # for all of those, so single-device training is numerically unchanged.
+        self._num_replicas = self._strategy.num_replicas_in_sync
+        self._distributed  = self._num_replicas > 1
+        if self._distributed:
+            log.info("Distributed training: %d replicas (MirroredStrategy).",
+                     self._num_replicas)
 
         self._model        = None
         self._optimizer    = None
@@ -142,7 +138,12 @@ class YoloV8Trainer:
                 step_times.append(step_dt)
 
                 if not _aug_logged and do_img_summary:
-                    self._log_aug_images(inputs, python_step)
+                    # Under distribution `inputs` is PerReplica; log the first
+                    # replica's local batch.
+                    aug_inputs = inputs
+                    if self._distributed:
+                        aug_inputs = self._strategy.experimental_local_results(inputs)[0]
+                    self._log_aug_images(aug_inputs, python_step)
                     _aug_logged = True
 
                 for k, v in step_losses.items():
@@ -240,16 +241,45 @@ class YoloV8Trainer:
             self._task.initialize(self._model)
             self._optimizer = self._task.build_optimizer()
             self._task._loss_fn = self._task.build_losses()
+            # Pre-create optimizer slots in cross-replica context: under
+            # strategy.run variables cannot be created inside the replica context.
+            if hasattr(self._optimizer, 'build'):
+                self._optimizer.build(self._model.trainable_variables)
 
         task_cfg = self._config.task
+        # Training input: build the merged stream at the GLOBAL batch size, then let
+        # the strategy split each global batch into per-replica slices
+        # (experimental_distribute_dataset). This is true data parallelism — the
+        # per-replica gradients sum to the full-batch gradient, so the result is
+        # numerically identical to single-device. (drop_remainder keeps the batch
+        # dim static so the split is even; global batch should be divisible by the
+        # replica count.)
         self._train_ds = self._task.build_inputs(task_cfg.train_data)
+        if self._distributed:
+            self._train_ds = self._strategy.experimental_distribute_dataset(self._train_ds)
+        # Validation stays single-device (read primary replica); not the bottleneck
+        # and keeps the COCO/distance/polygon aggregation logic simple and correct.
         self._val_ds   = self._task.build_inputs(task_cfg.validation_data)
 
         _task, _model, _optimizer = self._task, self._model, self._optimizer
+        _strategy = self._strategy
 
-        @tf.function
-        def _compiled_train_step(inputs):
-            return _task.train_step(inputs, _model, _optimizer)
+        if self._distributed:
+            @tf.function
+            def _compiled_train_step(inputs):
+                per_replica = _strategy.run(
+                    _task.train_step, args=(inputs, _model, _optimizer)
+                )
+                # Losses are already normalized by the GLOBAL object count, so each
+                # replica returns its share; SUM-reduce reconstructs the full scalar.
+                return {
+                    k: _strategy.reduce(tf.distribute.ReduceOp.SUM, v, axis=None)
+                    for k, v in per_replica.items()
+                }
+        else:
+            @tf.function
+            def _compiled_train_step(inputs):
+                return _task.train_step(inputs, _model, _optimizer)
 
         @tf.function
         def _compiled_val_step(inputs):
