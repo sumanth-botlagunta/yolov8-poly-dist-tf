@@ -146,7 +146,7 @@ task:
       mosaic:
         mosaic_frequency: 0.5
         mixup_frequency: 0.0
-        mosaic_center: 0.2
+        mosaic_center: 0.25
         aug_scale_min: 0.4
         aug_scale_max: 1.9
         mosaic_crop_mode: scale
@@ -221,7 +221,7 @@ task:
       mosaic:
         mosaic_frequency: 0.0
         mixup_frequency: 0.0
-        mosaic_center: 0.2
+        mosaic_center: 0.25
         aug_scale_min: 1.0
         aug_scale_max: 1.0
         mosaic_crop_mode: null
@@ -254,7 +254,7 @@ trainer:
         momentum: 0.937
         momentum_start: 0.8
         nesterov: true
-        weight_decay: 0.001
+        weight_decay: 0.0005
         warmup_steps: 7164
         weight_keys: [kernel, weight]
         bias_keys: [bias, beta]
