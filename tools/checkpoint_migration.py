@@ -10,12 +10,28 @@ Usage:
         --ckpt initial_checkpoint_folder/ckpt-920304 \
         --config configs/experiments/yolo/yolov8_poly_dist.yaml
 
-    # Step 3 — migrate and save:
+    # Step 3 — migrate and save (modules auto-detected from class count):
     python tools/checkpoint_migration.py migrate \
         --ckpt initial_checkpoint_folder/ckpt-920304 \
         --config configs/experiments/yolo/yolov8_poly_dist.yaml \
-        --output /tmp/migrated_ckpt/ckpt \
+        --output /tmp/migrated_ckpt/ckpt
+
+    # ...or force the modules explicitly (skips auto class detection):
+    python tools/checkpoint_migration.py migrate \
+        --ckpt ... --config ... --output ... \
         --modules backbone decoder
+
+Module auto-selection
+---------------------
+The new model is built by *input-graph tracking* (a dummy forward pass
+materialises every variable). The classification head width (``num_classes``)
+is then read from the ``cls_pred`` conv shape in both the old checkpoint and the
+freshly built model:
+
+    * class counts MATCH    → migrate backbone + decoder + head (full transfer)
+    * class counts DIFFER   → migrate backbone + decoder only  (head re-trained)
+
+Passing ``--modules`` explicitly overrides this and disables auto-detection.
 """
 
 from __future__ import annotations
@@ -24,6 +40,7 @@ import argparse
 import difflib
 import logging
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -171,11 +188,100 @@ def build_name_mapping(
     return mapping
 
 
+def detect_num_classes(var_info: Dict[str, Tuple]) -> Optional[int]:
+    """Infer the classification head width (``num_classes``) from variable shapes.
+
+    The cls prediction conv is named ``cls_pred_{level}`` (see ``models/head.py``);
+    its kernel is ``[1, 1, in_ch, num_classes]`` and its bias is ``[num_classes]``.
+    We scan for those, falling back to any variable whose name contains ``cls``.
+
+    Parameters
+    ----------
+    var_info : dict
+        ``{name: (shape_tuple, dtype)}`` for either an old checkpoint or a
+        freshly-built model.
+
+    Returns
+    -------
+    int or None
+        The most common class count found across cls-head variables, or ``None``
+        if no classification head variable could be identified.
+    """
+    def _scan(predicate) -> List[int]:
+        found: List[int] = []
+        for name, info in var_info.items():
+            shape = info[0]
+            if not predicate(name.lower()):
+                continue
+            if len(shape) == 4:        # conv kernel [kh, kw, in, num_classes]
+                found.append(int(shape[-1]))
+            elif len(shape) == 1:      # conv bias [num_classes]
+                found.append(int(shape[0]))
+        return found
+
+    # Prefer the precise cls_pred match, then loosen to any 'cls' tensor.
+    candidates = _scan(lambda n: "cls_pred" in n)
+    if not candidates:
+        candidates = _scan(lambda n: "cls" in n and "pred" in n)
+    if not candidates:
+        candidates = _scan(lambda n: "cls" in n)
+
+    if not candidates:
+        return None
+    return Counter(candidates).most_common(1)[0][0]
+
+
+def resolve_modules(
+    old_var_info: Dict[str, Tuple],
+    new_var_info: Dict[str, Tuple],
+    requested: Optional[List[str]],
+) -> Tuple[List[str], str]:
+    """Decide which modules to migrate.
+
+    If *requested* is provided, it is honoured verbatim (auto-detection off).
+    Otherwise the classification head widths of the old checkpoint and the new
+    model are compared:
+
+        * equal class counts → ``[backbone, decoder, head]`` (full transfer)
+        * differing / unknown → ``[backbone, decoder]`` (head re-initialised)
+
+    Returns
+    -------
+    (modules, reason)
+        ``modules`` is the resolved module list; ``reason`` is a human-readable
+        explanation for logging.
+    """
+    if requested is not None:
+        return list(requested), f"user-specified modules: {list(requested)}"
+
+    base = ["backbone", "decoder"]
+    old_nc = detect_num_classes(old_var_info)
+    new_nc = detect_num_classes(new_var_info)
+
+    if old_nc is not None and new_nc is not None and old_nc == new_nc:
+        return (
+            base + ["head"],
+            f"class counts match (num_classes={new_nc}) — migrating head too",
+        )
+
+    if old_nc is None or new_nc is None:
+        reason = (
+            f"could not determine class counts (old={old_nc}, new={new_nc}) — "
+            "migrating backbone + decoder only"
+        )
+    else:
+        reason = (
+            f"class counts differ (old={old_nc}, new={new_nc}) — "
+            "migrating backbone + decoder only; head will be re-trained"
+        )
+    return base, reason
+
+
 def migrate_checkpoint(
     old_ckpt_path: str,
     new_model,                  # tf.keras.Model
     output_ckpt_path: str,
-    modules: List[str] = ("backbone", "decoder"),
+    modules: Optional[List[str]] = None,
 ) -> Dict[str, int]:
     """Load *old_ckpt_path*, assign matching weights to *new_model*, save.
 
@@ -188,8 +294,10 @@ def migrate_checkpoint(
         all variables exist.
     output_ckpt_path : str
         Path prefix for the output checkpoint (e.g. ``/tmp/migrated/ckpt``).
-    modules : list of str
-        Only load variables belonging to these module names.
+    modules : list of str, optional
+        Only load variables belonging to these module names. When ``None``
+        (default) the modules are auto-selected by comparing the old and new
+        classification head widths (see :func:`resolve_modules`).
 
     Returns
     -------
@@ -208,7 +316,10 @@ def migrate_checkpoint(
         for name, v in new_var_dict.items()
     }
 
-    mapping = build_name_mapping(old_vars, new_var_info, modules=list(modules))
+    resolved_modules, reason = resolve_modules(old_vars, new_var_info, modules)
+    log.info("Module selection: %s", reason)
+
+    mapping = build_name_mapping(old_vars, new_var_info, modules=resolved_modules)
 
     reader = tf.train.load_checkpoint(old_ckpt_path)
     stats = {"loaded": 0, "skipped": 0, "not_found": 0}
@@ -273,21 +384,23 @@ def _cmd_map(args: argparse.Namespace) -> None:
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from configs.yaml_loader import load_config
-    from models.yolo_v8 import YoloV8
-    import tensorflow as tf
+    from models.yolo_v8 import build_yolov8
 
     cfg = load_config(args.config)
-    model = YoloV8(cfg.task.model)
-    # Build model by calling it once with dummy input.
-    dummy = tf.zeros([1] + cfg.task.model.input_size)
-    model(dummy, training=False)
+    model_cfg = cfg.task.model
+    # Assemble the model and materialise every variable via input-graph tracking
+    # (a dummy forward pass). YoloV8 takes sub-modules, not a config — it must be
+    # built through the factory.
+    model = build_yolov8(model_cfg)
+    model.build_and_init(model_cfg.input_size)
 
     old_vars = list_checkpoint_variables(args.ckpt)
     new_var_info = {
         v.name.rstrip(":0"): (tuple(v.shape), v.dtype.name)
         for v in model.variables
     }
-    modules = args.modules or ["backbone", "decoder"]
+    modules, reason = resolve_modules(old_vars, new_var_info, args.modules)
+    print(f"\nModule selection: {reason}")
     mapping = build_name_mapping(old_vars, new_var_info, modules=modules)
 
     print(f"\nMapping ({len(mapping)} matches):")
@@ -299,20 +412,21 @@ def _cmd_migrate(args: argparse.Namespace) -> None:
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from configs.yaml_loader import load_config
-    from models.yolo_v8 import YoloV8
-    import tensorflow as tf
+    from models.yolo_v8 import build_yolov8
 
     cfg = load_config(args.config)
-    model = YoloV8(cfg.task.model)
-    dummy = tf.zeros([1] + cfg.task.model.input_size)
-    model(dummy, training=False)
+    model_cfg = cfg.task.model
+    # Assemble + materialise the model (input-graph tracking) before weight copy.
+    model = build_yolov8(model_cfg)
+    model.build_and_init(model_cfg.input_size)
 
-    modules = args.modules or ["backbone", "decoder"]
+    # args.modules is None unless the user forced it → migrate_checkpoint
+    # auto-selects modules from the class count when None.
     stats = migrate_checkpoint(
         old_ckpt_path=args.ckpt,
         new_model=model,
         output_ckpt_path=args.output,
-        modules=modules,
+        modules=args.modules,
     )
     print(f"\nDone: {stats}")
 
@@ -332,8 +446,9 @@ def main() -> None:
     p_map.add_argument("--ckpt", required=True)
     p_map.add_argument("--config", required=True, help="Experiment YAML config path")
     p_map.add_argument(
-        "--modules", nargs="+", default=["backbone", "decoder"],
-        help="Module names to include (default: backbone decoder)"
+        "--modules", nargs="+", default=None,
+        help="Module names to include. Default: auto — include the head only "
+             "when the old/new class counts match, else backbone + decoder."
     )
 
     # migrate subcommand
@@ -342,7 +457,9 @@ def main() -> None:
     p_mig.add_argument("--config", required=True)
     p_mig.add_argument("--output", required=True, help="Output checkpoint path prefix")
     p_mig.add_argument(
-        "--modules", nargs="+", default=["backbone", "decoder"],
+        "--modules", nargs="+", default=None,
+        help="Module names to include. Default: auto — include the head only "
+             "when the old/new class counts match, else backbone + decoder."
     )
 
     args = parser.parse_args()
