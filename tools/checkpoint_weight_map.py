@@ -106,8 +106,12 @@ def strip_attr_suffix(key: str) -> str:
 
 
 def role_of(name_or_tail: str) -> Optional[str]:
-    """Map a leaf name/tail to a standardized role (handles truncation)."""
-    n = name_or_tail.rstrip(":0").lstrip("_")
+    """Map a leaf name/tail to a standardized role (handles truncation).
+
+    Robust to full scoped names: takes the last ``/`` segment first, so
+    ``backbone/stem_conv1/conv2d/kernel:0`` -> ``kernel``.
+    """
+    n = name_or_tail.split("/")[-1].rstrip(":0").lstrip("_")
     # exact first
     if n in ROLES:
         return n
@@ -118,11 +122,47 @@ def role_of(name_or_tail: str) -> Optional[str]:
     return None
 
 
+def _variable_path_map(module, module_name: str) -> Dict[int, str]:
+    """Build {id(var): 'module/attr/.../leaf'} from the module attribute tree.
+
+    Works without ``KerasVariable.path`` (which only exists on Keras 3): walks
+    the tf.Module attribute hierarchy and labels each variable by its attribute
+    path. Used as a fallback when ``v.path`` is unavailable (older Keras / raw
+    ResourceVariables).
+    """
+    out: Dict[int, str] = {}
+    target_ids = {id(v) for v in module.variables}
+    try:
+        for path, val in module._flatten(
+            predicate=lambda v: id(v) in target_ids, with_path=True
+        ):
+            out[id(val)] = "/".join([module_name] + [str(p) for p in path])
+    except Exception:  # pragma: no cover - defensive across TF versions
+        pass
+    return out
+
+
+def _resolve_path(v, module_name: str, path_map: Dict[int, str]) -> str:
+    """Best available structural path for a variable, across Keras versions."""
+    p = getattr(v, "path", None)
+    if isinstance(p, str) and p:
+        return p
+    p = path_map.get(id(v))
+    if p:
+        return p
+    # last resort: the (possibly scoped) variable name
+    return getattr(v, "name", "").rstrip(":0")
+
+
 def _new_block_name(path: str, module: str) -> str:
     """First path segment after the module (the top block, e.g. 'stem_c2f')."""
     p = re.sub(r"^yolo_v8/", "", path)
     segs = p.split("/")
-    # segs[0] == module
+    # find the module segment, return the segment right after it
+    if module in segs:
+        i = segs.index(module)
+        if i + 1 < len(segs):
+            return segs[i + 1]
     return segs[1] if len(segs) > 1 else segs[0]
 
 
@@ -143,38 +183,45 @@ def new_records(model) -> List[dict]:
         module = getattr(model, module_name, None)
         if module is None:
             continue
+        path_map = _variable_path_map(module, module_name)
         order: Dict[str, int] = {}
         for v in module.variables:
-            block = _new_block_name(v.path, module_name)
+            path = _resolve_path(v, module_name, path_map)
+            block = _new_block_name(path, module_name)
             if block not in order:
                 order[block] = len(order)
         for v in module.variables:
-            block = _new_block_name(v.path, module_name)
+            path = _resolve_path(v, module_name, path_map)
+            block = _new_block_name(path, module_name)
             recs.append({
                 "module": module_name,
                 "block_ord": order[block],
-                "role": role_of(v.name),
+                "role": role_of(getattr(v, "name", "") or path),
                 "shape": tuple(v.shape),
                 "var": v,
-                "path": v.path,
+                "path": path,
             })
 
     head = getattr(model, "head", None)
     if head is not None:
+        head_path_map = _variable_path_map(head, "head")
         for level in getattr(head, "_levels", []):
             for sem in _NEW_HEAD_SEMANTICS:
                 layer = getattr(head, f"{sem}_{level}", None)
                 if layer is None:
                     continue
                 for v in layer.variables:
+                    path = _resolve_path(v, "head", head_path_map)
+                    # prefer the semantic+level identity for the head path so it is
+                    # stable and readable even without v.path
                     recs.append({
                         "module": "head",
                         "level": str(level),
                         "semantic": sem,
-                        "role": role_of(v.name),
+                        "role": role_of(getattr(v, "name", "") or path),
                         "shape": tuple(v.shape),
                         "var": v,
-                        "path": v.path,
+                        "path": path or f"head/{sem}_{level}/{role_of(getattr(v, 'name', '')) or '?'}",
                     })
     return recs
 

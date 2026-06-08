@@ -613,6 +613,28 @@ def select_modules_39(new_model, requested: Optional[List[str]]) -> Tuple[List[s
     )
 
 
+def _diagnose_new_paths(new_recs) -> None:
+    """Warn if new-model variable paths look unstructured (path-resolution failed).
+
+    On some TF/Keras versions variables lack ``.path``; the curated map falls back
+    to the attribute tree / ``v.name``. If block detection collapses (all of the
+    backbone in one block), the legacy mapping cannot align — surface it loudly
+    with a sample path so the resolution source can be fixed.
+    """
+    bb = [r for r in new_recs if r["module"] == "backbone"]
+    n_blocks = len({r["block_ord"] for r in bb})
+    sample = next((r["path"] for r in bb), "<none>")
+    log.info("Path-resolution check: backbone vars=%d distinct-blocks=%d sample-path=%r",
+             len(bb), n_blocks, sample)
+    if bb and n_blocks < 2:
+        log.warning(
+            "New-model path resolution looks DEGENERATE (backbone collapsed to "
+            "%d block). Variable paths are unstructured on this TF/Keras build; "
+            "the legacy mapping will not align. Sample path/name: %r. Please share "
+            "this sample so the path source can be adjusted.", n_blocks, sample,
+        )
+
+
 def _detect_strategy(reader) -> str:
     """Pick 'map' for legacy object checkpoints, else 'structural'."""
     for key in reader.get_variable_to_shape_map():
@@ -670,6 +692,7 @@ def apply_weight_map(
 
     old_recs, skipped = wm.old_records(reader)
     new_recs = wm.new_records(new_model)
+    _diagnose_new_paths(new_recs)
     resolution = wm.resolve(old_recs, new_recs)
 
     mods = set(resolved_modules)
@@ -985,6 +1008,7 @@ def _cmd_report(args: argparse.Namespace) -> None:
     reader = tf.train.load_checkpoint(args.ckpt)
     old_recs, skipped = wm.old_records(reader)
     new_recs = wm.new_records(model)
+    _diagnose_new_paths(new_recs)
     res = wm.resolve(old_recs, new_recs)
 
     cov = wm.coverage(res, new_recs, resolved_modules)
