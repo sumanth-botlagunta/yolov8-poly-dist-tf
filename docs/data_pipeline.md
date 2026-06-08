@@ -19,7 +19,11 @@ four images together.
 
 ## Decoding — `tfds_decoders.py`
 - `PolygonDecoder` — detection + polygon datasets.
-- `ServingBotDetDecoder` — the distance dataset (carries `groundtruth_dists`).
+- `ServingBotDetDecoder` — the distance dataset (carries `groundtruth_dists`). The ServingBot
+  dataset has a single foreground class (id=0) that maps to class 35 in the main 39-class
+  taxonomy. This remap is **hardcoded** in `configs/class_map.py:SERVINGBOT_CLASS_REMAP` — there
+  is no JSON file. The decoder builds a full identity table `[0..num_classes-1]` and applies the
+  `{0: 35}` override.
 - `CopyPasteDecoder` — the copy-paste source TFDS (`cleaner_copy_paste:1.0.0`), RGBA images
   with a 4-channel alpha mask.
 

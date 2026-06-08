@@ -40,9 +40,12 @@ Anchor-free (1 anchor/cell). Anchor points are cell centers: `(i+0.5)·stride`, 
 for strides 8/16/32 — built inside the loss (`losses/tal_loss.py`) and the detection generator.
 
 ## Detection generator — `models/detection_generator.py`
-Post-processing for inference (`deploy=True`): DFL decode → xyxy boxes, class-agnostic greedy
-NMS (`max_boxes=300`, `nms_thresh=0.65`), and decode of polygon + distance outputs. Distance is
+Post-processing for inference (`deploy=True`): DFL decode → xyxy boxes, **per-class greedy NMS**
+(`max_boxes=300`, `nms_thresh=0.65`, `score_thresh=0.05`), and decode of polygon + distance
+outputs. Each class is NMS-filtered independently — no cross-class suppression. Distance is
 `exp`'d from log-scale and clipped to `[min_distance, max_distance]` (`[0.5, 10.0]` m).
+Polygon outputs `(conf, dist, angle)` are all sigmoid/softmax-activated; `conf` values are not
+raw logits.
 
 ## Polygon representation (PolyYOLO radial)
 24 vertices at fixed 15° steps (`θᵢ = i·2π/24`). The distance head predicts the radial distance
