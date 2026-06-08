@@ -265,7 +265,9 @@ class YoloV8Task:
             metrics.update(poly_ev.evaluate())
 
         if self._config.task.per_category_metrics:
-            per_cat = coco_ev.per_category_ap50()
-            metrics.update({f'cls/{c}': v for c, v in per_cat.items()})
+            per_cat = coco_ev.per_category_full_metrics()
+            for cat_id, cat_m in per_cat.items():
+                for mn, mv in cat_m.items():
+                    metrics[f'cls/{cat_id}/{mn}'] = mv
 
         return metrics
