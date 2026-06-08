@@ -275,23 +275,14 @@ class TaskAlignedLossExtended:
         pd_dist: tf.Tensor,
         target_dist: tf.Tensor,
         fg_mask: tf.Tensor,
-        target_scores_sum: tf.Tensor,
+        num_objs: tf.Tensor,
     ) -> tf.Tensor:
         """L1 loss on log-scale distances, masked to valid GT entries (> -10.0).
 
-        CONVENTION: normalized by ``n_valid`` (the *count* of valid foreground entries,
-        i.e. a per-valid-object mean), NOT by ``target_scores_sum`` like box/cls/dfl.
-        This keeps the distance term on its own scale; ``dist_gain`` is calibrated to
-        that mean. Tracked for possible unification — see plan Part 2.4.
+        Normalized by ``num_objs`` (total GT object count in the batch), matching
+        the old-codebase convention. dist_gain is calibrated to this scale.
         """
-        valid_mask = (
-            (target_dist > INVALID_DISTANCE_SENTINEL) &
-            tf.expand_dims(fg_mask, axis=-1)
-        )  # [B, A, 1]
-        n_valid = tf.maximum(
-            tf.reduce_sum(tf.cast(valid_mask, tf.float32)), 1.0
-        )
-        return distance_l1_loss(pd_dist, target_dist, fg_mask, n_valid)
+        return distance_l1_loss(pd_dist, target_dist, fg_mask, num_objs)
 
     # ------------------------------------------------------------------
 
@@ -303,33 +294,46 @@ class TaskAlignedLossExtended:
         target_polygons: tf.Tensor,
         fg_mask: tf.Tensor,
         target_scores_sum: tf.Tensor,
-    ) -> tf.Tensor:
+        num_objs: tf.Tensor,
+    ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Combined PolyYOLO polygon loss (angle + dist + conf).
 
         target_polygons layout: [dist0, angle_norm0, conf0, dist1, angle_norm1, conf1, ...]
             dist:       radial distance from box center (stored pre-computed by parser).
             angle_norm: 1.0 for the dominant bin (one-hot), 0.0 elsewhere.
             conf:       1.0 if any valid vertex was assigned to this bin.
+
+        angle normalizes by target_scores_sum (TAL convention).
+        dist and conf normalize by num_objs (old-codebase convention).
+
+        Returns:
+            (poly_total, angle_loss, dist_loss_val, conf_loss_val)
+            poly_total:    weighted sum (poly_gain * (angle_gain*angle + dist_gain*dist + conf_gain*conf))
+            angle_loss:    raw pre-gain polygon angle loss
+            dist_loss_val: raw polygon distance loss
+            conf_loss_val: raw polygon confidence loss
         """
         target_dist  = target_polygons[:, :, 0::3]   # [B, A, 24]
         target_angle = target_polygons[:, :, 1::3]   # [B, A, 24] — already one-hot
         conf         = target_polygons[:, :, 2::3]   # [B, A, 24]
 
-        a_loss = polygon_angle_loss(
+        angle_loss = polygon_angle_loss(
             pd_poly_angle, target_angle, fg_mask, target_scores_sum
         )
-        d_loss = polygon_dist_loss(
-            pd_poly_dist, target_dist, fg_mask, target_scores_sum
+        dist_loss_val = polygon_dist_loss(
+            pd_poly_dist, target_dist, fg_mask, num_objs
         )
-        c_loss = polygon_conf_loss(
-            pd_poly_conf, conf, fg_mask, target_scores_sum
+        conf_loss_val = polygon_conf_loss(
+            pd_poly_conf, conf, fg_mask, num_objs
         )
 
-        return (
-            self.poly_angle_gain * a_loss +
-            self.poly_dist_gain  * d_loss +
-            self.poly_conf_gain  * c_loss
+        poly_total = self.poly_gain * (
+            self.poly_angle_gain * angle_loss +
+            self.poly_dist_gain  * dist_loss_val +
+            self.poly_conf_gain  * conf_loss_val
         )
+
+        return poly_total, angle_loss, dist_loss_val, conf_loss_val
 
     # ------------------------------------------------------------------
 
@@ -341,7 +345,10 @@ class TaskAlignedLossExtended:
         """Compute total loss.
 
         Returns:
-            (total_loss, box_loss, dfl_loss, cls_loss, dist_loss, poly_loss)
+            9-tuple: (total_loss, box_loss, dfl_loss, cls_loss, dist_loss,
+                      poly_loss, poly_angle_loss, poly_dist_loss, poly_conf_loss)
+            The last three are raw (pre-gain-weighted) polygon sub-losses;
+            poly_loss is the fully gain-weighted combined polygon term.
         """
         # ── 1. Flatten FPN outputs and build anchor grid ──────────────
         box_raw_list, cls_list = [], []
@@ -446,6 +453,7 @@ class TaskAlignedLossExtended:
         gt_labels    = gt_labels[:, :M_eff]
         gt_bboxes_px = gt_bboxes_px[:, :M_eff, :]
         mask_gt      = tf.sequence_mask(n_gt, maxlen=M_eff)   # [B, M_eff] bool
+        num_objs     = tf.maximum(tf.reduce_sum(tf.cast(mask_gt, tf.float32)), 1.0)
 
         gt_polys_raw = batch.get("polygons")
         gt_dists_raw = batch.get("log_distance")
@@ -488,14 +496,17 @@ class TaskAlignedLossExtended:
         dist_loss_val = tf.constant(0.0)
         if self.with_distance and pd_dist is not None:
             dist_loss_val = self._distance_loss(
-                pd_dist, target_dists, fg_mask, target_scores_sum
+                pd_dist, target_dists, fg_mask, num_objs
             )
 
         poly_loss_val = tf.constant(0.0)
+        poly_angle_l  = tf.constant(0.0)
+        poly_dist_l   = tf.constant(0.0)
+        poly_conf_l   = tf.constant(0.0)
         if self.with_polygons and pd_poly_angle is not None:
-            poly_loss_val = self._polygon_loss(
+            poly_loss_val, poly_angle_l, poly_dist_l, poly_conf_l = self._polygon_loss(
                 pd_poly_angle, pd_poly_dist, pd_poly_conf,
-                target_polygons, fg_mask, target_scores_sum,
+                target_polygons, fg_mask, target_scores_sum, num_objs,
             )
 
         # ── 6. Apply gains and aggregate ──────────────────────────────
@@ -503,10 +514,12 @@ class TaskAlignedLossExtended:
         dfl_loss_w  = self.dfl_gain  * dfl_loss
         cls_loss_w  = self.cls_gain  * cls_loss
         dist_loss_w = self.dist_gain * dist_loss_val
-        # poly_gain is the overall polygon loss multiplier; component gains
-        # (angle/dist/conf) are already applied inside _polygon_loss
-        poly_loss_w = self.poly_gain * poly_loss_val
+        # poly_loss_val already includes poly_gain and component gains (applied
+        # inside _polygon_loss); poly_angle_l/dist_l/conf_l are raw pre-gain values.
 
-        total_loss = box_loss_w + dfl_loss_w + cls_loss_w + dist_loss_w + poly_loss_w
+        total_loss = box_loss_w + dfl_loss_w + cls_loss_w + dist_loss_w + poly_loss_val
 
-        return total_loss, box_loss_w, dfl_loss_w, cls_loss_w, dist_loss_w, poly_loss_w
+        return (
+            total_loss, box_loss_w, dfl_loss_w, cls_loss_w, dist_loss_w,
+            poly_loss_val, poly_angle_l, poly_dist_l, poly_conf_l,
+        )

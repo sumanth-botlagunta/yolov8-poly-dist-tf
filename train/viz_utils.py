@@ -42,14 +42,14 @@ def _draw_box(canvas, y1n, x1n, y2n, x2n, color, label: str) -> None:
                     lineType=cv2.LINE_AA)
 
 
-def _draw_polygon(canvas, cxn, cyn, poly_conf_logits, poly_dist, n_verts: int = 24) -> None:
+def _draw_polygon(canvas, cxn, cyn, poly_conf, poly_dist, n_verts: int = 24) -> None:
     """Draw a PolyYOLO radial polygon on a uint8 HWC canvas (in-place).
 
     Args:
-        cxn, cyn:         Box center in normalized [0,1] coords.
-        poly_conf_logits: [n_verts] raw logits — sigmoid > 0.4 to activate.
-        poly_dist:        [n_verts] predicted radial distance (normalized image space).
-        n_verts:          Number of radial vertices (default 24).
+        cxn, cyn:  Box center in normalized [0,1] coords.
+        poly_conf: [n_verts] sigmoid-activated confidences in [0,1].
+        poly_dist: [n_verts] predicted radial distance (normalized image space).
+        n_verts:   Number of radial vertices (default 24).
     """
     import cv2
     H, W = canvas.shape[:2]
@@ -58,7 +58,7 @@ def _draw_polygon(canvas, cxn, cyn, poly_conf_logits, poly_dist, n_verts: int = 
 
     pts = []
     for i in range(n_verts):
-        conf = _sigmoid(float(poly_conf_logits[i]))
+        conf = float(poly_conf[i])   # already sigmoid-activated by detection_generator
         if conf < 0.4:
             continue
         angle_rad = i * (2.0 * math.pi / n_verts)
@@ -90,7 +90,7 @@ def render_summary_images(
                          classes        [max_boxes]
                          confidence     [max_boxes]
                          num_detections scalar int
-                         polygons       [max_boxes, 24, 3]  (conf_logit, dist, angle_logit)
+                         polygons       [max_boxes, 24, 3]  (conf, dist, angle) all sigmoid/softplus activated
         draw_box:    Whether to draw bounding boxes.
         draw_poly:   Whether to overlay polygon contours.
         class_names: Optional list of class name strings.
@@ -120,11 +120,11 @@ def render_summary_images(
                 _draw_box(canvas, box[0], box[1], box[2], box[3], color, label)
 
             if draw_poly and 'polygons' in pred:
-                poly = pred['polygons'][i]    # [24, 3]: (conf_logit, dist, angle_logit)
+                poly = pred['polygons'][i]    # [24, 3]: (conf, dist, angle) activated
                 cy_n = (box[0] + box[2]) / 2.0
                 cx_n = (box[1] + box[3]) / 2.0
                 _draw_polygon(canvas, cx_n, cy_n,
-                              poly_conf_logits=poly[:, 0],
+                              poly_conf=poly[:, 0],
                               poly_dist=poly[:, 1])
         out.append(canvas)
 

@@ -57,6 +57,7 @@ class COCOEvaluator:
         self._img_id  = 1
         self._ann_id  = 1
         self._ev50    = None
+        self._ev      = None   # full eval (all IoU thresholds)
 
     # ------------------------------------------------------------------
     # Accumulation
@@ -177,6 +178,7 @@ class COCOEvaluator:
             ev.evaluate()
             ev.accumulate()
         ev.summarize()
+        self._ev = ev   # keep for per_category_full_metrics()
 
         map_val   = float(ev.stats[0])
         map50_val = float(ev.stats[1])
@@ -190,7 +192,7 @@ class COCOEvaluator:
             ev50.accumulate()
 
         f1_50, best_thresh = self._peak_f1(ev50)
-        self._ev50 = ev50  # keep for per_category_ap50()
+        self._ev50 = ev50  # keep for per_category_ap50() / per_category_full_metrics()
 
         return {
             'mAP':              map_val,
@@ -213,6 +215,46 @@ class COCOEvaluator:
             result[int(cat_id)] = float(valid.mean()) if valid.size > 0 else 0.0
         return result
 
+    def per_category_full_metrics(self) -> Dict[int, Dict[str, float]]:
+        """Per-category full COCO metrics (12 per category) after evaluate().
+
+        Mirrors the old-codebase ``_retrieve_per_category_metrics`` output:
+            ap, ap50, ap75, ap_s, ap_m, ap_l  (precision-based)
+            ar1, ar10, ar100, ar_s, ar_m, ar_l (recall-based)
+
+        Returns:
+            Dict mapping category_id → dict of metric_name → float.
+            Empty if evaluate() has not been called.
+        """
+        ev = getattr(self, '_ev', None)
+        if ev is None or ev.eval is None:
+            return {}
+
+        prec = ev.eval['precision']   # [T=10, R=101, K, A=4, M=3]
+        rec  = ev.eval['recall']      # [T=10, K, A=4, M=3]
+
+        def _mean(arr):
+            v = arr[arr >= 0]
+            return float(v.mean()) if v.size > 0 else 0.0
+
+        result: Dict[int, Dict[str, float]] = {}
+        for k, cat_id in enumerate(ev.params.catIds):
+            result[int(cat_id)] = {
+                'ap':    _mean(prec[:, :, k, 0, 2]),   # AP@50:95
+                'ap50':  _mean(prec[0,  :, k, 0, 2]),  # AP@50
+                'ap75':  _mean(prec[5,  :, k, 0, 2]),  # AP@75
+                'ap_s':  _mean(prec[:, :, k, 1, 2]),   # AP small
+                'ap_m':  _mean(prec[:, :, k, 2, 2]),   # AP medium
+                'ap_l':  _mean(prec[:, :, k, 3, 2]),   # AP large
+                'ar1':   _mean(rec[:,  k, 0, 0]),       # AR@1
+                'ar10':  _mean(rec[:,  k, 0, 1]),       # AR@10
+                'ar100': _mean(rec[:,  k, 0, 2]),       # AR@100
+                'ar_s':  _mean(rec[:,  k, 1, 2]),       # AR small
+                'ar_m':  _mean(rec[:,  k, 2, 2]),       # AR medium
+                'ar_l':  _mean(rec[:,  k, 3, 2]),       # AR large
+            }
+        return result
+
     def reset(self) -> None:
         """Clear all accumulated predictions and GT."""
         self._dt_anns.clear()
@@ -221,6 +263,7 @@ class COCOEvaluator:
         self._img_id = 1
         self._ann_id = 1
         self._ev50   = None
+        self._ev     = None
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -228,34 +271,49 @@ class COCOEvaluator:
 
     @staticmethod
     def _peak_f1(coco_eval):
-        """Mean peak-F1 and best confidence threshold over all classes.
+        """Mean peak-F1 and mean confidence threshold at peak-F1 over all classes.
+
+        Uses the ``scores`` tensor from COCOeval (shape [T, R, K, A, M]) which
+        stores the detection confidence at each precision-recall curve point.
+        This gives the actual NMS score threshold that achieves peak F1 —
+        matching the old-codebase behavior of reporting a usable confidence value.
 
         Returns:
-            (mean_peak_f1: float, best_conf_thresh: float)
+            (mean_peak_f1: float, mean_conf_thresh: float)
         """
         precision = coco_eval.eval.get('precision')
         if precision is None or precision.size == 0:
             return 0.0, 0.0
 
-        prec = precision[0, :, :, 0, 2]   # [101, num_classes]
-        recall_thrs = coco_eval.params.recThrs  # [101]
+        prec   = precision[0, :, :, 0, 2]              # [101, num_classes]
+        scores = coco_eval.eval.get('scores')           # [T, R, K, A, M] or None
+        scores_arr = scores[0, :, :, 0, 2] if scores is not None else None  # [101, K]
 
-        class_f1        = []
-        best_recall_idx = []
+        class_f1     = []
+        class_thresh = []
         for k in range(prec.shape[1]):
-            p = prec[:, k]
-            r = recall_thrs
+            p     = prec[:, k]
+            r     = coco_eval.params.recThrs   # [101]
             valid = p >= 0
             if not valid.any():
                 continue
-            p, r = p[valid], r[valid]
-            denom = p + r
+            p_v, r_v = p[valid], r[valid]
+            denom = p_v + r_v
             with np.errstate(divide='ignore', invalid='ignore'):
-                f1 = np.where(denom > 0, 2 * p * r / denom, 0.0)
+                f1 = np.where(denom > 0, 2 * p_v * r_v / denom, 0.0)
             peak_idx = int(f1.argmax())
             class_f1.append(float(f1[peak_idx]))
-            best_recall_idx.append(float(r[peak_idx]))
 
-        mean_f1 = float(np.mean(class_f1)) if class_f1 else 0.0
-        best_thresh = float(np.mean(best_recall_idx)) if best_recall_idx else 0.0
-        return mean_f1, best_thresh
+            # Confidence threshold at peak F1: look up from scores tensor.
+            # The scores array maps each PR curve point to the detection score
+            # that achieved that recall — this is the usable NMS threshold.
+            if scores_arr is not None:
+                s = scores_arr[:, k][valid]
+                thresh = float(s[peak_idx]) if s[peak_idx] >= 0 else 0.0
+            else:
+                thresh = 0.0
+            class_thresh.append(thresh)
+
+        mean_f1     = float(np.mean(class_f1))     if class_f1     else 0.0
+        mean_thresh = float(np.mean(class_thresh)) if class_thresh else 0.0
+        return mean_f1, mean_thresh

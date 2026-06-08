@@ -2,11 +2,10 @@
 
 Implements the three per-vertex loss components:
     angle:  cross-entropy over 360/angle_step bins per vertex
-    dist:   L1 / smooth-L1 regression of radial distance
-    conf:   binary cross-entropy on vertex validity
+    dist:   L2 regression on (target - softplus(pred))^2, mean over vertices
+    conf:   binary cross-entropy on vertex validity, mean over vertices
 
-All losses are computed only on foreground anchors and weighted
-by the corresponding TAL alignment scores.
+All losses are computed only on foreground anchors.
 
 Functions:
     polygon_angle_loss: angle bin classification loss.
@@ -49,50 +48,52 @@ def polygon_dist_loss(
     pd_dist: tf.Tensor,
     target_dist: tf.Tensor,
     fg_mask: tf.Tensor,
-    target_scores_sum: tf.Tensor,
+    num_objs: tf.Tensor,
 ) -> tf.Tensor:
-    """L1 regression loss for per-vertex radial distances.
+    """L2 regression loss for per-vertex radial distances.
+
+    Applies softplus to the prediction before computing (target - softplus(pred))^2.
+    Averages over the V=24 vertices per anchor, sums over foreground anchors,
+    and normalizes by num_objs (total GT count in the batch). Matches old codebase.
 
     Args:
-        pd_dist:           float32 [batch, anchors, num_vertices]
-        target_dist:       float32 [batch, anchors, num_vertices]
-        fg_mask:           bool    [batch, anchors]
-        target_scores_sum: float32 scalar normalizer
+        pd_dist:    float32 [batch, anchors, num_vertices]  raw predicted distances
+        target_dist: float32 [batch, anchors, num_vertices] target radial distances
+        fg_mask:    bool    [batch, anchors]
+        num_objs:   float32 scalar  total valid GT object count in batch
 
     Returns:
         Scalar loss.
     """
-    # CONVENTION: this SUMS the L1 error over the V=24 vertices (reduce_sum), whereas
-    # polygon_angle_loss AVERAGES over vertices (reduce_mean). dist/conf are therefore
-    # ~24× larger than angle before gains; the configured poly gains (dist=0.45,
-    # angle=0.4, conf=0.2) bake in that factor. Changing the vertex count rescales this
-    # loss — re-check the gains if you do. Tracked for unification; see plan Part 2.4.
-    fg_float = tf.cast(fg_mask, tf.float32)[:, :, tf.newaxis]    # [B, A, 1]
-    l1 = tf.abs(pd_dist - target_dist) * fg_float                 # [B, A, V]
-    return tf.reduce_sum(l1) / target_scores_sum
+    l2 = tf.square(target_dist - tf.math.softplus(pd_dist))   # [B, A, V]
+    per_anchor = tf.reduce_mean(l2, axis=-1)                   # [B, A] — mean over V
+    fg_float = tf.cast(fg_mask, tf.float32)                    # [B, A]
+    return tf.reduce_sum(per_anchor * fg_float) / num_objs
 
 
 def polygon_conf_loss(
     pd_conf: tf.Tensor,
     target_conf: tf.Tensor,
     fg_mask: tf.Tensor,
-    target_scores_sum: tf.Tensor,
+    num_objs: tf.Tensor,
 ) -> tf.Tensor:
     """BCE loss for per-vertex validity confidence.
 
+    Averages BCE over the V=24 vertices per anchor, sums over foreground anchors,
+    and normalizes by num_objs (total GT count in the batch). Matches old codebase.
+
     Args:
-        pd_conf:           float32 [batch, anchors, num_vertices]  logits
-        target_conf:       float32 [batch, anchors, num_vertices]  0 or 1
-        fg_mask:           bool    [batch, anchors]
-        target_scores_sum: float32 scalar normalizer
+        pd_conf:    float32 [batch, anchors, num_vertices]  logits
+        target_conf: float32 [batch, anchors, num_vertices]  0 or 1
+        fg_mask:    bool    [batch, anchors]
+        num_objs:   float32 scalar  total valid GT object count in batch
 
     Returns:
         Scalar loss.
     """
-    # CONVENTION: SUMS BCE over the V=24 vertices (like polygon_dist_loss, unlike the
-    # mean used by polygon_angle_loss). See the note in polygon_dist_loss.
     bce = tf.nn.sigmoid_cross_entropy_with_logits(
         labels=target_conf, logits=pd_conf
     )  # [B, A, V]
-    fg_float = tf.cast(fg_mask, tf.float32)[:, :, tf.newaxis]    # [B, A, 1]
-    return tf.reduce_sum(bce * fg_float) / target_scores_sum
+    bce_mean = tf.reduce_mean(bce, axis=-1)    # [B, A] — mean over V
+    fg_float = tf.cast(fg_mask, tf.float32)    # [B, A]
+    return tf.reduce_sum(bce_mean * fg_float) / num_objs

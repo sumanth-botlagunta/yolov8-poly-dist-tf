@@ -12,15 +12,17 @@ Usage:
         --output_json /tmp/results.json
 
 Flags:
-    --config       Path to experiment YAML.
-    --checkpoint   Checkpoint path prefix (e.g. /output/ckpt-1000).
-    --split        Dataset split to evaluate: 'val' or 'test'.
-    --output_json  Path to write COCO-format detection results JSON.
-    --image_size   Override image size (H,W). Defaults to value in config.
+    --config        Path to experiment YAML.
+    --checkpoint    Checkpoint path prefix (e.g. /output/ckpt-1000).
+    --split         Dataset split to evaluate: 'val' or 'test'.
+    --output_json   Path to write COCO-format detection results JSON.
+    --per_category  Print per-category AP50/AP/AP75/AR100 table.
+    --output_dir    If set, write metrics.json (and per_category_metrics.json) here.
 """
 
 import json
 import logging
+import os
 
 from absl import app, flags, logging as absl_logging
 import numpy as np
@@ -33,6 +35,8 @@ try:
     flags.DEFINE_string('checkpoint',  None, 'Checkpoint path prefix.',          required=True)
     flags.DEFINE_string('split',       'val', "Eval split: 'val' or 'test'.")
     flags.DEFINE_string('output_json', None, 'Path to write COCO results JSON.')
+    flags.DEFINE_bool(  'per_category', False, 'Print per-category metrics table.')
+    flags.DEFINE_string('output_dir',  None, 'Directory to write metrics JSON files.')
 except flags.DuplicateFlagError:
     pass
 
@@ -91,6 +95,7 @@ def main(_):
 
     # Accumulate raw COCO results for JSON export
     dt_results = []
+    total_batches = 0
 
     for step, (images, labels) in enumerate(val_ds):
         predictions = model(images, training=False)
@@ -130,10 +135,13 @@ def main(_):
                     'score':       float(predictions['confidence'][i, j]),
                 })
 
-        if step % 10 == 0:
-            log.info("Evaluated %d batches...", step + 1)
+        total_batches += 1
+        if step % 50 == 0:
+            log.info("Evaluated %d / ? batches...", total_batches)
 
-    # ---- Print metrics ----
+    log.info("Evaluation complete: %d batches total.", total_batches)
+
+    # ---- Compute metrics ----
     metrics = coco_ev.evaluate()
     if dist_ev:
         metrics.update(dist_ev.evaluate())
@@ -142,7 +150,35 @@ def main(_):
 
     print("\n=== Evaluation Results ===")
     for k, v in sorted(metrics.items()):
-        print(f"  {k:20s}: {v:.4f}")
+        print(f"  {k:25s}: {v:.4f}")
+
+    # Print best confidence threshold if available
+    if 'best_conf_thresh' in metrics:
+        print(f"\n  best_conf_thresh         : {metrics['best_conf_thresh']:.4f}")
+
+    # ---- Per-category metrics ----
+    per_cat = None
+    if FLAGS.per_category:
+        per_cat = coco_ev.per_category_full_metrics()
+        print("\n=== Per-Category Metrics ===")
+        print(f"{'Cat':>4}  {'AP50':>6}  {'AP':>6}  {'AP75':>6}  {'AR100':>6}")
+        for cat_id, m in sorted(per_cat.items()):
+            print(f"{cat_id:>4}  {m['ap50']:>6.4f}  {m['ap']:>6.4f}  {m['ap75']:>6.4f}  {m['ar100']:>6.4f}")
+
+    # ---- Write output files ----
+    if FLAGS.output_dir:
+        os.makedirs(FLAGS.output_dir, exist_ok=True)
+        metrics_path = os.path.join(FLAGS.output_dir, 'metrics.json')
+        with open(metrics_path, 'w') as f:
+            json.dump({k: float(v) for k, v in metrics.items()}, f, indent=2)
+        log.info("Metrics written to %s", metrics_path)
+
+        if per_cat is not None:
+            pc_path = os.path.join(FLAGS.output_dir, 'per_category_metrics.json')
+            with open(pc_path, 'w') as f:
+                json.dump({str(k): {mk: float(mv) for mk, mv in m.items()}
+                           for k, m in per_cat.items()}, f, indent=2)
+            log.info("Per-category metrics written to %s", pc_path)
 
     # ---- Write COCO JSON ----
     if FLAGS.output_json:

@@ -7,10 +7,23 @@
 
 | Location | Scope | Needs TFDS? |
 |----------|-------|-------------|
-| `tests/unit/` | pure component unit tests (backbone, decoders, model forward, EMA, sgd_warmup, tal_assigner, the coco/distance/polygon evaluators, config loading, viz_utils) | no |
+| `tests/unit/` | pure component unit tests: backbone, decoders, model forward, EMA, sgd_warmup, tal_assigner, coco/distance/polygon evaluators (including crowd/dontcare handling), config loading, viz_utils | no |
 | `tests/integration/` | end-to-end pipeline, checkpoint migration | no |
-| `tests/smoke/` | training-loop smoke (`TestDrySmoke` on synthetic data) + real-data smoke (`TestRealDataSmoke`, `@pytest.mark.smoke`) | only the marked real-data class |
-| `tests/test_*.py` (top level) | component tests: decoders, parser, copy_paste, mosaic, losses, polygon preprocessing, batch shapes | no |
+| `tests/smoke/` | training-loop smoke (`TestDrySmoke` on synthetic data, 10 steps) + real-data smoke (`TestRealDataSmoke`, `@pytest.mark.smoke`) | only the marked real-data class |
+| `tests/test_*.py` (top level) | component tests: decoders, parser, copy_paste, mosaic, losses (computation + reference parity + polygon conventions + distance loss), polygon preprocessing, batch shapes | no |
+
+**Top-level test files (12 files):** `test_batch_shape_consistency.py`, `test_copy_paste.py`,
+`test_decoders.py`, `test_distance_loss.py`, `test_loss_computation.py`,
+`test_loss_reference_parity.py`, `test_mosaic.py`, `test_parser.py`,
+`test_polygon_loss_conventions.py`, `test_polygon_preprocessing.py`.
+
+**Unit test files (11 files):** `test_backbone.py`, `test_coco_crowd_dontcare.py`,
+`test_coco_evaluator.py`, `test_config_loading.py`, `test_decoders.py`,
+`test_distance_evaluator.py`, `test_ema.py`, `test_model_forward.py`,
+`test_polygon_evaluator.py`, `test_sgd_warmup.py`, `test_tal_assigner.py`, `test_viz_utils.py`.
+
+Three test files updated in this release: `test_coco_crowd_dontcare.py`,
+`test_polygon_loss_conventions.py`, `test_loss_reference_parity.py`.
 
 ## Running
 

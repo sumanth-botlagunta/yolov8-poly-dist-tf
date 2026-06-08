@@ -54,12 +54,14 @@ class YoloV8Trainer:
         output_dir: str,
         strategy: Optional[tf.distribute.Strategy] = None,
         debug: bool = False,
+        resume_from: str = None,
     ):
         self._task        = task
         self._config      = config
         self._output_dir  = output_dir
         self._debug       = debug
         self._strategy    = strategy or tf.distribute.MirroredStrategy()
+        self._resume_from = resume_from
 
         self._model        = None
         self._optimizer    = None
@@ -85,7 +87,7 @@ class YoloV8Trainer:
     def train(self, total_epochs: int) -> None:
         """Run the full training loop."""
         self._setup()
-        start_epoch = self._auto_resume()
+        start_epoch = self._auto_resume(self._resume_from)
 
         trainer_cfg   = self._config.trainer
         # Guard against checkpoint_interval=0 (steps_per_loop not computed).
@@ -102,6 +104,9 @@ class YoloV8Trainer:
         training_start  = time.time()
         last_saved_step = int(self._global_step)  # prevents double-saves
 
+        do_img_summary = 'image' in getattr(self._config.task, 'summary_types', 'scalar')
+        n_summary = getattr(self._config.task, 'summary_image_num', 10)
+
         for epoch in range(start_epoch, total_epochs):
             log.info("─── Epoch %d / %d  (global_step=%d) ───",
                      epoch + 1, total_epochs, int(self._global_step))
@@ -111,6 +116,7 @@ class YoloV8Trainer:
             loss_accum   = {}   # running sum for epoch mean
             loss_count   = 0
             python_step  = int(self._global_step)
+            _aug_logged  = False
 
             for inputs in self._train_ds:
                 t0 = time.time()
@@ -119,6 +125,10 @@ class YoloV8Trainer:
                 python_step += 1
                 step_dt = time.time() - t0
                 step_times.append(step_dt)
+
+                if not _aug_logged and do_img_summary:
+                    self._log_aug_images(inputs, python_step)
+                    _aug_logged = True
 
                 for k, v in step_losses.items():
                     loss_accum[k] = loss_accum.get(k, 0.0) + float(v)
@@ -174,7 +184,7 @@ class YoloV8Trainer:
             epoch_losses   = {k: v / max(loss_count, 1) for k, v in loss_accum.items()}
 
             self._log_epoch(
-                epoch, step_losses, epoch_losses, val_metrics,
+                epoch, epoch_losses, val_metrics,
                 epoch_time=epoch_time,
                 val_time=val_time,
                 eta_seconds=eta_seconds,
@@ -408,32 +418,48 @@ class YoloV8Trainer:
             # TensorBoard expects float [N, H, W, C] in [0, 1] or uint8 [N, H, W, C]
             tf.summary.image('val/predictions', canvas, step=step,
                              max_outputs=len(canvas))
+        self._tb_writer.flush()
+
+    def _log_aug_images(self, inputs, step: int) -> None:
+        """Log a sample of augmented training images to TensorBoard once per epoch."""
+        try:
+            images = inputs[0] if isinstance(inputs, (tuple, list)) else inputs
+            imgs_np = images.numpy()   # [B, H, W, 3] float32 in [0,1]
+            n = min(imgs_np.shape[0], getattr(self._config.task, 'summary_image_num', 10))
+            canvas = (imgs_np[:n] * 255.0).clip(0, 255).astype('uint8')
+            with self._tb_writer.as_default():
+                tf.summary.image('train/augmentations', canvas, step=step, max_outputs=n)
+            self._tb_writer.flush()
+        except Exception as e:
+            log.debug("Could not log augmentation images: %s", e)
 
     # ------------------------------------------------------------------
     # Checkpointing
     # ------------------------------------------------------------------
 
-    def _auto_resume(self) -> int:
-        """Restore latest checkpoint and return the starting epoch.
+    def _auto_resume(self, resume_from: str = None) -> int:
+        """Restore latest checkpoint (or an explicit one) and return the starting epoch.
 
         Uses the explicit `completed_epochs` counter saved in the checkpoint —
         not global_step // steps_per_loop — so resume is exact even after
         mid-epoch SIGINT or when steps_per_loop is zero.
+
+        Args:
+            resume_from: Optional explicit checkpoint path.  If None, falls back
+                         to the latest checkpoint managed by CheckpointManager.
         """
-        latest = self._ckpt_manager.latest_checkpoint
-        if latest:
-            self._ckpt.restore(latest)
+        target = resume_from or self._ckpt_manager.latest_checkpoint
+        if target:
+            self._ckpt.restore(target)
             completed  = int(self._epoch_var)
             start_step = int(self._global_step)
             log.info(
-                "Resumed from %s  "
-                "(global_step=%d, completed_epochs=%d → starting epoch %d)",
-                latest, start_step, completed, completed + 1,
+                "Resumed from %s  (global_step=%d, completed_epochs=%d → starting epoch %d)",
+                target, start_step, completed, completed + 1,
             )
             if completed > 0 and start_step == 0:
                 log.warning(
-                    "completed_epochs=%d but global_step=0 — checkpoint may be "
-                    "corrupt or from a different run. Verify before continuing.",
+                    "completed_epochs=%d but global_step=0 — checkpoint may be corrupt. Verify.",
                     completed,
                 )
             return completed
@@ -513,7 +539,6 @@ class YoloV8Trainer:
     def _log_epoch(
         self,
         epoch: int,
-        last_step_losses: dict,
         epoch_losses: dict,
         val_metrics: dict,
         epoch_time: float,
@@ -529,7 +554,6 @@ class YoloV8Trainer:
         train_time      = epoch_time - val_time
 
         scalar_metrics  = {k: v for k, v in val_metrics.items() if not k.startswith('cls/')}
-        per_cls_metrics = {k: v for k, v in val_metrics.items() if k.startswith('cls/')}
 
         val_line = "  ".join(
             f"{k}={v:.4f}"
@@ -538,20 +562,24 @@ class YoloV8Trainer:
         )
 
         def _loss_str(d):
-            return (
-                f"total={float(d.get('total_loss', 0.0)):.4f}"
-                f"  box={float(d.get('box_loss',   0.0)):.4f}"
-                f"  dfl={float(d.get('dfl_loss',   0.0)):.4f}"
-                f"  cls={float(d.get('cls_loss',   0.0)):.4f}"
-                f"  dist={float(d.get('dist_loss', 0.0)):.4f}"
-                f"  poly={float(d.get('poly_loss', 0.0)):.4f}"
-            )
+            parts = [
+                f"total={float(d.get('total_loss', 0.0)):.4f}",
+                f"box={float(d.get('box_loss', 0.0)):.4f}",
+                f"dfl={float(d.get('dfl_loss', 0.0)):.4f}",
+                f"cls={float(d.get('cls_loss', 0.0)):.4f}",
+                f"dist={float(d.get('dist_loss', 0.0)):.4f}",
+                f"poly={float(d.get('poly_loss', 0.0)):.4f}",
+            ]
+            if 'poly_angle_loss' in d:
+                parts.append(f"p_a={float(d['poly_angle_loss']):.4f}")
+                parts.append(f"p_d={float(d['poly_dist_loss']):.4f}")
+                parts.append(f"p_c={float(d['poly_conf_loss']):.4f}")
+            return "  ".join(parts)
 
         log.info(
             "\n"
             "┌─ Epoch %d / %d ─────────────────────────────────────────\n"
             "│  Train (mean): %s\n"
-            "│  Train (last): %s\n"
             "│  Val         : %s\n"
             "│  Conf thresh : %.3f    Best %s: %.4f\n"
             "│  Timing      : epoch=%s  train=%s  val=%s  ETA=%s\n"
@@ -559,7 +587,6 @@ class YoloV8Trainer:
             "└────────────────────────────────────────────────────────",
             epoch + 1, trainer_cfg.train_epochs,
             _loss_str(epoch_losses),
-            _loss_str(last_step_losses),
             val_line,
             float(scalar_metrics.get('best_conf_thresh', 0.0)),
             metric_name, best_so_far,
@@ -570,17 +597,11 @@ class YoloV8Trainer:
             throughput,
         )
 
-        if per_cls_metrics:
-            log.info("Per-category AP50: %s",
-                     {k: round(v, 4) for k, v in sorted(per_cls_metrics.items())})
-
         with self._tb_writer.as_default():
             for k, v in val_metrics.items():
                 tf.summary.scalar(f'val/{k}', v, step=step)
             for k, v in epoch_losses.items():
                 tf.summary.scalar(f'train/mean/{k}', v, step=step)
-            for k, v in last_step_losses.items():
-                tf.summary.scalar(f'train/last/{k}', float(v), step=step)
             tf.summary.scalar('epoch/time_s',            epoch_time,  step=epoch + 1)
             tf.summary.scalar('epoch/train_time_s',      train_time,  step=epoch + 1)
             tf.summary.scalar('epoch/val_time_s',        val_time,    step=epoch + 1)
@@ -594,3 +615,4 @@ class YoloV8Trainer:
                                   mem['peak'] / 1e9, step=epoch + 1)
             except Exception:
                 pass
+        self._tb_writer.flush()

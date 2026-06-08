@@ -11,6 +11,9 @@ Flags:
     --debug       Run eagerly and enable verbose logging (overrides runtime config).
 """
 
+import logging as stdlib_logging
+import os
+
 from absl import app, flags, logging
 import tensorflow as tf
 
@@ -20,8 +23,25 @@ try:
     flags.DEFINE_string('config',     None, 'Path to experiment YAML config.', required=True)
     flags.DEFINE_string('output_dir', None, 'Output directory for checkpoints and logs.', required=True)
     flags.DEFINE_bool  ('debug',      False, 'Enable eager execution and verbose logging.')
+    flags.DEFINE_string('resume_from', None, 'Resume from a specific checkpoint (overrides auto-latest).')
 except flags.DuplicateFlagError:
     pass
+
+
+def _setup_file_logging(log_path: str) -> None:
+    """Write all Python logging (including absl) to a persistent log file."""
+    handler = stdlib_logging.FileHandler(log_path, mode='a', encoding='utf-8')
+    handler.setFormatter(stdlib_logging.Formatter(
+        '%(asctime)s %(levelname)s %(name)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    ))
+    stdlib_logging.root.addHandler(handler)
+    stdlib_logging.root.setLevel(stdlib_logging.INFO)
+    try:
+        from absl import logging as absl_logging
+        absl_logging.use_python_logging()
+    except Exception:
+        pass
 
 
 def _build_strategy(runtime_cfg) -> tf.distribute.Strategy:
@@ -139,6 +159,9 @@ def main(_):
     from train.task import YoloV8Task
     from train.trainer import YoloV8Trainer
 
+    os.makedirs(FLAGS.output_dir, exist_ok=True)
+    _setup_file_logging(os.path.join(FLAGS.output_dir, 'train.log'))
+
     config = load_config(FLAGS.config)
     _validate_config(config, FLAGS.output_dir)
 
@@ -155,6 +178,7 @@ def main(_):
         output_dir=FLAGS.output_dir,
         strategy=strategy,
         debug=FLAGS.debug,
+        resume_from=FLAGS.resume_from,
     )
 
     trainer.train(total_epochs=config.trainer.train_epochs)

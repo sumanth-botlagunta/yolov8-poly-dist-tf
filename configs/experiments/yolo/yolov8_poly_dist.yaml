@@ -65,6 +65,7 @@ task:
       max_boxes: 300
       nms_thresh: 0.65
       iou_thresh: 0.001
+      score_thresh: 0.05
       nms_type: greedy
       pre_nms_points: 30000
       topN_per_anchor: 1
@@ -84,9 +85,9 @@ task:
     poly_conf_gain: 0.2
     poly_angle_gain: 0.4
     poly_gain: 0.5
-    tal_alpha: 1.0
+    tal_alpha: 0.5
     tal_beta: 6.0
-    topk: 13
+    topk: 10
     max_delta: .inf
     acsl:
       use_acsl: false
@@ -146,7 +147,7 @@ task:
       mosaic:
         mosaic_frequency: 0.5
         mixup_frequency: 0.0
-        mosaic_center: 0.2
+        mosaic_center: 0.25
         aug_scale_min: 0.4
         aug_scale_max: 1.9
         mosaic_crop_mode: scale
@@ -162,7 +163,6 @@ task:
       with_polygons: false
       drop_remainder: true
       shuffle_buffer_size: 200
-      class_remap_json_path: ./serving/bot_cleaner/class_remap_servingbot.json
       parser:
         angle_step: 15
         max_num_instances: 300
@@ -221,7 +221,7 @@ task:
       mosaic:
         mosaic_frequency: 0.0
         mixup_frequency: 0.0
-        mosaic_center: 0.2
+        mosaic_center: 0.25
         aug_scale_min: 1.0
         aug_scale_max: 1.0
         mosaic_crop_mode: null
@@ -254,7 +254,7 @@ trainer:
         momentum: 0.937
         momentum_start: 0.8
         nesterov: true
-        weight_decay: 0.001
+        weight_decay: 0.0005
         warmup_steps: 7164
         weight_keys: [kernel, weight]
         bias_keys: [bias, beta]
