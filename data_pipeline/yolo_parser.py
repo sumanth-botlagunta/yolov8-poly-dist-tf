@@ -264,7 +264,7 @@ class V8ParserExtended(Parser):
         boxes: tf.Tensor,
         polygons: tf.Tensor,
         angle_step: int,
-        legacy: bool = False,
+        _unused_v1_compat: bool = False,
     ) -> tf.Tensor:
         """Convert raw polygon vertices to PolyYOLO radial format.
 
@@ -283,7 +283,7 @@ class V8ParserExtended(Parser):
             boxes:    float32 [N, 4] yxyx normalized (used for box centers).
             polygons: float32 [N, max_vertices+2] flat xy pairs, -1 padded.
             angle_step: degrees per bin (15 → 24 bins).
-            legacy:   unused, kept for API compatibility.
+            _unused_v1_compat: unused parameter kept for call-site compatibility.
 
         Returns:
             float32 [N, n_angles * 3]

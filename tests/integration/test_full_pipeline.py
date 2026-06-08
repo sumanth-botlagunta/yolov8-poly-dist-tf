@@ -93,10 +93,11 @@ class TestModelLossIntegration:
 
         for step in range(2):
             feats = small_model(images, training=True)
-            total, box, dfl, cls, dist, poly = loss_fn(feats, labels)
+            total, box, dfl, cls, dist, poly, poly_a, poly_d, poly_c = loss_fn(feats, labels)
 
             for name, val in [("total", total), ("box", box), ("dfl", dfl),
-                               ("cls", cls), ("dist", dist), ("poly", poly)]:
+                               ("cls", cls), ("dist", dist), ("poly", poly),
+                               ("poly_angle", poly_a), ("poly_dist", poly_d), ("poly_conf", poly_c)]:
                 assert tf.math.is_finite(val), f"step {step}: {name}_loss is NaN/Inf ({val})"
             assert float(total) > 0.0, f"step {step}: total_loss should be positive"
 

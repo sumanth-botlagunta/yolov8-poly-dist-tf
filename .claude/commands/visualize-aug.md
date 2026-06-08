@@ -1,35 +1,34 @@
-# /visualize-aug — Save augmentation stage visualizations to disk
+# /visualize-aug — Inspect augmented training images
 
-Runs `tools/visualize_augmentations.py` to save images at each augmentation
-stage (raw decode → copy-paste → mosaic → affine → HSV → albumentations).
-Critical for debugging polygon/box alignment bugs.
+During training, augmented images are logged automatically to TensorBoard every epoch
+under `train/augmentations`. This is the primary way to inspect augmentation quality.
+For deeper per-stage debugging, use the pipeline-debugger agent.
 
-## Usage
+## TensorBoard (primary — no extra script needed)
 
-```
-/visualize-aug                 # save 20 samples to /tmp/aug_debug/
-/visualize-aug --n 50          # save 50 samples
-/visualize-aug --stage mosaic  # save only the mosaic stage output
-```
-
-## What to run
+After starting a training run, open TensorBoard and navigate to the **Images** tab:
 
 ```bash
-python tools/visualize_augmentations.py \
-  --config configs/experiments/yolo/yolov8_poly_dist.yaml \
-  --output /tmp/aug_debug/ \
-  --n 20 \
-  [--stage all|mosaic|copy_paste|affine|hsv|albumentations]
+tensorboard --logdir runs/{output_dir}/tb_events/
 ```
 
-## What to verify visually
+Look for: `train/augmentations` (raw augmented batch) and `val/predictions`
+(model predictions overlaid on validation images).
+
+## What to verify
 
 - Bounding boxes are tight around objects (not clipped or shifted)
 - Polygon vertices align with object boundaries
 - After mosaic: 4 images stitched, all labels present
 - After flip: polygon x-coordinates correctly mirrored
-- After letterbox: gray padding, aspect ratio preserved
+- After letterbox: gray padding at edges, correct aspect ratio
 - No black or zero-filled patches (corrupted augmentation)
 
-If any stage shows misaligned boxes or polygons, that stage has a bug.
-Flag it and check the coordinate transform code before proceeding.
+## Debugging a specific stage
+
+If you suspect a bug in a specific augmentation stage (mosaic, copy-paste, affine, HSV),
+use the pipeline-debugger agent. It will reproduce the issue with a synthetic tensor
+in eager mode and trace coordinate transforms step by step.
+
+If any stage shows misaligned boxes or polygons, check the coordinate transform code
+before proceeding — these bugs compound across stages.

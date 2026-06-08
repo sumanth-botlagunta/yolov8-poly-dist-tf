@@ -182,14 +182,23 @@ class ServingBotDetDecoder(PolygonDecoder):
 
     def __init__(
         self,
-        class_remap_json_path: Optional[str] = None,
         num_classes: int = 39,
     ):
         super().__init__(
             max_vertices=10938,
-            class_remap_json_path=class_remap_json_path,
             num_classes=num_classes,
         )
+
+        from configs.class_map import SERVINGBOT_CLASS_REMAP
+
+        # Build identity table over the full [0, num_classes-1] range, then
+        # apply per-class overrides.  Using full length ensures _remap_classes
+        # clip_by_value(classes, 0, num_classes-1) never maps unexpected IDs
+        # to the wrong target class.
+        _table = list(range(num_classes))
+        for _old, _new in SERVINGBOT_CLASS_REMAP.items():
+            _table[_old] = _new
+        self._class_remap = _table
 
     def decode(self, data: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
         result = super().decode(data)

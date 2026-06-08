@@ -15,9 +15,9 @@ def _one_pred():
         "classes": np.array([0], dtype=np.int64),
         "polygons": np.concatenate(
             [
-                np.full((1, 24, 1), 5.0),   # conf logits (sigmoid≈0.99 → drawn)
+                np.full((1, 24, 1), 0.9),   # conf (already sigmoid-activated, > 0.4 → drawn)
                 np.full((1, 24, 1), 0.1),   # radial dist
-                np.zeros((1, 24, 1)),       # angle logit (unused by renderer)
+                np.zeros((1, 24, 1)),       # angle (unused by renderer)
             ],
             axis=-1,
         ).astype(np.float32),

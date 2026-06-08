@@ -68,3 +68,43 @@ curves tracking the float32 baseline) before a full run; benchmark with `/benchm
 ## Derived fields
 `steps_per_loop`, `train_steps`, and `validation_steps` are computed from
 `train_total_examples` / `validation_total_examples` and batch sizes — don't hand-edit them.
+
+## File logging
+`train.log` is written automatically to `output_dir/train.log`. It captures the same output
+as stdout (absl-logging). If a run is killed and resumed the log is appended to, not overwritten.
+
+## Resume from a specific checkpoint
+By default the trainer auto-resumes from the latest checkpoint in `output_dir`. To start from
+a specific step (e.g. after manually selecting the best non-final checkpoint):
+
+```bash
+python scripts/run_train.py \
+    --config  configs/experiments/yolo/yolov8_poly_dist.yaml \
+    --output_dir /path/to/output \
+    --resume_from /path/to/output/ckpt-STEP
+```
+
+## Augmentation TensorBoard samples
+Augmented training images are logged every epoch under the tag `train/augmentations` in
+TensorBoard. Each panel shows a mosaic of the first batch after augmentation with ground-truth
+boxes and polygon overlays rendered by `train/viz_utils.py`.
+
+## Polygon sub-loss metrics
+The three polygon loss components are logged separately:
+- `train/poly_angle_loss` — angle bin BCE (averaged over 24 bins per anchor)
+- `train/poly_dist_loss`  — radial distance L1
+- `train/poly_conf_loss`  — vertex confidence BCE
+
+These are useful for diagnosing which polygon component is not converging.
+
+## Continuous evaluation
+`tools/continuous_eval.py` watches an `output_dir` for new checkpoints and evaluates each one,
+appending results to `eval_log.jsonl`. Useful for monitoring a long training run without manual
+intervention:
+
+```bash
+python tools/continuous_eval.py \
+    --config  configs/experiments/yolo/yolov8_poly_dist.yaml \
+    --watch_dir /path/to/output \
+    --interval 300
+```
