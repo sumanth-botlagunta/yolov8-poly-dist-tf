@@ -196,8 +196,17 @@ class CopyAndPasteModule:
             # Transform: x_bg = (paste_x + x_obj * new_w) / W
             x_bg = (paste_x_f + pts[:, 0] * new_w_f) / W_f
             y_bg = (paste_y_f + pts[:, 1] * new_h_f) / H_f
-            x_bg = tf.where(valid, tf.clip_by_value(x_bg, 0.0, 1.0), pts[:, 0])
-            y_bg = tf.where(valid, tf.clip_by_value(y_bg, 0.0, 1.0), pts[:, 1])
+            # A valid vertex that lands outside the background image is invalidated
+            # (-1 sentinel), matching mosaic._transform_polygons. Pinning it to the
+            # edge via clip would inject a wrong radial distance into the GT.
+            in_bounds = tf.logical_and(
+                tf.logical_and(x_bg >= 0.0, x_bg <= 1.0),
+                tf.logical_and(y_bg >= 0.0, y_bg <= 1.0),
+            )
+            keep = tf.logical_and(valid, in_bounds)
+            neg1 = tf.fill(tf.shape(x_bg), -1.0)
+            x_bg = tf.where(keep, x_bg, neg1)
+            y_bg = tf.where(keep, y_bg, neg1)
 
             new_pts = tf.reshape(tf.stack([x_bg, y_bg], axis=-1), [1, max_v])
 
