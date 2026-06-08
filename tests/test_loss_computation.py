@@ -92,16 +92,20 @@ class TestTaskAlignedLossExtended(unittest.TestCase):
         feats = _make_feats()
         batch = _make_batch()
         outputs = self.loss_fn(feats, batch)
-        self.assertEqual(len(outputs), 6)
+        self.assertEqual(len(outputs), 9)
         for val in outputs:
             self.assertEqual(val.shape.rank, 0)
             self.assertTrue(tf.math.is_finite(val))
 
     def test_loss_components_sum(self):
-        """total_loss equals the sum of the five component losses."""
+        """total_loss equals the sum of the five component losses.
+
+        poly_a/poly_d/poly_c are raw (pre-gain) sub-losses and are NOT part of
+        the total; poly already contains all gains applied inside _polygon_loss.
+        """
         feats  = _make_feats()
         batch  = _make_batch()
-        total, box, dfl, cls, dist, poly = self.loss_fn(feats, batch)
+        total, box, dfl, cls, dist, poly, poly_a, poly_d, poly_c = self.loss_fn(feats, batch)
         expected_total = box + dfl + cls + dist + poly
         self.assertAlmostEqual(
             float(total), float(expected_total), places=4

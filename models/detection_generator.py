@@ -5,9 +5,11 @@ Converts raw head outputs to final detections:
     2. Apply per-level anchor grids to produce xyxy boxes.
     3. Normalize to [0, 1] in yxyx format.
     4. Apply sigmoid to class logits.
-    5. Run per-image greedy NMS (class-agnostic) via tf.map_fn.
-    6. Gather polygon and distance predictions for surviving boxes.
-    7. Decode distance: exp(log_dist), clamped to [min_distance, max_distance].
+    5. Apply top-1 class masking (each anchor keeps only its highest-scoring class).
+    6. Run per-class greedy NMS (score_threshold=0.05, iou_threshold=0.65).
+    7. Merge all classes, sort by score, keep top-max_boxes.
+    8. Apply polygon activations: softplus(dist), sigmoid(angle), sigmoid(conf).
+    9. Decode distance: exp(log_dist), clamped to [min_distance, max_distance].
 
 Classes:
     YoloV8Layer: Wraps post-processing as a callable layer.
@@ -25,21 +27,28 @@ _LEVEL_STRIDES = {"3": 8, "4": 16, "5": 32}
 class YoloV8Layer:
     """Post-processing layer converting raw head output to detections.
 
+    Uses per-class NMS matching the old-codebase behavior:
+    - Top-1 class masking zeroes out all classes except the argmax per anchor.
+    - NMS is run independently per class (no cross-class suppression).
+    - score_threshold=0.05 filters boxes before each per-class NMS.
+
     Output predictions schema:
         bbox:           float32 [batch, max_boxes, 4]     yxyx normalized [0,1]
         classes:        int64   [batch, max_boxes]
         confidence:     float32 [batch, max_boxes]
         num_detections: int32   [batch]
-        polygons:       float32 [batch, max_boxes, 24, 3] (conf,dy,dx) per vertex
+        polygons:       float32 [batch, max_boxes, 24, 3] (conf,dist,angle) activated
         distance:       float32 [batch, max_boxes]        metres
     """
 
     def __init__(
         self,
         input_image_size: List[int],
+        num_classes: int = 39,
         max_boxes: int = 300,
         nms_thresh: float = 0.65,
         iou_thresh: float = 0.001,
+        score_thresh: float = 0.05,
         pre_nms_points: int = 30000,
         nms_type: str = "greedy",
         reg_max: int = 16,
@@ -48,9 +57,11 @@ class YoloV8Layer:
         max_distance: float = 10.0,
     ):
         self.input_image_size = input_image_size[:2]   # [H, W]
+        self.num_classes      = num_classes
         self.max_boxes        = max_boxes
         self.nms_thresh       = nms_thresh
         self.iou_thresh       = iou_thresh
+        self.score_thresh     = score_thresh
         self.pre_nms_points   = pre_nms_points
         self.reg_max          = reg_max
         self.output_poly_size = output_poly_size
@@ -73,7 +84,6 @@ class YoloV8Layer:
             float32 [H*W, 2]  (cx, cy) in input-image pixels, offset by 0.5
         """
         H, W = feature_shape[0], feature_shape[1]
-        # Centres at (i+0.5)*stride for i in 0..H-1 (standard YOLOv8 convention)
         ys = (tf.cast(tf.range(H), tf.float32) + 0.5) * stride   # [H]
         xs = (tf.cast(tf.range(W), tf.float32) + 0.5) * stride   # [W]
         grid_x, grid_y = tf.meshgrid(xs, ys)                      # [H, W] each
@@ -96,11 +106,8 @@ class YoloV8Layer:
         B = tf.shape(box_logits)[0]
         H = tf.shape(box_logits)[1]
         W = tf.shape(box_logits)[2]
-        # Reshape to [B, H, W, 4, reg_max]
         logits_4 = tf.reshape(box_logits, [B, H, W, 4, self.reg_max])
-        # Softmax over bin dimension
         probs = tf.nn.softmax(logits_4, axis=-1)                   # [B, H, W, 4, reg_max]
-        # Expected bin value
         offsets = tf.reduce_sum(probs * self._bins, axis=-1)        # [B, H, W, 4]
         return offsets
 
@@ -117,69 +124,86 @@ class YoloV8Layer:
         poly_conf:  Optional[tf.Tensor],
         distance:   Optional[tf.Tensor],   # [N] or None
     ) -> Tuple[tf.Tensor, ...]:
-        """Greedy class-agnostic NMS for one image."""
-        max_scores  = tf.reduce_max(scores, axis=-1)        # [N]
-        top_classes = tf.argmax(scores, axis=-1)            # [N] int64
+        """Per-class NMS with top-1 masking for one image.
 
-        # Pre-filter by score threshold before NMS for speed
-        keep_mask = max_scores >= self.iou_thresh
-        boxes_f   = tf.boolean_mask(boxes, keep_mask)
-        scores_f  = tf.boolean_mask(max_scores, keep_mask)
-        classes_f = tf.boolean_mask(top_classes, keep_mask)
+        Steps:
+            1. Top-1 masking: zero out all classes except argmax per anchor.
+            2. For each class c: NMS with score_threshold=self.score_thresh.
+            3. Merge all classes, sort by score, pad to max_boxes.
+        """
+        # Top-1 class masking
+        top_class     = tf.argmax(scores, axis=-1)                         # [N]
+        one_hot       = tf.one_hot(top_class, self.num_classes, dtype=tf.float32)  # [N, nc]
+        scores_masked = scores * one_hot                                    # [N, nc]
 
-        # Gather optional tensors
-        def _mask(t):
-            return tf.boolean_mask(t, keep_mask) if t is not None else None
+        # Per-class NMS
+        c_boxes, c_scores, c_classes = [], [], []
+        c_pa, c_pd, c_pc, c_di = [], [], [], []
 
-        pa_f = _mask(poly_angle)
-        pd_f = _mask(poly_dist)
-        pc_f = _mask(poly_conf)
-        di_f = _mask(distance)
+        for c in range(self.num_classes):
+            cs      = scores_masked[:, c]   # [N]
+            nms_idx = tf.image.non_max_suppression(
+                boxes, cs,
+                max_output_size=self.max_boxes,
+                iou_threshold=self.nms_thresh,
+                score_threshold=self.score_thresh,
+            )
+            c_boxes.append(tf.gather(boxes, nms_idx))
+            c_scores.append(tf.gather(cs, nms_idx))
+            c_classes.append(tf.fill([tf.shape(nms_idx)[0]], tf.cast(c, tf.int64)))
+            if poly_angle is not None:
+                c_pa.append(tf.gather(poly_angle, nms_idx))
+                c_pd.append(tf.gather(poly_dist,  nms_idx))
+                c_pc.append(tf.gather(poly_conf,  nms_idx))
+            if distance is not None:
+                c_di.append(tf.gather(distance, nms_idx))
 
-        # Greedy NMS (class-agnostic)
-        nms_idx = tf.image.non_max_suppression(
-            boxes_f,
-            scores_f,
-            max_output_size=self.max_boxes,
-            iou_threshold=self.nms_thresh,
-            score_threshold=float("-inf"),
-        )                                                   # [k]
+        # Merge survivors from all classes
+        m_boxes   = tf.concat(c_boxes,   axis=0)   # [?, 4]
+        m_scores  = tf.concat(c_scores,  axis=0)   # [?]
+        m_classes = tf.concat(c_classes, axis=0)   # [?]
 
-        k   = tf.shape(nms_idx)[0]
+        # Sort by score descending, keep top-max_boxes
+        sort_idx = tf.argsort(m_scores, direction='DESCENDING')
+        k   = tf.minimum(tf.shape(m_scores)[0], self.max_boxes)
+        top = sort_idx[:k]
         pad = self.max_boxes - k
 
-        def _gather_pad(t, default_val=0.0):
-            if t is None:
-                return None
-            g = tf.gather(t, nms_idx)
-            # Pad along axis 0 to max_boxes
-            pads = [[0, pad]] + [[0, 0]] * (len(t.shape) - 1)
-            return tf.pad(g, pads, constant_values=default_val)
+        sel_boxes   = tf.ensure_shape(
+            tf.pad(tf.gather(m_boxes,   top), [[0, pad], [0, 0]]), [self.max_boxes, 4])
+        sel_scores  = tf.ensure_shape(
+            tf.pad(tf.gather(m_scores,  top), [[0, pad]]),          [self.max_boxes])
+        sel_classes = tf.ensure_shape(
+            tf.pad(tf.gather(m_classes, top), [[0, pad]]),          [self.max_boxes])
 
-        sel_boxes   = _gather_pad(boxes_f)                  # [max_boxes, 4]
-        sel_scores  = _gather_pad(scores_f)                 # [max_boxes]
-        sel_classes = tf.pad(tf.gather(classes_f, nms_idx),
-                             [[0, pad]])                    # [max_boxes]
+        # Polygon: apply activations to detected boxes, then pad with zeros
+        if poly_angle is not None:
+            m_pa = tf.concat(c_pa, axis=0)
+            m_pd = tf.concat(c_pd, axis=0)
+            m_pc = tf.concat(c_pc, axis=0)
+            sel_pa = tf.ensure_shape(
+                tf.pad(tf.math.sigmoid(tf.gather(m_pa, top)),  [[0, pad], [0, 0]]),
+                [self.max_boxes, self.output_poly_size])
+            sel_pd = tf.ensure_shape(
+                tf.pad(tf.math.softplus(tf.gather(m_pd, top)), [[0, pad], [0, 0]]),
+                [self.max_boxes, self.output_poly_size])
+            sel_pc = tf.ensure_shape(
+                tf.pad(tf.math.sigmoid(tf.gather(m_pc, top)),  [[0, pad], [0, 0]]),
+                [self.max_boxes, self.output_poly_size])
+        else:
+            sel_pa = tf.zeros([self.max_boxes, self.output_poly_size])
+            sel_pd = tf.zeros([self.max_boxes, self.output_poly_size])
+            sel_pc = tf.zeros([self.max_boxes, self.output_poly_size])
 
-        sel_boxes   = tf.ensure_shape(sel_boxes,  [self.max_boxes, 4])
-        sel_scores  = tf.ensure_shape(sel_scores, [self.max_boxes])
-        sel_classes = tf.ensure_shape(sel_classes,[self.max_boxes])
-
-        sel_pa = _gather_pad(pa_f) if pa_f is not None else tf.zeros([self.max_boxes, self.output_poly_size])
-        sel_pd = _gather_pad(pd_f) if pd_f is not None else tf.zeros([self.max_boxes, self.output_poly_size])
-        sel_pc = _gather_pad(pc_f) if pc_f is not None else tf.zeros([self.max_boxes, self.output_poly_size])
-
-        if di_f is not None:
-            di_g = tf.gather(di_f, nms_idx)
-            di_g = tf.clip_by_value(tf.exp(di_g), self.min_distance, self.max_distance)
-            sel_dist = tf.pad(di_g, [[0, pad]])
+        # Distance: exp + clamp, then pad
+        if distance is not None:
+            m_di     = tf.concat(c_di, axis=0)
+            di_exp   = tf.clip_by_value(
+                tf.exp(tf.gather(m_di, top)), self.min_distance, self.max_distance
+            )
+            sel_dist = tf.ensure_shape(tf.pad(di_exp, [[0, pad]]), [self.max_boxes])
         else:
             sel_dist = tf.zeros([self.max_boxes])
-
-        sel_pa = tf.ensure_shape(sel_pa, [self.max_boxes, self.output_poly_size])
-        sel_pd = tf.ensure_shape(sel_pd, [self.max_boxes, self.output_poly_size])
-        sel_pc = tf.ensure_shape(sel_pc, [self.max_boxes, self.output_poly_size])
-        sel_dist = tf.ensure_shape(sel_dist, [self.max_boxes])
 
         return sel_boxes, sel_scores, sel_classes, tf.cast(k, tf.int32), sel_pa, sel_pd, sel_pc, sel_dist
 
@@ -290,7 +314,7 @@ class YoloV8Layer:
             ),
         )
 
-        # Stack polygon channels into [B, max_boxes, 24, 3] (conf, dy, dx)
+        # Stack polygon channels: (conf, dist, angle) — all activated
         poly_out = tf.stack([out_pc, out_pd, out_pa], axis=-1)   # [B, max_boxes, 24, 3]
 
         return {
@@ -298,6 +322,6 @@ class YoloV8Layer:
             "classes":        out_classes,       # [B, max_boxes]
             "confidence":     out_scores,        # [B, max_boxes]
             "num_detections": out_n,             # [B]
-            "polygons":       poly_out,          # [B, max_boxes, 24, 3]
+            "polygons":       poly_out,          # [B, max_boxes, 24, 3] (conf,dist,angle) activated
             "distance":       out_dist,          # [B, max_boxes]
         }

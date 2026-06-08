@@ -27,6 +27,23 @@ class TestDistanceEvaluator(unittest.TestCase):
         self.assertAlmostEqual(m['dist_mae'],  1.0, places=5)
         self.assertAlmostEqual(m['dist_rmse'], 1.0, places=5)
 
+        # New metrics: pred=2.0m, gt=1.0m → absrel = |2-1|/1 = 1.0
+        # gt=1.0 < 5.0 → near bucket; far bucket is empty → 0.0
+        self.assertIn('dist_absrel', m)
+        self.assertAlmostEqual(m['dist_absrel'], 1.0, places=5)
+
+        self.assertIn('dist_abs_near', m)
+        self.assertIn('dist_absrel_near', m)
+        self.assertIn('dist_abs_far', m)
+        self.assertIn('dist_absrel_far', m)
+
+        # gt=1.0m is near (<5m): near MAE=1.0, near absrel=1.0
+        self.assertAlmostEqual(m['dist_abs_near'],    1.0, places=5)
+        self.assertAlmostEqual(m['dist_absrel_near'], 1.0, places=5)
+        # No far samples → 0.0
+        self.assertAlmostEqual(m['dist_abs_far'],    0.0, places=7)
+        self.assertAlmostEqual(m['dist_absrel_far'], 0.0, places=7)
+
     def test_sentinel_excluded(self):
         """Entries with gt == INVALID_SENTINEL must not contribute to MAE."""
         ev = DistanceEvaluator()
@@ -46,15 +63,25 @@ class TestDistanceEvaluator(unittest.TestCase):
             gt_log_dist=  np.full(2, INVALID_SENTINEL),
         )
         m = ev.evaluate()
-        self.assertAlmostEqual(m['dist_mae'],  0.0, places=7)
-        self.assertAlmostEqual(m['dist_rmse'], 0.0, places=7)
+        self.assertAlmostEqual(m['dist_mae'],       0.0, places=7)
+        self.assertAlmostEqual(m['dist_rmse'],      0.0, places=7)
+        self.assertAlmostEqual(m['dist_absrel'],     0.0, places=7)
+        self.assertAlmostEqual(m['dist_abs_near'],   0.0, places=7)
+        self.assertAlmostEqual(m['dist_absrel_near'], 0.0, places=7)
+        self.assertAlmostEqual(m['dist_abs_far'],    0.0, places=7)
+        self.assertAlmostEqual(m['dist_absrel_far'], 0.0, places=7)
 
     def test_empty_evaluate_returns_zeros(self):
         """evaluate() on fresh evaluator must return zeros."""
         ev = DistanceEvaluator()
         m  = ev.evaluate()
-        self.assertAlmostEqual(m['dist_mae'],  0.0, places=7)
-        self.assertAlmostEqual(m['dist_rmse'], 0.0, places=7)
+        self.assertAlmostEqual(m['dist_mae'],       0.0, places=7)
+        self.assertAlmostEqual(m['dist_rmse'],      0.0, places=7)
+        self.assertAlmostEqual(m['dist_absrel'],     0.0, places=7)
+        self.assertAlmostEqual(m['dist_abs_near'],   0.0, places=7)
+        self.assertAlmostEqual(m['dist_absrel_near'], 0.0, places=7)
+        self.assertAlmostEqual(m['dist_abs_far'],    0.0, places=7)
+        self.assertAlmostEqual(m['dist_absrel_far'], 0.0, places=7)
 
     def test_reset_clears_state(self):
         """After reset(), evaluate returns zeros regardless of prior updates."""

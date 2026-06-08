@@ -121,7 +121,7 @@ class TestDrySmoke:
             labels = _make_labels(rng)
             with tf.GradientTape() as tape:
                 feats = model(images, training=True)
-                total, box, dfl, cls, dist, poly = loss_fn(feats, labels)
+                total, box, dfl, cls, dist, poly, poly_a, poly_d, poly_c = loss_fn(feats, labels)
             grads = tape.gradient(total, model.trainable_variables)
             optimizer.apply_gradients(zip(grads, model.trainable_variables))
 

@@ -296,7 +296,6 @@ def _build_distance_data_config(d: Dict[str, Any]) -> DistanceDataConfig:
         with_polygons=d.get("with_polygons", False),
         drop_remainder=d.get("drop_remainder", True),
         shuffle_buffer_size=d.get("shuffle_buffer_size", 200),
-        class_remap_json_path=d.get("class_remap_json_path"),
         parser=parser_cfg,
     )
 
