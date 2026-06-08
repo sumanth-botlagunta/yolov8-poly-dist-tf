@@ -122,6 +122,18 @@ class TestV8DistanceParser(unittest.TestCase):
         self.assertAlmostEqual(log_dist[0], math.log(2.0), places=4)
         self.assertAlmostEqual(log_dist[1], -10.0, places=5)
 
+    def test_zero_distance_is_sentinel(self):
+        # A distance of exactly 0.0 is physically invalid → sentinel, not log(min).
+        _, labels = self._parser()._parse_train_data(_dist_data([0.0, 3.0]))
+        log_dist = labels["log_distance"].numpy()
+        self.assertAlmostEqual(log_dist[0], -10.0, places=5)
+        self.assertAlmostEqual(log_dist[1], math.log(3.0), places=4)
+
+    def test_one_pixel_image_does_not_crash(self):
+        # Degenerate 1px image must not trigger a 0-size resize.
+        _, labels = self._parser()._parse_train_data(_dist_data([1.5], h=1, w=1))
+        self.assertEqual(int(labels["ignore_bg"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -147,8 +147,16 @@ def _apply_runtime_config(runtime_cfg, debug: bool) -> None:
         logging.info("XLA JIT compilation enabled.")
 
     if runtime_cfg.mixed_precision_dtype == "float16":
-        tf.keras.mixed_precision.set_global_policy("mixed_float16")
-        logging.info("Mixed precision: float16 policy active.")
+        # float16 needs dynamic loss scaling to avoid gradient underflow, but the
+        # custom SGDTorch optimizer + bare GradientTape training step do not apply
+        # any loss scaling. Enabling mixed_float16 here would train poorly / stall
+        # silently. Reject it until loss scaling is wired up; bfloat16 is supported
+        # (no loss scaling required) and is the recommended Tensor-Core path.
+        raise NotImplementedError(
+            "mixed_precision_dtype='float16' is not supported: the training step "
+            "has no loss scaling, so float16 gradients would underflow. Use "
+            "'bfloat16' (no loss scaling needed) or 'float32'."
+        )
     elif runtime_cfg.mixed_precision_dtype == "bfloat16":
         tf.keras.mixed_precision.set_global_policy("mixed_bfloat16")
         logging.info("Mixed precision: bfloat16 policy active.")

@@ -38,6 +38,20 @@ from losses.polygon_loss import (
 )
 from losses.tal_assigner import TaskAlignedAssigner
 
+
+def _replica_sum(x: tf.Tensor) -> tf.Tensor:
+    """Sum a scalar across replicas (no-op under a single replica).
+
+    The loss normalizers (num_objs, target_scores_sum) must be the GLOBAL counts
+    so that, with MirroredStrategy summing per-replica gradients, the result equals
+    the single-device gradient. Under one replica this returns ``x`` unchanged, so
+    single-device training is numerically identical.
+    """
+    ctx = tf.distribute.get_replica_context()
+    if ctx is None or ctx.num_replicas_in_sync == 1:
+        return x
+    return ctx.all_reduce(tf.distribute.ReduceOp.SUM, x)
+
 _LEVEL_STRIDES = {"3": 8, "4": 16, "5": 32}
 
 
@@ -453,7 +467,9 @@ class TaskAlignedLossExtended:
         gt_labels    = gt_labels[:, :M_eff]
         gt_bboxes_px = gt_bboxes_px[:, :M_eff, :]
         mask_gt      = tf.sequence_mask(n_gt, maxlen=M_eff)   # [B, M_eff] bool
-        num_objs     = tf.maximum(tf.reduce_sum(tf.cast(mask_gt, tf.float32)), 1.0)
+        # Global GT count across replicas (no-op single-device) so the per-object
+        # normalization matches the single-device gradient under MirroredStrategy.
+        num_objs     = tf.maximum(_replica_sum(tf.reduce_sum(tf.cast(mask_gt, tf.float32))), 1.0)
 
         gt_polys_raw = batch.get("polygons")
         gt_dists_raw = batch.get("log_distance")
@@ -480,7 +496,8 @@ class TaskAlignedLossExtended:
             gt_dists=gt_dists,
         )
 
-        target_scores_sum = tf.maximum(tf.reduce_sum(target_scores), 1.0)
+        # Global alignment-score sum across replicas (no-op single-device).
+        target_scores_sum = tf.maximum(_replica_sum(tf.reduce_sum(target_scores)), 1.0)
 
         # ── 5. Component losses ────────────────────────────────────────
         ciou_loss, dfl_loss = self._box_loss(
