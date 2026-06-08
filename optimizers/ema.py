@@ -52,6 +52,15 @@ class ExponentialMovingAverage(tf.Module):
             for i, v in enumerate(self._model_vars)
         ]
 
+    def build(self, variables) -> None:
+        """Pre-create the inner optimizer's slots (cross-replica context).
+
+        Required under tf.distribute so no variable is created inside strategy.run.
+        EMA shadows are already created in __init__ (also cross-replica context).
+        """
+        if hasattr(self._optimizer, 'build'):
+            self._optimizer.build(variables)
+
     def _get_decay(self) -> tf.Tensor:
         """Compute effective decay for the current step."""
         if self._dynamic_decay:

@@ -28,3 +28,10 @@ jobs:
           # Everything except the real-data smoke tests (which need TFDS_DATA_DIR).
           # The dry smoke loop (synthetic data) IS included.
           pytest -m "not smoke" -q
+
+      - name: Run multi-GPU (MirroredStrategy) tests
+        run: |
+          # Must run in a FRESH process: these split the CPU into 2 logical devices,
+          # which only works before TF's device context is initialized. In the main
+          # run above they self-skip (context already locked to 1 device).
+          pytest tests/integration/test_multigpu.py -q

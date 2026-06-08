@@ -61,14 +61,28 @@ Applied in `run_train.py:_apply_runtime_config` from `RuntimeConfig`: XLA via
 Prefer `bfloat16` (no loss scaling) over `float16`. Validate on a few hundred steps (loss finite,
 curves tracking the float32 baseline) before a full run; benchmark with `/benchmark`.
 
-## Distributed training
-**Single-device only at present.** The model is built inside `strategy.scope()`, but the custom
-training loop runs the step directly (no `strategy.run` / `experimental_distribute_dataset`) and
-the loss normalizers (`num_objs`, `target_scores_sum`) are computed per-batch, not globally
-all-reduced. Multi-replica training would therefore be silently incorrect, so the trainer
-**raises `NotImplementedError` when `num_replicas_in_sync > 1`** rather than train a wrong model.
-To enable multi-GPU, dispatch the step via `strategy.run`, distribute the dataset, and all-reduce
-the normalizers across replicas before dividing.
+## Distributed training (multi-GPU)
+`MirroredStrategy` data-parallel training is supported and **numerically identical** to
+single-device. The default strategy auto-detects all visible GPUs; pass `--debug` or a custom
+strategy to override.
+
+How it stays correct:
+- The model + optimizer are built inside `strategy.scope()`, and optimizer momentum slots are
+  pre-created there (`optimizer.build(...)`) — variables cannot be created inside `strategy.run`.
+- The merged stream is built at the **global** batch size and split per-replica via
+  `experimental_distribute_dataset` (true data parallelism — each global batch is sliced across
+  replicas). Keep `global_batch_size` divisible by the replica count.
+- The train step is dispatched with `strategy.run`; per-replica losses are `SUM`-reduced for
+  logging.
+- The loss normalizers (`num_objs`, `target_scores_sum`) are **all-reduced to global counts**
+  (`losses/tal_loss.py:_replica_sum`) and `SGDTorch` **all-reduces gradients** across replicas
+  (`_all_reduce_gradients`). Both are no-ops under a single replica, so single-GPU runs are
+  byte-for-byte unchanged.
+
+Validation runs on a single replica (reads the primary mirror) — it is not the throughput
+bottleneck and this keeps the COCO/distance/polygon aggregation simple. The 2-replica path is
+covered by `tests/integration/test_multigpu.py` (run in a fresh process; it splits a CPU into two
+logical devices).
 
 ## Derived fields
 `steps_per_loop`, `train_steps`, and `validation_steps` are computed from

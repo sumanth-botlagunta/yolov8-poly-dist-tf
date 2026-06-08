@@ -71,9 +71,22 @@ class SGDTorch(tf.Module):
 
         self.iterations = tf.Variable(0, trainable=False, dtype=tf.int64,
                                       name='sgd_step')
-        # Velocity slots are created lazily on first apply_gradients call.
+        # Velocity slots are created lazily on first apply_gradients call, OR
+        # eagerly via build() — required under tf.distribute, where variables
+        # cannot be created inside a replica context (strategy.run).
         self._velocities: List[tf.Variable] = []
         self._var_refs: List = []
+
+    def build(self, variables) -> None:
+        """Pre-create momentum slots for *variables* (zero-initialized).
+
+        Call this in cross-replica context (inside strategy.scope, before the
+        training loop) so that no variable is created inside strategy.run. The
+        slots are zeros, identical to lazy creation, so single-device numerics
+        are unchanged.
+        """
+        for var in variables:
+            self._get_or_create_velocity(var)
 
     # ------------------------------------------------------------------
     # Properties
@@ -92,6 +105,13 @@ class SGDTorch(tf.Module):
         grads_and_vars: List[Tuple[Optional[tf.Tensor], tf.Variable]],
         **kwargs,
     ) -> None:
+        # Under MirroredStrategy each replica holds the gradient of its own batch
+        # share. Sum gradients across replicas so every replica applies the same
+        # update and the mirrored variables stay in sync (matches the global-mean
+        # gradient, since the loss is normalized by the global object count). This
+        # is a no-op under a single replica, so single-device training is unchanged.
+        grads_and_vars = self._all_reduce_gradients(list(grads_and_vars))
+
         base_lr = self.lr
         mu      = self._current_momentum()
         t       = self._warmup_progress()
@@ -140,6 +160,20 @@ class SGDTorch(tf.Module):
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _all_reduce_gradients(grads_and_vars):
+        """SUM-reduce gradients across replicas (no-op under a single replica)."""
+        ctx = tf.distribute.get_replica_context()
+        if ctx is None or ctx.num_replicas_in_sync == 1:
+            return grads_and_vars
+        out = [[g, v] for g, v in grads_and_vars]
+        idx   = [i for i, (g, _) in enumerate(out) if g is not None]
+        grads = [out[i][0] for i in idx]
+        reduced = ctx.all_reduce(tf.distribute.ReduceOp.SUM, grads)
+        for j, i in enumerate(idx):
+            out[i][0] = reduced[j]
+        return [(g, v) for g, v in out]
 
     def _current_momentum(self) -> tf.Tensor:
         """Linear warmup: momentum_start → momentum over warmup_steps."""
