@@ -270,42 +270,113 @@ def _legacy_subblock(struct: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# New-model records (authoritative)
+# New-model records (authoritative) — by OBJECT structure, not variable paths.
 # ---------------------------------------------------------------------------
+#
+# Backbone/decoder blocks are stable Python attributes (same code on every TF /
+# Keras build), and each _ConvBnAct exposes .conv/.bn, each C2f exposes
+# .cv1/.cv2/.bottlenecks (named bn{i} with .cv1/.cv2), each SPPF .cv1/.cv2. We
+# walk those objects directly so the (block_ord, subblock, role) identity does
+# NOT depend on v.path (which is absent on non-Keras-3 builds). This is what made
+# the frozen-map canonical ids match everywhere.
+
+_BACKBONE_BLOCKS = [
+    "stem_conv1", "stem_conv2", "stem_c2f", "down1", "c2f_p3",
+    "down2", "c2f_p4", "down3", "c2f_p5_pre", "sppf",
+]
+_DECODER_BLOCKS = [
+    "fpn_c2f_p4", "fpn_c2f_p3", "pan_down_p3",
+    "pan_c2f_p4", "pan_down_p4", "pan_c2f_p5",
+]
+
+
+def _objrec(module: str, block_ord: int, subblock: str, role: str, var) -> dict:
+    return {
+        "module": module, "block_ord": block_ord, "subblock": subblock,
+        "role": role, "shape": tuple(var.shape), "var": var,
+        "path": f"{module}/blk{block_ord}/{subblock or '-'}/{role}",
+    }
+
+
+def _convbnact_records(layer, module: str, block_ord: int, subblock: str) -> List[dict]:
+    """Records for a _ConvBnAct (.conv + .bn) or a bare Conv2D (.kernel/.bias)."""
+    recs: List[dict] = []
+    conv = getattr(layer, "conv", layer)  # _ConvBnAct.conv, or the layer itself
+    kernel = getattr(conv, "kernel", None)
+    if kernel is not None:
+        recs.append(_objrec(module, block_ord, subblock, "kernel", kernel))
+        bias = getattr(conv, "bias", None)
+        if bias is not None:
+            recs.append(_objrec(module, block_ord, subblock, "bias", bias))
+    bn = getattr(layer, "bn", None)
+    if bn is not None:
+        for role in ("gamma", "beta", "moving_mean", "moving_variance"):
+            v = getattr(bn, role, None)
+            if v is not None:
+                recs.append(_objrec(module, block_ord, subblock, role, v))
+    return recs
+
+
+def _block_records(block, module: str, block_ord: int) -> List[dict]:
+    """Records for one top-level block: C2f / SPPF / plain ConvBnAct."""
+    recs: List[dict] = []
+    if hasattr(block, "bottlenecks"):                 # C2f
+        recs += _convbnact_records(block.cv1, module, block_ord, "cv1")
+        recs += _convbnact_records(block.cv2, module, block_ord, "cv2")
+        for i, bott in enumerate(block.bottlenecks):
+            recs += _convbnact_records(bott.cv1, module, block_ord, f"bn{i}/cv1")
+            recs += _convbnact_records(bott.cv2, module, block_ord, f"bn{i}/cv2")
+    elif hasattr(block, "pool"):                      # SPPF
+        recs += _convbnact_records(block.cv1, module, block_ord, "cv1")
+        recs += _convbnact_records(block.cv2, module, block_ord, "cv2")
+    else:                                             # plain _ConvBnAct
+        recs += _convbnact_records(block, module, block_ord, "")
+    return recs
+
+
+def _path_based_bd_records(module, module_name: str) -> List[dict]:
+    """Fallback: derive backbone/decoder records from variable paths.
+
+    Only used if the expected block attributes are missing (unknown variant).
+    """
+    recs: List[dict] = []
+    path_map = _variable_path_map(module, module_name)
+    order: Dict[str, int] = {}
+    for v in module.variables:
+        block = _new_block_name(_resolve_path(v, module_name, path_map), module_name)
+        if block not in order:
+            order[block] = len(order)
+    for v in module.variables:
+        path = _resolve_path(v, module_name, path_map)
+        block = _new_block_name(path, module_name)
+        recs.append({
+            "module": module_name, "block_ord": order[block],
+            "subblock": _new_subblock(path, module_name),
+            "role": role_of(getattr(v, "name", "") or path),
+            "shape": tuple(v.shape), "var": v, "path": path,
+        })
+    return recs
+
 
 def new_records(model) -> List[dict]:
     """Flatten the live new model into structural records.
 
-    backbone/decoder records carry ``block_ord``; head records carry
-    ``level`` + ``semantic``. Every record has role, shape, the live ``var`` and
-    its ``path``.
+    backbone/decoder records carry ``block_ord`` + ``subblock`` (from the object
+    tree); head records carry ``level`` + ``semantic`` (from named attributes).
+    Every record has role, shape, the live ``var``, and a readable ``path``.
     """
     recs: List[dict] = []
 
-    for module_name in ("backbone", "decoder"):
+    for module_name, block_names in (("backbone", _BACKBONE_BLOCKS),
+                                     ("decoder", _DECODER_BLOCKS)):
         module = getattr(model, module_name, None)
         if module is None:
             continue
-        path_map = _variable_path_map(module, module_name)
-        order: Dict[str, int] = {}
-        for v in module.variables:
-            path = _resolve_path(v, module_name, path_map)
-            block = _new_block_name(path, module_name)
-            if block not in order:
-                order[block] = len(order)
-        for seq, v in enumerate(module.variables):
-            path = _resolve_path(v, module_name, path_map)
-            block = _new_block_name(path, module_name)
-            recs.append({
-                "module": module_name,
-                "block_ord": order[block],
-                "subblock": _new_subblock(path, module_name),
-                "role": role_of(getattr(v, "name", "") or path),
-                "shape": tuple(v.shape),
-                "var": v,
-                "path": path,
-                "seq": seq,  # creation order within the module
-            })
+        if all(hasattr(module, n) for n in block_names):
+            for block_ord, name in enumerate(block_names):
+                recs += _block_records(getattr(module, name), module_name, block_ord)
+        else:  # unknown architecture variant — fall back to path parsing
+            recs += _path_based_bd_records(module, module_name)
 
     head = getattr(model, "head", None)
     if head is not None:
