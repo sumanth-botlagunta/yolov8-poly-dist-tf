@@ -685,6 +685,18 @@ def apply_weight_map(
         len(resolution["ambiguous"]), len(resolution["unmatched_old"]),
         len(resolution["unmatched_new"]), len(skipped),
     )
+    cov = wm.coverage(resolution, new_recs, resolved_modules)
+    for m in resolved_modules:
+        c = cov.get(m, {})
+        status = ("EXACT" if c.get("exact") else
+                  "COMPLETE (has suggested)" if c.get("complete") else "INCOMPLETE")
+        log.info("  [%s] confident %d + suggested %d = %d/%d  %s",
+                 m, c.get("confident", 0), c.get("suggested", 0),
+                 c.get("covered", 0), c.get("total", 0), status)
+    if cov["_exact"]:
+        log.info("Mapping is EXACT for all selected modules — full confident 1:1 transfer.")
+    elif cov["_complete"]:
+        log.info("Mapping is COMPLETE (all covered) but includes suggested pairs — review them.")
     if resolution["ambiguous"]:
         log.warning(
             "%d variables are AMBIGUOUS and were NOT copied. Run the `report` "
@@ -975,6 +987,8 @@ def _cmd_report(args: argparse.Namespace) -> None:
     new_recs = wm.new_records(model)
     res = wm.resolve(old_recs, new_recs)
 
+    cov = wm.coverage(res, new_recs, resolved_modules)
+
     print(f"\nModule selection: {reason}")
     print(f"Legacy weight vars parsed: {len(old_recs)}  (skipped non-weight: {len(skipped)})")
     print(f"New model weight vars:     {len(new_recs)}\n")
@@ -982,6 +996,22 @@ def _cmd_report(args: argparse.Namespace) -> None:
     print(f"  SUGGESTED : {len(res['suggested'])}  (same-shape siblings paired by index)")
     print(f"  AMBIGUOUS : {len(res['ambiguous'])}  (NEED MANUAL_OVERRIDES)")
     print(f"  unmatched old: {len(res['unmatched_old'])}  | unmatched new: {len(res['unmatched_new'])}")
+    print("\nCoverage per module:")
+    for m in resolved_modules:
+        c = cov.get(m, {})
+        status = ("EXACT ✓" if c.get("exact") else
+                  "COMPLETE (review suggested)" if c.get("complete") else
+                  "INCOMPLETE — see below")
+        print(f"  [{m}] confident {c.get('confident', 0)} + suggested "
+              f"{c.get('suggested', 0)} = {c.get('covered', 0)}/{c.get('total', 0)}  {status}")
+    if cov["_exact"]:
+        print("\n  ==> EXACT for all selected modules (every pair confident). Safe to migrate.")
+    elif cov["_complete"]:
+        print("\n  ==> COMPLETE: everything maps, but review the SUGGESTED pairs above; "
+              "pin any you want certain via MANUAL_OVERRIDES.")
+    else:
+        print("\n  ==> NOT complete yet. Resolve the AMBIGUOUS/UNMATCHED items below, "
+              "then re-run report.")
 
     if res["suggested"]:
         print("\n--- SUGGESTED (review these) ---")
@@ -1015,6 +1045,38 @@ def _cmd_report(args: argparse.Namespace) -> None:
             "unmatched_new": res["unmatched_new"],
         }, indent=2))
         print(f"\nFull report written to {args.output}")
+
+    if args.freeze_py:
+        _write_frozen_py(res, args.ckpt, args.config, args.freeze_py)
+        print(f"Frozen Python mapping written to {args.freeze_py}")
+
+
+def _write_frozen_py(resolution: dict, ckpt: str, config: str, path: str) -> None:
+    """Freeze the resolved confident+suggested mapping as a committable Python dict.
+
+    Generated from the REAL checkpoint, this is an exact ``{old_key: new_path}``
+    map you can review and check in. ``checkpoint_weight_map.MANUAL_OVERRIDES``
+    still wins over it at migration time.
+    """
+    pairs = resolution["confident"] + resolution["suggested"]
+    lines = [
+        '"""AUTO-GENERATED exact legacy->new weight mapping. Review before trusting.',
+        "",
+        f"Source checkpoint : {ckpt}",
+        f"Source config     : {config}",
+        f"Pairs             : {len(pairs)} "
+        f"(confident={len(resolution['confident'])}, suggested={len(resolution['suggested'])})",
+        f"Ambiguous (unmapped): {len(resolution['ambiguous'])}",
+        '"""',
+        "",
+        "EXACT_MAP = {",
+    ]
+    for p in sorted(pairs, key=lambda r: r["key"]):
+        lines.append(f"    {p['key']!r}: {p['path']!r},  # {p['tier']} {tuple(p['shape'])}")
+    lines.append("}")
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(lines) + "\n")
 
 
 def _cmd_migrate(args: argparse.Namespace) -> None:
@@ -1078,6 +1140,9 @@ def main() -> None:
     p_rep.add_argument("--modules", nargs="+", default=None,
                        help="Override modules (default: 39-class rule).")
     p_rep.add_argument("--output", default=None, help="Optional JSON report path")
+    p_rep.add_argument("--freeze-py", default=None,
+                       help="Write the resolved mapping as a committable Python "
+                            "dict (EXACT_MAP) generated from the real checkpoint.")
 
     # migrate subcommand
     p_mig = sub.add_parser("migrate", help="Migrate old checkpoint to new model")

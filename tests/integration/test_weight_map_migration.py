@@ -144,6 +144,43 @@ def test_backbone_decoder_resolver_recovers_truth():
 # apply_weight_map copies values into the correct new variables
 # ---------------------------------------------------------------------------
 
+def test_index_siblings_promote_to_confident_and_exact():
+    """Same-shape C2f siblings with clean bottleneck indices are CONFIDENT/EXACT."""
+    model = _build(num_classes=39)
+    new_recs = wm.new_records(model)
+    bd = [r for r in new_recs if r["module"] in ("backbone", "decoder")]
+
+    fake_old = []
+    for i, r in enumerate(bd):
+        nh = wm._new_index_hint(r["path"])  # (bn_i, cv_k)
+        cob = "conv" if r["role"] in ("kernel", "bias") else "bn"
+        if nh[0] >= 0:                       # bottleneck conv -> legacy model_to_wrap
+            sub = f"model_to_wrap/{nh[0]}/_conv{nh[1]}"
+        elif nh[1] >= 0:                     # outer cv (shape-unique anyway)
+            sub = f"_connect_conv{nh[1]}"
+        else:
+            sub = f"x{i}"
+        key = (f"{r['module']}/layer_with_weights-{r['block_ord']}/{sub}/"
+               f"{cob}/{r['role']}/.ATTRIBUTES/VARIABLE_VALUE")
+        fake_old.append({
+            "module": r["module"], "block_ord": r["block_ord"], "role": r["role"],
+            "shape": r["shape"], "key": key,
+            "idx_hint": wm._old_index_hint(wm.strip_attr_suffix(key)),
+        })
+
+    res = wm.resolve(fake_old, new_recs)
+    assert len(res["ambiguous"]) == 0
+    # every bottleneck sibling pairing must be confident (index-exact), not suggested
+    sib_paths = {r["path"] for r in bd if wm._new_index_hint(r["path"])[0] >= 0}
+    conf_paths = {p["path"] for p in res["confident"]}
+    assert sib_paths <= conf_paths, "bottleneck siblings should be confident via index"
+
+    cov = wm.coverage(res, new_recs, ["backbone", "decoder"])
+    assert cov["backbone"]["covered"] == cov["backbone"]["total"]
+    assert cov["decoder"]["covered"] == cov["decoder"]["total"]
+    assert cov["_complete"] is True
+
+
 def test_apply_weight_map_transfers_values():
     model = _build(num_classes=39)
     new_recs = wm.new_records(model)

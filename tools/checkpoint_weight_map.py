@@ -31,14 +31,25 @@ match by (role, shape). Shape-distinct conv units (e.g. C2f ``cv1`` 64->64 vs
 (``cv1``/``cv2`` both 3x3xCxC) are *suggested* by index, or ambiguous if the
 index cannot be read.
 
-How to finish the mapping
--------------------------
+No offline reference needed
+---------------------------
+This module derives everything at runtime from (a) the real legacy checkpoint
+via ``tf.train.load_checkpoint`` and (b) the live new model. It does NOT read any
+spreadsheet or reference doc — point it at the real checkpoint (local or pulled
+from the cloud) and it produces an exact, verified mapping.
+
+How to finish the mapping (with the real 39-class checkpoint)
+-------------------------------------------------------------
 1. Run ``python tools/checkpoint_migration.py report --ckpt <legacy> --config
-   <yaml>`` to print the confident / suggested / ambiguous / unmatched lists.
-2. For each ambiguous or wrong entry, add an explicit
-   ``"<old_checkpoint_key>": "<new_variable_path>"`` line to
-   ``MANUAL_OVERRIDES``. Overrides always win.
-3. Re-run ``report`` until ambiguous is empty, then ``migrate``.
+   <yaml>`` to print confident / suggested / ambiguous / unmatched and a per-
+   module EXACT vs COMPLETE status. With the real checkpoint, shape-distinct and
+   index-resolvable variables are CONFIDENT; only genuinely undecidable cases
+   remain.
+2. ``--freeze-py <path>`` writes the resolved mapping as a committable
+   ``EXACT_MAP`` dict generated from that checkpoint, for review/version control.
+3. For anything ambiguous (or a suggested pair you want pinned), add
+   ``"<old_checkpoint_key>": "<new_variable_path>"`` to ``MANUAL_OVERRIDES``
+   (overrides always win). Re-run ``report`` until EXACT, then ``migrate``.
 """
 
 from __future__ import annotations
@@ -332,12 +343,28 @@ def resolve(old_recs: List[dict], new_recs: List[dict]) -> dict:
                 confident.append(_pair(olds[0], news[0], "shape-unique"))
                 used_new.add(id(news[0]["var"]))
             elif len(olds) == len(news) and len(olds) > 1:
-                # same-shape siblings: pair by index hint
-                o_sorted = sorted(olds, key=lambda r: r.get("idx_hint", ()))
-                n_sorted = sorted(news, key=lambda r: _new_index_hint(r["path"]))
-                for o, n in zip(o_sorted, n_sorted):
-                    suggested.append(_pair(o, n, "index"))
-                    used_new.add(id(n["var"]))
+                # same-shape siblings (e.g. C2f bottleneck cv1/cv2). If both sides
+                # carry fully-parsed, distinct index hints that form a bijection,
+                # the pairing is deterministic -> CONFIDENT. Otherwise fall back to
+                # order-based SUGGESTED for the user to review.
+                o_idx = {tuple(o.get("idx_hint", ())): o for o in olds}
+                n_idx = {_new_index_hint(n["path"]): n for n in news}
+                fully_indexed = (
+                    len(o_idx) == len(olds) and len(n_idx) == len(news)
+                    and set(o_idx) == set(n_idx)
+                    and all(-1 not in k for k in o_idx)
+                )
+                if fully_indexed:
+                    for k, o in o_idx.items():
+                        n = n_idx[k]
+                        confident.append(_pair(o, n, "index-exact"))
+                        used_new.add(id(n["var"]))
+                else:
+                    o_sorted = sorted(olds, key=lambda r: r.get("idx_hint", ()))
+                    n_sorted = sorted(news, key=lambda r: _new_index_hint(r["path"]))
+                    for o, n in zip(o_sorted, n_sorted):
+                        suggested.append(_pair(o, n, "index"))
+                        used_new.add(id(n["var"]))
             else:
                 for o in olds:
                     ambiguous.append({
@@ -384,3 +411,41 @@ def _pair(o: dict, n: dict, tier: str) -> dict:
         "key": o["key"], "path": n["path"], "var": n["var"],
         "shape": n["shape"], "tier": tier, "module": n["module"],
     }
+
+
+def coverage(resolution: dict, new_recs: List[dict], modules) -> dict:
+    """Assess how completely the selected modules are covered by the mapping.
+
+    A module is COMPLETE when every new variable is matched (confident or
+    suggested). It is EXACT (the strong guarantee) only when every match is
+    CONFIDENT — no suggested, no ambiguous. Returns
+    ``{module: {confident, suggested, covered, total, exact, complete}, "_exact",
+    "_complete"}``.
+    """
+    mods = set(modules)
+    conf_paths = {p["path"] for p in resolution["confident"]}
+    sugg_paths = {p["path"] for p in resolution["suggested"]}
+
+    out: dict = {}
+    all_exact = True
+    all_complete = True
+    for m in mods:
+        new_paths = [r["path"] for r in new_recs if r["module"] == m]
+        total = len(new_paths)
+        confident = sum(1 for p in new_paths if p in conf_paths)
+        suggested = sum(1 for p in new_paths if p in sugg_paths)
+        covered = confident + suggested
+        complete = covered == total and not any(
+            a["scope"].startswith(m) for a in resolution["ambiguous"]
+        )
+        exact = complete and suggested == 0
+        out[m] = {
+            "confident": confident, "suggested": suggested,
+            "covered": covered, "total": total,
+            "exact": exact, "complete": complete,
+        }
+        all_exact = all_exact and exact
+        all_complete = all_complete and complete
+    out["_exact"] = all_exact
+    out["_complete"] = all_complete
+    return out
