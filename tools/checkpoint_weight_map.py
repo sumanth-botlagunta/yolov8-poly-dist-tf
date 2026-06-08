@@ -417,6 +417,24 @@ def old_records(reader) -> Tuple[List[dict], List[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Stable canonical id (env-independent — no Keras auto-numbers)
+# ---------------------------------------------------------------------------
+
+def canonical_id(rec: dict) -> str:
+    """A stable identity for a variable, identical on the old and new side.
+
+    Encodes the architecture position, NOT the Keras auto-name, so it is the
+    same across TF/Keras versions and is what the frozen map keys the new side
+    on. Head: ``head/L{level}/{semantic}/{role}``; backbone/decoder:
+    ``{module}/blk{block_ord}/{subblock or '-'}/{role}``.
+    """
+    if rec["module"] == "head":
+        return f"head/L{rec['level']}/{rec['semantic']}/{rec['role']}"
+    sb = rec.get("subblock") or "-"
+    return f"{rec['module']}/blk{rec['block_ord']}/{sb}/{rec['role']}"
+
+
+# ---------------------------------------------------------------------------
 # Resolver
 # ---------------------------------------------------------------------------
 

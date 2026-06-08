@@ -636,11 +636,85 @@ def _diagnose_new_paths(new_recs) -> None:
 
 
 def _detect_strategy(reader) -> str:
-    """Pick 'map' for legacy object checkpoints, else 'structural'."""
+    """Pick 'frozen' for legacy object checkpoints, else 'structural'."""
     for key in reader.get_variable_to_shape_map():
         if "layer_with_weights" in key or "_head/" in key:
-            return "map"
+            return "frozen"
     return "structural"
+
+
+def apply_frozen_map(reader, new_model, modules: Optional[List[str]] = None) -> Dict[str, int]:
+    """Assign weights using the committed, hand-verified frozen map.
+
+    ``tools/legacy_weight_map_frozen.LEGACY_TO_NEW`` maps each exact legacy
+    checkpoint key to a stable canonical id of the new variable. We index the
+    live model by that canonical id (env-independent — no Keras auto-names) and
+    copy each legacy tensor into the matching variable, shape-verified. The
+    39-class module rule selects which modules to copy. Returns
+    ``{loaded, skipped, not_found}``.
+    """
+    from tools import checkpoint_weight_map as wm
+    from tools.legacy_weight_map_frozen import LEGACY_TO_NEW
+
+    resolved_modules, reason = select_modules_39(new_model, modules)
+    log.info("Module selection: %s", reason)
+
+    new_recs = wm.new_records(new_model)
+    _diagnose_new_paths(new_recs)
+    by_canon = {wm.canonical_id(r): r for r in new_recs}
+    mods = set(resolved_modules)
+    available = set(reader.get_variable_to_shape_map())
+
+    stats = {"loaded": 0, "skipped": 0, "not_found": 0}
+    canon_missing, old_missing = 0, 0
+    for old_key, canon in LEGACY_TO_NEW.items():
+        if canon.split("/")[0] not in mods:
+            continue
+        rec = by_canon.get(canon)
+        if rec is None:
+            canon_missing += 1
+            continue
+        if old_key not in available:
+            stats["not_found"] += 1
+            old_missing += 1
+            continue
+        tensor = reader.get_tensor(old_key)
+        var = rec["var"]
+        if tuple(var.shape) != tuple(tensor.shape):
+            log.warning("Shape mismatch %s: %s vs %s — skipping",
+                        canon, tuple(var.shape), tuple(tensor.shape))
+            stats["skipped"] += 1
+            continue
+        var.assign(tensor)
+        stats["loaded"] += 1
+
+    log.info(
+        "Frozen map: loaded=%d skipped=%d not_found=%d "
+        "(canonical-missing-in-model=%d, legacy-key-missing-in-ckpt=%d)",
+        stats["loaded"], stats["skipped"], stats["not_found"],
+        canon_missing, old_missing,
+    )
+    if old_missing:
+        log.warning("%d frozen legacy keys were not in the checkpoint — the real "
+                    "key format may differ slightly; run `report` to inspect.", old_missing)
+    return stats
+
+
+def migrate_with_frozen(
+    old_ckpt_path: str,
+    new_model,
+    output_ckpt_path: str,
+    modules: Optional[List[str]] = None,
+) -> Dict[str, int]:
+    """Frozen-map migration: assign via LEGACY_TO_NEW then save the checkpoint."""
+    import tensorflow as tf
+    reader = tf.train.load_checkpoint(old_ckpt_path)
+    stats = apply_frozen_map(reader, new_model, modules=modules)
+    output_path = Path(output_ckpt_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tf.train.Checkpoint(model=new_model).write(output_ckpt_path)
+    log.info("Migrated checkpoint saved to: %s", output_ckpt_path)
+    return stats
 
 
 def migrate_with_map(
@@ -808,6 +882,11 @@ def migrate_checkpoint(
     if strategy == "auto":
         strategy = _detect_strategy(tf.train.load_checkpoint(old_ckpt_path))
         log.info("Auto-detected migration strategy: %s", strategy)
+
+    if strategy == "frozen":
+        return migrate_with_frozen(
+            old_ckpt_path, new_model, output_ckpt_path, modules=modules,
+        )
 
     if strategy == "map":
         return migrate_with_map(
@@ -1237,9 +1316,10 @@ def main() -> None:
                        help="Override modules (default: 39-class rule for map; "
                             "class-count auto for structural/name).")
     p_mig.add_argument(
-        "--strategy", choices=["auto", "map", "structural", "name"], default="auto",
-        help="auto (default; map for legacy checkpoints, else structural), "
-             "map (curated legacy->new), structural, or name (legacy fuzzy)."
+        "--strategy", choices=["auto", "frozen", "map", "structural", "name"], default="auto",
+        help="auto (default; frozen for legacy checkpoints, else structural), "
+             "frozen (committed hand-verified LEGACY_TO_NEW dict — recommended), "
+             "map (runtime curated parser), structural, or name (legacy fuzzy)."
     )
     p_mig.add_argument(
         "--mapping-json", default=None,

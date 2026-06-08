@@ -17,7 +17,11 @@ import tensorflow as tf
 from configs.model_config import ModelConfig
 from models.yolo_v8 import build_yolov8
 from tools import checkpoint_weight_map as wm
-from tools.checkpoint_migration import apply_weight_map, select_modules_39
+from tools.checkpoint_migration import (
+    apply_frozen_map,
+    apply_weight_map,
+    select_modules_39,
+)
 
 
 _H = _W = 128
@@ -291,3 +295,46 @@ def test_full_legacy_simulation_exact_all_modules():
     # every variable received its exact stamped value
     for key, r in keymap.items():
         assert np.allclose(r["var"].numpy(), tensors[key]), f"value mismatch: {key}"
+
+
+# ---------------------------------------------------------------------------
+# Frozen committed map (tools/legacy_weight_map_frozen.py)
+# ---------------------------------------------------------------------------
+
+def test_frozen_map_covers_model_one_to_one():
+    """The committed LEGACY_TO_NEW dict maps to every model variable, 1:1."""
+    from tools.legacy_weight_map_frozen import LEGACY_TO_NEW
+
+    model = _build(num_classes=39)
+    new_recs = wm.new_records(model)
+    canon_in_model = {wm.canonical_id(r) for r in new_recs}
+
+    assert len(LEGACY_TO_NEW) == len(new_recs) == 336
+    # every frozen target exists in the model, and the mapping is injective
+    targets = list(LEGACY_TO_NEW.values())
+    assert len(set(targets)) == len(targets), "frozen map has duplicate targets"
+    assert set(targets) == canon_in_model, "frozen targets != model variables"
+    # legacy keys are unique
+    assert len(set(LEGACY_TO_NEW)) == len(LEGACY_TO_NEW)
+
+
+def test_frozen_map_transfers_values_end_to_end():
+    """apply_frozen_map copies stamped legacy tensors into the right variables."""
+    from tools.legacy_weight_map_frozen import LEGACY_TO_NEW
+
+    model = _build(num_classes=39)
+    new_recs = wm.new_records(model)
+    by_canon = {wm.canonical_id(r): r for r in new_recs}
+
+    shapes, tensors = {}, {}
+    for i, (old_key, canon) in enumerate(LEGACY_TO_NEW.items()):
+        r = by_canon[canon]
+        shapes[old_key] = list(r["shape"])
+        tensors[old_key] = np.full(r["shape"], (i % 89) * 0.01 + 0.002, dtype=np.float32)
+        r["var"].assign(tf.zeros_like(r["var"]))
+
+    stats = apply_frozen_map(_FakeReader(shapes, tensors), model, modules=None)
+    assert stats == {"loaded": 336, "skipped": 0, "not_found": 0}
+    for i, (old_key, canon) in enumerate(LEGACY_TO_NEW.items()):
+        r = by_canon[canon]
+        assert np.allclose(r["var"].numpy(), tensors[old_key]), f"value mismatch: {canon}"
