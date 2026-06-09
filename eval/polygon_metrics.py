@@ -191,7 +191,7 @@ class PolygonEvaluator:
             pred_scores:    [B, max_det] confidence.
             num_detections: [B] valid detection count.
             gt_boxes:       [B, max_gt, 4] yxyx-normalized.
-            gt_polygons:    [B, max_gt, 72] PolyYOLO [dist,angle_norm,conf] x 24.
+            gt_polygons:    [B, max_gt, 72] PolyYOLO [dist, angle, conf] x 24.
             n_gt:           [B] valid GT count.
             gt_is_crowd:    [B, max_gt] bool, optional. Crowd GT are excluded from
                             both the recall denominator and matching (COCO semantics).
