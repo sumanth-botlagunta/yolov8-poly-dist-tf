@@ -179,8 +179,13 @@ class V8DistanceParser(Parser):
         new_h = tf.maximum(tf.cast(tf.round(h_in * scale), tf.int32), 1)
         new_w = tf.maximum(tf.cast(tf.round(w_in * scale), tf.int32), 1)
 
-        image = tf.image.resize(image, [new_h, new_w], method='bilinear')
-        image = tf.cast(image, tf.uint8)
+        # Cast to float32 before resizing (matches V8ParserExtended._letterbox_resize):
+        # resizing uint8 directly is ~1 DN less precise, which would make the distance
+        # stream's pixels differ subtly from the detection stream after /255.
+        image = tf.cast(
+            tf.image.resize(tf.cast(image, tf.float32), [new_h, new_w], method='bilinear'),
+            tf.uint8,
+        )
 
         # Pad to output size with gray (114).
         pad_top = (h_out - new_h) // 2
