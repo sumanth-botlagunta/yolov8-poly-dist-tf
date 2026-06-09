@@ -92,8 +92,11 @@ class PolygonDecoder:
             if path.exists():
                 with open(path) as f:
                     remap_dict = json.load(f)
-                max_id = max(int(k) for k in remap_dict) + 1
-                table = list(range(max_id))
+                # Build a FULL identity table over [0, num_classes-1], then apply
+                # overrides. A table sized to max(remap_key)+1 would clip every
+                # class above that key to the last index in _remap_classes,
+                # silently collapsing unrelated classes onto the override target.
+                table = list(range(num_classes))
                 for old, new in remap_dict.items():
                     table[int(old)] = int(new)
                 self._class_remap = table

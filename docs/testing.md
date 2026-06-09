@@ -20,10 +20,11 @@
 **Unit test files (13 files):** `test_backbone.py`, `test_coco_crowd_dontcare.py`,
 `test_coco_evaluator.py`, `test_config_loading.py`, `test_decoders.py`,
 `test_distance_evaluator.py`, `test_ema.py`, `test_model_forward.py`,
-`test_polygon_evaluator.py`, `test_sgd_warmup.py`, `test_tal_assigner.py`, `test_viz_utils.py`.
+`test_polygon_evaluator.py`, `test_sgd_warmup.py`, `test_tal_assigner.py`,
+`test_task_validation_streaming.py`, `test_viz_utils.py`.
 
-**Integration test files (4 files):** `test_full_pipeline.py`, `test_checkpoint_migration.py`,
-`test_weight_map_migration.py`, `test_multigpu.py`.
+**Integration test files (5 files):** `test_full_pipeline.py`, `test_checkpoint_migration.py`,
+`test_weight_map_migration.py`, `test_multigpu.py`, `test_ckpt_eval_loading.py`.
 
 `test_multigpu.py` runs a real 2-replica `MirroredStrategy` on two **virtual CPU devices** to
 validate the distributed-training machinery (global-count loss normalizers, cross-replica
