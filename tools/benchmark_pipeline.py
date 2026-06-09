@@ -24,66 +24,60 @@ log = logging.getLogger(__name__)
 
 
 def _build_pipeline(cfg):
-    """Construct the data pipeline from config without a model."""
-    from data_pipeline.tfds_decoders import PolygonDecoder
-    from data_pipeline.input_reader import InputReader
+    """Construct the FULL training data pipeline from config (no model).
 
-    data_cfg = cfg.task.train_data
-    task_cfg = cfg.task
+    Uses the same builder as training (``build_input_reader_from_config``) so the
+    benchmark always matches the real pipeline — decode → copy-paste → mosaic /
+    random_perspective → parser, plus the distance-stream merge when configured —
+    and can't drift from it.
+    """
+    from data_pipeline.input_reader import build_input_reader_from_config
 
-    names = [n.strip() for n in data_cfg.tfds_name.split(',')]
-    splits = [s.strip() for s in data_cfg.tfds_split.split(',')]
-
-    decoder = PolygonDecoder(
-        max_vertices=data_cfg.parser.max_vertices,
-        num_classes=task_cfg.num_classes,
-        with_distance=False,
-    )
-
-    # NOTE: parser is None here — we only benchmark the decode + augmentation
-    # stages up to (but not including) the polygon preprocessing, which
-    # requires the full parser from Phase 2.
-    reader = InputReader(
-        tfds_names=names,
-        tfds_split=splits,
-        tfds_data_dir=data_cfg.tfds_data_dir,
-        tfds_sampling_weights=data_cfg.tfds_sampling_weights,
-        global_batch_size=data_cfg.global_batch_size,
+    return build_input_reader_from_config(
+        data_cfg=cfg.task.train_data,
+        task_cfg=cfg.task,
         is_training=True,
-        decoder=decoder,
-        parser=None,
-        seed=data_cfg.seed,
-        shuffle_buffer_size=data_cfg.shuffle_buffer_size,
-    )
-    return reader()
+    )()
 
 
-def _run_benchmark(ds, n_steps: int, batch_size: int) -> dict:
-    """Iterate over *n_steps* batches and return timing stats."""
-    import tensorflow as tf
+def _images_of(batch):
+    """Return the image tensor from a (images, labels) tuple or a raw dict."""
+    if isinstance(batch, (tuple, list)):
+        return batch[0]
+    return batch['image']
+
+
+def _run_benchmark(ds, n_steps: int) -> dict:
+    """Iterate over *n_steps* batches and return timing stats.
+
+    Step time is the wall-clock *between* successive batches (i.e. how long the
+    pipeline takes to produce a batch), and the per-batch image count is read
+    from the actual batch — so the merged detection+distance batch (144) is
+    measured correctly, not assumed to be the detection size (128).
+    """
     import numpy as np
 
     step_times = []
     total_images = 0
+    batch_size = 0
 
     log.info("Warming up (2 steps)...")
-    for i, batch in enumerate(ds.take(2)):
-        pass  # warm-up
+    for batch in ds.take(2):
+        _ = _images_of(batch).numpy()[0, 0, 0, 0]  # force full materialization
 
-    log.info("Benchmarking %d steps (batch_size=%d)...", n_steps, batch_size)
+    log.info("Benchmarking %d steps...", n_steps)
     start_total = time.perf_counter()
+    prev = time.perf_counter()
 
     for i, batch in enumerate(ds.take(n_steps)):
-        t0 = time.perf_counter()
-        # Force execution by accessing batch shape.
-        if isinstance(batch, tuple):
-            _ = batch[0].shape
-        else:
-            _ = batch['image'].shape
-        t1 = time.perf_counter()
-        step_times.append(t1 - t0)
-        total_images += batch_size
+        imgs = _images_of(batch)
+        _ = imgs.numpy()[0, 0, 0, 0]              # force materialization
+        now = time.perf_counter()
+        step_times.append(now - prev)
+        prev = now
 
+        batch_size = int(imgs.shape[0])
+        total_images += batch_size
         if (i + 1) % 10 == 0:
             recent = step_times[-10:]
             imgs_sec = batch_size / (sum(recent) / len(recent))
@@ -95,6 +89,7 @@ def _run_benchmark(ds, n_steps: int, batch_size: int) -> dict:
     return {
         'total_elapsed_sec': elapsed,
         'total_images': total_images,
+        'batch_size': batch_size,
         'imgs_per_sec_avg': total_images / elapsed,
         'steps_per_sec_avg': n_steps / elapsed,
         'step_time_p50_ms': float(np.percentile(step_arr, 50)) * 1000,
@@ -135,7 +130,7 @@ def main() -> None:
         log.info("Profiling enabled — output: %s", profile_dir)
         tf.profiler.experimental.start(profile_dir)
 
-    stats = _run_benchmark(ds, n_steps=args.steps, batch_size=batch_size)
+    stats = _run_benchmark(ds, n_steps=args.steps)
 
     if args.profile:
         tf.profiler.experimental.stop()
@@ -145,7 +140,8 @@ def main() -> None:
     print("BENCHMARK RESULTS")
     print("=" * 60)
     print(f"  Config:              {args.config}")
-    print(f"  Batch size:          {batch_size}")
+    print(f"  Batch size (actual): {stats['batch_size']}  (detection {batch_size}"
+          f"{' + distance merge' if stats['batch_size'] != batch_size else ''})")
     print(f"  Steps:               {args.steps}")
     print(f"  Total elapsed:       {stats['total_elapsed_sec']:.1f} sec")
     print(f"  Throughput:          {stats['imgs_per_sec_avg']:.0f} imgs/sec")
