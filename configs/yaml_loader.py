@@ -198,7 +198,7 @@ def _build_task_config(t: Dict[str, Any]) -> TaskConfig:
         smart_bias_lr=t.get("smart_bias_lr", 0.1),
         find_best_score_thresh=t.get("find_best_score_thresh", True),
         summary_types=t.get("summary_types", "scalar,image"),
-        summary_image_num=t.get("summary_image_num", 10),
+        summary_image_num=t.get("summary_image_num", 20),
         summary_image_draw_box=t.get("summary_image_draw_box", True),
         summary_image_draw_poly=t.get("summary_image_draw_poly", True),
     )
