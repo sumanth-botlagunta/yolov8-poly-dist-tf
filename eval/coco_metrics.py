@@ -161,6 +161,11 @@ class COCOEvaluator:
             'categories':  cats,
         }
 
+        # Clear any cached eval objects up front so an empty-detection early
+        # return below can't leave stale per-category metrics from a prior call.
+        self._ev = None
+        self._ev50 = None
+
         coco_gt = COCO()
         with redirect_stdout(io.StringIO()):
             coco_gt.dataset = gt_dict
@@ -177,7 +182,7 @@ class COCOEvaluator:
         with redirect_stdout(io.StringIO()):
             ev.evaluate()
             ev.accumulate()
-        ev.summarize()
+            ev.summarize()  # keep inside redirect: still populates ev.stats
         self._ev = ev   # keep for per_category_full_metrics()
 
         map_val   = float(ev.stats[0])

@@ -1,8 +1,8 @@
 """Standalone augmentation functions for the YOLOv8 data pipeline.
 
 All functions operate on individual examples (not batches).
-TF-native functions work in graph mode and tf.function.
-The Albumentations wrapper uses tf.py_function and must run on CPU.
+These are pure TF-native ops that work in graph mode and tf.function — there is
+no tf.py_function / Albumentations wrapper in this module.
 
 Polygon format expected here: [N, max_vertices] flat xy-coordinate pairs,
 padded with -1 for missing vertices.  (x, y) interleaved: x0, y0, x1, y1, …

@@ -29,8 +29,12 @@ nesting levels (``backbone/layer_with_weights-N/...``,
 ``head/_head/{level}/cv3/...``), so neither name nor traversal-order matching is
 reliable. ``tools/checkpoint_weight_map.py`` holds a hand-curated structural map
 that resolves each variable into confident / suggested / ambiguous tiers and
-copies only shape-verified pairs. The ``"map"`` strategy uses it, and ``"auto"``
-(default) selects it whenever the checkpoint looks legacy.
+copies only shape-verified pairs — this runtime resolver backs the ``"map"``
+strategy. Separately, ``tools/legacy_weight_map_frozen.py`` holds the committed,
+hand-verified EXACT map used by the ``"frozen"`` strategy. ``"auto"`` (default)
+selects ``"frozen"`` for legacy object checkpoints (``layer_with_weights`` /
+``_head/`` keys) and ``"structural"`` otherwise; it never auto-selects the
+unverified ``"map"`` resolver (see :func:`_detect_strategy`).
 
 Module rule (39-class): a 39-class model migrates ALL modules (backbone +
 decoder + head); any other class count migrates backbone + decoder only (the
@@ -98,6 +102,16 @@ from typing import Dict, List, Optional, Tuple
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
+
+
+def _strip_colon_zero(name: str) -> str:
+    """Strip the Keras ``:0`` tensor suffix only.
+
+    ``str.rstrip(":0")`` strips every trailing ``:`` / ``0`` character, mangling
+    names ending in ``0`` (``conv2d_10:0`` -> ``conv2d_1``). This removes only
+    the suffix, so weight-name matching is not silently corrupted.
+    """
+    return name[:-2] if name.endswith(":0") else name
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +187,7 @@ def build_name_mapping(
             if name.startswith(prefix):
                 name = name[len(prefix):]
         # Remove trailing ":0" if present (TF1 style)
-        name = name.rstrip(":0")
+        name = _strip_colon_zero(name)
         for old_pat, new_pat in _SUBS:
             name = name.replace(old_pat, new_pat)
         return name
@@ -361,7 +375,7 @@ def _normalize_role(name: str) -> str:
     ``kernel``. The object graph stores Keras conv weights as ``_kernel`` while
     the live Variable is named ``kernel``; normalizing makes the two comparable.
     """
-    name = name.rstrip(":0")
+    name = _strip_colon_zero(name)
     return name.lstrip("_")
 
 
@@ -656,6 +670,16 @@ def apply_frozen_map(reader, new_model, modules: Optional[List[str]] = None) -> 
     from tools import checkpoint_weight_map as wm
     from tools.legacy_weight_map_frozen import LEGACY_TO_NEW
 
+    # Two legacy keys mapping to the same canonical id would silently overwrite
+    # one new variable and leave another at random init. Catch that map typo
+    # before copying anything.
+    if len(set(LEGACY_TO_NEW.values())) != len(LEGACY_TO_NEW):
+        n_dupes = len(LEGACY_TO_NEW) - len(set(LEGACY_TO_NEW.values()))
+        raise RuntimeError(
+            f"legacy_weight_map_frozen.LEGACY_TO_NEW has {n_dupes} duplicate "
+            "canonical-id target(s); a weight would be overwritten. Fix the map."
+        )
+
     resolved_modules, reason = select_modules_39(new_model, modules)
     log.info("Module selection: %s", reason)
 
@@ -666,9 +690,11 @@ def apply_frozen_map(reader, new_model, modules: Optional[List[str]] = None) -> 
     available = set(reader.get_variable_to_shape_map())
 
     stats = {"loaded": 0, "skipped": 0, "not_found": 0}
+    loaded_by_module = {m: 0 for m in resolved_modules}
     canon_missing, old_missing = 0, 0
     for old_key, canon in LEGACY_TO_NEW.items():
-        if canon.split("/")[0] not in mods:
+        module = canon.split("/")[0]
+        if module not in mods:
             continue
         rec = by_canon.get(canon)
         if rec is None:
@@ -687,6 +713,9 @@ def apply_frozen_map(reader, new_model, modules: Optional[List[str]] = None) -> 
             continue
         var.assign(tensor)
         stats["loaded"] += 1
+        loaded_by_module[module] += 1
+    stats["loaded_by_module"] = loaded_by_module
+    stats["modules"] = list(resolved_modules)
 
     log.info(
         "Frozen map: loaded=%d skipped=%d not_found=%d "
@@ -710,6 +739,22 @@ def migrate_with_frozen(
     import tensorflow as tf
     reader = tf.train.load_checkpoint(old_ckpt_path)
     stats = apply_frozen_map(reader, new_model, modules=modules)
+
+    # Coverage guard: refuse to write a checkpoint where an entire selected
+    # module loaded nothing. That is the silent-wrong-model failure mode — e.g.
+    # a legacy head key-format drift makes every head key 'not_found', the head
+    # stays at random init, and without this guard we would still write the
+    # checkpoint and report success. Fail loudly BEFORE writing instead.
+    empty = [m for m, n in stats.get("loaded_by_module", {}).items() if n == 0]
+    if stats["loaded"] == 0 or empty:
+        raise RuntimeError(
+            "Frozen-map migration loaded no weights for "
+            f"{empty or 'any module'} (loaded={stats['loaded']}, "
+            f"not_found={stats['not_found']}). The legacy key format likely does "
+            "not match the frozen map — run `report` to inspect. Refusing to write "
+            f"a partially-initialized checkpoint to {output_ckpt_path}."
+        )
+
     output_path = Path(output_ckpt_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tf.train.Checkpoint(model=new_model).write(output_ckpt_path)
@@ -896,7 +941,7 @@ def migrate_checkpoint(
 
     old_vars = list_checkpoint_variables(old_ckpt_path)
     new_var_dict: Dict[str, tf.Variable] = {
-        v.name.rstrip(":0"): v for v in new_model.variables
+        _strip_colon_zero(v.name): v for v in new_model.variables
     }
     new_var_info: Dict[str, Tuple] = {
         name: (tuple(v.shape), str(v.dtype).replace("tf.", ""))
@@ -1065,7 +1110,7 @@ def _cmd_map(args: argparse.Namespace) -> None:
 
     old_vars = list_checkpoint_variables(args.ckpt)
     new_var_info = {
-        v.name.rstrip(":0"): (tuple(v.shape), v.dtype.name)
+        _strip_colon_zero(v.name): (tuple(v.shape), v.dtype.name)
         for v in model.variables
     }
     modules, reason = resolve_modules(old_vars, new_var_info, args.modules)
@@ -1099,7 +1144,7 @@ def _cmd_mapping(args: argparse.Namespace) -> None:
 
     old_vars = list_checkpoint_variables(args.ckpt)
     new_var_info = {
-        v.name.rstrip(":0"): (tuple(v.shape), v.dtype.name)
+        _strip_colon_zero(v.name): (tuple(v.shape), v.dtype.name)
         for v in model.variables
     }
     modules, reason = resolve_modules(old_vars, new_var_info, args.modules)
