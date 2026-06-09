@@ -453,6 +453,49 @@ def clip_polygon_coords(polygons: tf.Tensor) -> tf.Tensor:
     return tf.where(valid, clipped, polygons)
 
 
+def resample_polygons(polygons: tf.Tensor, max_points: int) -> tf.Tensor:
+    """Resample each polygon to a fixed ``max_points`` vertices (flat xy pairs).
+
+    Apply this at DECODE time (before any augmentation), where the valid vertices
+    of each polygon are a contiguous prefix and the rest are -1 padding. Shrinking
+    the polygon width here makes every downstream op (copy-paste, mosaic,
+    random_perspective, the parser) process a much smaller tensor — the raw stored
+    width (often thousands of vertices) is far more than the 24-bin PolyYOLO target
+    needs.
+
+    Algorithm (fully vectorized, graph-mode safe): take ``max_points`` indices
+    evenly spaced along each polygon's valid prefix and gather them.
+      - <= max_points valid vertices → loss-free (every vertex is included; some
+        are duplicated, which does not change the radial target).
+      - >  max_points valid vertices → max_points evenly-spaced vertices in stored
+        order (the per-bin max radius is preserved to within sampling resolution).
+      - 0 valid vertices             → all -1.
+
+    Verified to leave the ``_preprocess_polygons_v2`` radial target unchanged for
+    polygons with <= max_points vertices, and within sampling error otherwise.
+
+    Args:
+        polygons:   float32 [N, F] flat xy pairs, -1 padded (valid = prefix).
+        max_points: target vertex count K; output width is 2*K.
+
+    Returns:
+        float32 [N, 2*max_points].
+    """
+    N = tf.shape(polygons)[0]
+    F = tf.shape(polygons)[1]
+    pts = tf.reshape(polygons, [N, F // 2, 2])                       # [N, P, 2]
+    P = tf.shape(pts)[1]
+    counts = tf.reduce_sum(tf.cast(pts[:, :, 0] >= 0.0, tf.int32), axis=1)  # [N] prefix len
+    cmax = tf.cast(tf.maximum(counts - 1, 0), tf.float32)            # last valid index
+    t = tf.linspace(0.0, 1.0, max_points)                           # [K]
+    idx = tf.round(t[tf.newaxis, :] * cmax[:, tf.newaxis])          # [N, K]
+    idx = tf.clip_by_value(tf.cast(idx, tf.int32), 0, tf.maximum(P - 1, 0))
+    out = tf.gather(pts, idx, batch_dims=1)                          # [N, K, 2]
+    has = counts[:, tf.newaxis, tf.newaxis] > 0
+    out = tf.where(has, out, tf.fill(tf.shape(out), -1.0))           # empty rows → -1
+    return tf.reshape(out, [N, max_points * 2])
+
+
 # ---------------------------------------------------------------------------
 # HSV augmentation
 # ---------------------------------------------------------------------------
