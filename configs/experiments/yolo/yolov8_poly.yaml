@@ -180,9 +180,11 @@ task:
 
 trainer:
   train_epochs: 300
-  train_steps: 716400
-  steps_per_loop: 2388
-  steps_by_epochs: true
+  # steps_per_loop / train_steps / validation_steps are auto-computed from
+  # train_total_examples, validation_total_examples and the batch sizes — do not
+  # hand-set them (hand-set step counts are ignored by the loader).
+  train_total_examples: 305780
+  validation_total_examples: 3903
   checkpoint_interval: 2388
   validation_interval: 2388
   best_checkpoint_eval_metric: F1score50

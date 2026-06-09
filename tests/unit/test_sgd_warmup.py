@@ -142,6 +142,27 @@ class TestSGDTorch(unittest.TestCase):
         np.testing.assert_array_equal(out[0][0].numpy(), g.numpy())
         self.assertIs(out[0][1], w)
 
+    def test_clip_norm_clips_gradient(self):
+        """clip_norm scales a too-large gradient down to the given global norm.
+
+        Velocity starts at 0, so after one step vel == the (clipped) gradient.
+        """
+        sgd = _make_sgd(warmup_steps=0)
+        w = tf.Variable([0.0, 0.0])
+        big = tf.constant([100.0, 0.0])   # global norm 100
+        sgd.apply_gradients([(big, w)], clip_norm=1.0)
+        vel = sgd._velocities[0].numpy()
+        np.testing.assert_allclose(vel, [1.0, 0.0], atol=1e-5)
+
+    def test_clip_norm_none_is_noop(self):
+        """clip_norm=None leaves the gradient unclipped."""
+        sgd = _make_sgd(warmup_steps=0)
+        w = tf.Variable([0.0, 0.0])
+        big = tf.constant([100.0, 0.0])
+        sgd.apply_gradients([(big, w)], clip_norm=None)
+        vel = sgd._velocities[0].numpy()
+        np.testing.assert_allclose(vel, [100.0, 0.0], atol=1e-4)
+
     def test_get_config_round_trip(self):
         """get_config returns all constructor hyperparameters."""
         sgd = _make_sgd(warmup_steps=500, weight_decay=0.001)

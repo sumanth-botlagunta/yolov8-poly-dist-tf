@@ -168,10 +168,13 @@ class YoloV8Task:
             total, box, dfl, cls, dist, poly, poly_a, poly_d, poly_c = self._loss_fn(feats, labels)
 
         grads = tape.gradient(total, model.trainable_variables)
+        # Pass clip_norm INTO the optimizer so clipping happens after the
+        # cross-replica gradient sum (clipping here, per-replica, would break
+        # single-vs-multi-GPU equivalence). No-op on a single replica.
         clip_norm = self._config.task.gradient_clip_norm
-        if clip_norm and clip_norm > 0:
-            grads, _ = tf.clip_by_global_norm(grads, clip_norm)
-        optimizer.apply_gradients(zip(grads, model.trainable_variables))
+        optimizer.apply_gradients(
+            zip(grads, model.trainable_variables), clip_norm=clip_norm
+        )
 
         return {
             'total_loss':      total,
@@ -247,9 +250,13 @@ class YoloV8Task:
                 from eval.polygon_metrics import _bbox_iou_matrix
 
                 n_gt  = labels['n_gt'].numpy()
-                gt_ld = labels['log_distance'].numpy()        # [B, M]
+                gt_ld = labels['log_distance'].numpy()        # [B, M]  log-metres
                 gt_bx = labels['bbox'].numpy()                # [B, M, 4] yxyx-norm
-                pd_d  = preds['distance'].numpy()             # [B, max_det]
+                # preds['distance'] is in METRES (the detection generator already
+                # exp'd + clipped it). DistanceEvaluator expects BOTH inputs in log
+                # space (it exponentiates internally), so convert pred back to log
+                # to match the GT — otherwise the metric double-exponentiates.
+                pd_d  = np.log(preds['distance'].numpy())     # [B, max_det] log-metres
                 pd_bx = preds['bbox'].numpy()                 # [B, max_det, 4]
                 nd    = preds['num_detections'].numpy()       # [B]
                 for i in range(len(n_gt)):

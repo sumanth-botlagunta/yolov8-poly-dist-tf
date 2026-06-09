@@ -90,25 +90,53 @@ def main(_):
 
     img_size = tuple(task_cfg.model.input_size[:2])
     coco_ev  = COCOEvaluator(num_classes=task_cfg.num_classes, image_size=img_size)
-    dist_ev  = DistanceEvaluator() if task_cfg.with_distance else None
+    # Only evaluate distance when the chosen split actually carries distance GT
+    # (distance is a training-only stream — gating on the model flag alone would
+    # print a misleading dist_mae=0.0 on a split with no distance labels).
+    val_has_distance = getattr(data_cfg, 'with_distance', False)
+    dist_ev  = DistanceEvaluator() if (task_cfg.with_distance and val_has_distance) else None
     poly_ev  = PolygonEvaluator(image_size=img_size) if task_cfg.with_polygons else None
+
+    from eval.polygon_metrics import _bbox_iou_matrix
 
     # Accumulate raw COCO results for JSON export
     dt_results = []
     total_batches = 0
+    img_id_base = 0   # running image-id counter (val uses drop_remainder=False)
 
     for step, (images, labels) in enumerate(val_ds):
         predictions = model(images, training=False)
         coco_ev.update(predictions, labels)
 
         if dist_ev:
+            # Match each GT to its highest-IoU detection (>=0.5) and compare that
+            # detection's distance to the GT distance. preds['distance'] is in METRES
+            # (already exp'd by the generator); convert to log to match the GT and
+            # the DistanceEvaluator's log-space contract.
             n_gt  = labels['n_gt'].numpy()
             gt_ld = labels['log_distance'].numpy()
-            pd_d  = predictions['distance'].numpy()
+            gt_bx = labels['bbox'].numpy()
+            pd_d  = np.log(predictions['distance'].numpy())
+            pd_bx = predictions['bbox'].numpy()
             nd    = predictions['num_detections'].numpy()
             for i in range(len(n_gt)):
-                if n_gt[i] > 0 and nd[i] > 0:
-                    dist_ev.update(pd_d[i, :nd[i]], gt_ld[i, :n_gt[i]])
+                ng, ndi = int(n_gt[i]), int(nd[i])
+                if ng == 0 or ndi == 0:
+                    continue
+                iou = _bbox_iou_matrix(gt_bx[i, :ng], pd_bx[i, :ndi])
+                matched_det = set()
+                pred_pairs, gt_pairs = [], []
+                for g in range(ng):
+                    d = int(iou[g].argmax())
+                    if iou[g, d] >= 0.5 and d not in matched_det:
+                        matched_det.add(d)
+                        pred_pairs.append(pd_d[i, d])
+                        gt_pairs.append(gt_ld[i, g])
+                if pred_pairs:
+                    dist_ev.update(
+                        np.asarray(pred_pairs, dtype=np.float32),
+                        np.asarray(gt_pairs, dtype=np.float32),
+                    )
 
         if poly_ev:
             poly_ev.update(
@@ -121,7 +149,9 @@ def main(_):
                 n_gt=labels['n_gt'].numpy(),
             )
 
-        # Collect raw detections for JSON export
+        # Collect raw detections for JSON export. Use a running image-id base
+        # (not step*B): the final val batch is smaller (drop_remainder=False), so
+        # step*B would collide image ids across batches in the exported JSON.
         B = int(predictions['num_detections'].shape[0])
         H, W = img_size
         for i in range(B):
@@ -129,11 +159,12 @@ def main(_):
             for j in range(n_det):
                 y1, x1, y2, x2 = [float(v) for v in predictions['bbox'][i, j]]
                 dt_results.append({
-                    'image_id':    step * B + i,
+                    'image_id':    img_id_base + i,
                     'category_id': int(predictions['classes'][i, j]),
                     'bbox':        [x1*W, y1*H, (x2-x1)*W, (y2-y1)*H],
                     'score':       float(predictions['confidence'][i, j]),
                 })
+        img_id_base += B
 
         total_batches += 1
         if step % 50 == 0:
