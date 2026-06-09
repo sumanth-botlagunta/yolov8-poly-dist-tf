@@ -618,11 +618,23 @@ class YoloV8Trainer:
             best_dir, metric_name, metric_val, epoch, step,
         )
         with self._tb_writer.as_default():
-            tf.summary.scalar('epoch/best_checkpoint_epoch', epoch, step=step)
+            self._scalar('epoch/best_checkpoint_epoch', epoch, step=step,
+                         key='best_checkpoint_epoch')
 
     # ------------------------------------------------------------------
     # Logging
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _scalar(tag: str, value, step: int, key: str = None) -> None:
+        """tf.summary.scalar with a markdown name+formula description (TB tooltip).
+
+        ``key`` is the short metric key for the description lookup; defaults to the
+        last path segment of ``tag`` (e.g. 'train/lr' → 'lr').
+        """
+        from train.metric_meta import describe
+        lookup = key if key is not None else tag.split('/')[-1]
+        tf.summary.scalar(tag, value, step=step, description=describe(lookup))
 
     def _log_step(self, losses: dict, step: int, step_time: float) -> None:
         """Log per-step scalars to TensorBoard and console."""
@@ -632,21 +644,22 @@ class YoloV8Trainer:
         batch_size = self._config.task.train_data.global_batch_size
         throughput = batch_size / max(step_time, 1e-9)
         total_loss = float(losses.get('total_loss', 0.0))
+        step_f     = float(step)
+        ema_decay  = min(0.9999, (1.0 + step_f) / (10.0 + step_f))
 
         with self._tb_writer.as_default():
             for k, v in losses.items():
-                tf.summary.scalar(f'train/{k}', v, step=step)
-            tf.summary.scalar('train/lr',                  lr,         step=step)
-            tf.summary.scalar('train/momentum',            momentum,   step=step)
-            tf.summary.scalar('train/step_time_ms',        step_time * 1000, step=step)
-            tf.summary.scalar('train/throughput_img_per_s', throughput, step=step)
+                self._scalar(f'train/{k}', v, step=step, key=k)
+            self._scalar('train/lr',                   lr,               step=step)
+            self._scalar('train/momentum',             momentum,         step=step)
+            self._scalar('train/ema_decay',            ema_decay,        step=step)
+            self._scalar('train/step_time_ms',         step_time * 1000, step=step)
+            self._scalar('train/throughput_img_per_s', throughput,       step=step)
             # GPU memory (best-effort; silently skipped on CPU-only machines)
             try:
                 mem = tf.config.experimental.get_memory_info('GPU:0')
-                tf.summary.scalar('system/gpu_mem_gb',
-                                  mem['current'] / 1e9, step=step)
-                tf.summary.scalar('system/gpu_mem_peak_gb',
-                                  mem['peak'] / 1e9, step=step)
+                self._scalar('system/gpu_mem_gb',      mem['current'] / 1e9, step=step)
+                self._scalar('system/gpu_mem_peak_gb', mem['peak'] / 1e9,    step=step)
             except Exception:
                 pass
 
@@ -720,20 +733,20 @@ class YoloV8Trainer:
 
         with self._tb_writer.as_default():
             for k, v in val_metrics.items():
-                tf.summary.scalar(f'val/{k}', v, step=step)
+                self._scalar(f'val/{k}', v, step=step, key=k)
             for k, v in epoch_losses.items():
-                tf.summary.scalar(f'train/mean/{k}', v, step=step)
-            tf.summary.scalar('epoch/time_s',            epoch_time,  step=epoch + 1)
-            tf.summary.scalar('epoch/train_time_s',      train_time,  step=epoch + 1)
-            tf.summary.scalar('epoch/val_time_s',        val_time,    step=epoch + 1)
-            tf.summary.scalar('epoch/eta_s',             eta_seconds, step=epoch + 1)
-            tf.summary.scalar('epoch/throughput_img_per_s', throughput, step=epoch + 1)
-            tf.summary.scalar(f'epoch/best_{metric_name}', best_so_far, step=epoch + 1)
+                self._scalar(f'train/mean/{k}', v, step=step, key=k)
+            self._scalar('epoch/time_s',                epoch_time,  step=epoch + 1)
+            self._scalar('epoch/train_time_s',          train_time,  step=epoch + 1)
+            self._scalar('epoch/val_time_s',            val_time,    step=epoch + 1)
+            self._scalar('epoch/eta_s',                 eta_seconds, step=epoch + 1)
+            self._scalar('epoch/throughput_img_per_s',  throughput,  step=epoch + 1)
+            self._scalar(f'epoch/best_{metric_name}',   best_so_far, step=epoch + 1,
+                         key=f'best_{metric_name}')
             # GPU memory peak over the epoch (best-effort)
             try:
                 mem = tf.config.experimental.get_memory_info('GPU:0')
-                tf.summary.scalar('system/gpu_mem_peak_gb',
-                                  mem['peak'] / 1e9, step=epoch + 1)
+                self._scalar('system/gpu_mem_peak_gb', mem['peak'] / 1e9, step=epoch + 1)
             except Exception:
                 pass
         self._tb_writer.flush()

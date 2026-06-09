@@ -6,12 +6,13 @@ mask IoU against GT polygon masks.  Matches predictions to GT via bbox IoU > 0.5
 Prediction format (from detection_generator output):
     pred_polygons: [B, max_boxes, 24, 3]  where [..., :] = (conf, dist, angle)
     - dist:  radial distance for each of 24 vertices, in **normalized** image units
-    - conf / angle: per-vertex confidence and dominant-angle channel (not used here)
+    - angle: per-bin sub-bin offset in [0, 1) (vertex angle = (i + angle) * step)
+    - conf:  per-vertex confidence (not used for reconstruction here)
 
 GT format (from yolo_parser._preprocess_polygons_v2):
-    gt_polygons: [B, max_gt, 72] = [dist, angle_norm, conf] x 24 interleaved
+    gt_polygons: [B, max_gt, 72] = [dist, angle, conf] x 24 interleaved
     - dist (channel 0::3): radial distance per bin, in **normalized** image units
-    - angle_norm (1::3): one-hot dominant bin; conf (2::3): per-bin validity
+    - angle (1::3): sub-bin offset in [0, 1); conf (2::3): per-bin validity
 
 Both prediction and GT radial distances are normalized [0, ~1.4] relative to the
 box-center origin (matching the parser).  The parser stores each radius as a
@@ -21,7 +22,7 @@ evaluator therefore requires square inputs and asserts it at construction time
 (see PolygonEvaluator.__init__); non-square support would need the radius stored
 in pixel space.
 
-Vertex angles: theta_i = i * 2*pi / 24  (i = 0..23, 0 = right, CCW)
+Vertex angles: theta_i = (i + offset_i) * 2*pi / 24  (i = 0..23, 0 = right, CCW)
 
 Classes:
     PolygonEvaluator: Accumulates matched polygon pairs, computes mIoU and recall.
@@ -43,6 +44,7 @@ def _radial_to_cartesian(
     cx_n: float, cy_n: float,
     radii: np.ndarray,
     w: int, h: int,
+    offsets: np.ndarray = None,
 ) -> np.ndarray:
     """Convert 24 normalized radial distances to Cartesian pixel vertices.
 
@@ -54,11 +56,17 @@ def _radial_to_cartesian(
         cx_n, cy_n:  Polygon origin in normalized [0, 1] coordinates.
         radii:       Shape [24], normalized radial distance per vertex.
         w, h:        Image width / height in pixels.
+        offsets:     Optional shape [24], sub-bin angular offset in [0, 1) per
+                     bin (vertex angle = (i + offset) * angle_step). When None,
+                     the bin centre angle (i * angle_step) is used.
 
     Returns:
         Array of shape [24, 2] in pixel coordinates (x, y).
     """
-    angles = np.arange(_NUM_VERTICES, dtype=np.float32) * _ANGLE_STEP
+    idx = np.arange(_NUM_VERTICES, dtype=np.float32)
+    if offsets is not None:
+        idx = idx + np.asarray(offsets, dtype=np.float32)
+    angles = idx * _ANGLE_STEP
     xs = (cx_n + radii * np.cos(angles)) * w
     ys = (cy_n + radii * np.sin(angles)) * h
     return np.stack([xs, ys], axis=1)   # [24, 2]
@@ -183,7 +191,7 @@ class PolygonEvaluator:
             pred_scores:    [B, max_det] confidence.
             num_detections: [B] valid detection count.
             gt_boxes:       [B, max_gt, 4] yxyx-normalized.
-            gt_polygons:    [B, max_gt, 72] PolyYOLO [dist,angle_norm,conf] x 24.
+            gt_polygons:    [B, max_gt, 72] PolyYOLO [dist, angle, conf] x 24.
             n_gt:           [B] valid GT count.
             gt_is_crowd:    [B, max_gt] bool, optional. Crowd GT are excluded from
                             both the recall denominator and matching (COCO semantics).
@@ -232,11 +240,14 @@ class PolygonEvaluator:
                     p_poly = np.asarray(pred_polygons[i, di])        # [24, 3]
                     g_poly = np.asarray(gt_polygons[i, orig_gt])     # [72]
 
-                    # Prediction: dist is channel 1 of (conf, dist, angle), normalized.
-                    p_dist = np.maximum(p_poly[:, 1], 0.0)   # [24]
+                    # Prediction: (conf, dist, angle) per vertex. dist normalized;
+                    # angle is the sigmoid'd sub-bin offset in [0, 1).
+                    p_dist = np.maximum(p_poly[:, 1], 0.0)        # [24]
+                    p_off  = np.clip(p_poly[:, 2], 0.0, 1.0)      # [24] sub-bin offset
 
-                    # GT: dist is channel 0::3 of [dist, angle_norm, conf] x 24, normalized.
-                    g_dist = np.maximum(g_poly[0::3], 0.0)   # [24]
+                    # GT: [dist, angle, conf] x 24. dist at 0::3, sub-bin offset at 1::3.
+                    g_dist = np.maximum(g_poly[0::3], 0.0)        # [24]
+                    g_off  = np.clip(g_poly[1::3], 0.0, 1.0)      # [24] sub-bin offset
 
                     # Bbox centres as polygon origins (normalized; scaled to px in helper)
                     y1, x1, y2, x2 = db[di]
@@ -247,8 +258,8 @@ class PolygonEvaluator:
                     cx_g = (x1g + x2g) / 2.0
                     cy_g = (y1g + y2g) / 2.0
 
-                    p_verts = _radial_to_cartesian(cx_p, cy_p, p_dist, self._W, self._H)
-                    g_verts = _radial_to_cartesian(cx_g, cy_g, g_dist, self._W, self._H)
+                    p_verts = _radial_to_cartesian(cx_p, cy_p, p_dist, self._W, self._H, offsets=p_off)
+                    g_verts = _radial_to_cartesian(cx_g, cy_g, g_dist, self._W, self._H, offsets=g_off)
 
                     p_mask = _polygon_to_mask(p_verts, self._H, self._W)
                     g_mask = _polygon_to_mask(g_verts, self._H, self._W)

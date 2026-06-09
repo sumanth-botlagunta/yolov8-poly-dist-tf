@@ -27,7 +27,7 @@ Six per-pixel branches, each emitted at all 3 FPN levels:
 |------|----------|---------|
 | `box` | 64 | DFL distribution = 4 sides × 16 bins |
 | `cls` | 39 | per-class logits |
-| `poly_angle` | 24 | per-vertex angle-bin logits |
+| `poly_angle` | 24 | per-vertex sub-bin angle offset (sigmoid → `[0,1)`) |
 | `poly_dist` | 24 | per-vertex radial distance |
 | `poly_conf` | 24 | per-vertex validity logit |
 | `dist` | 1 | log-scale object distance |
@@ -48,6 +48,7 @@ Polygon outputs `(conf, dist, angle)` are all sigmoid/softmax-activated; `conf` 
 raw logits.
 
 ## Polygon representation (PolyYOLO radial)
-24 vertices at fixed 15° steps (`θᵢ = i·2π/24`). The distance head predicts the radial distance
-at each angle; the confidence head gates which vertices exist; absent vertices encode distance 0.
-See [data_pipeline.md](data_pipeline.md) for the exact tensor formats.
+24 vertices in 15° bins. The distance head predicts the radial distance per bin; the angle head
+predicts a **sub-bin offset** so the exact vertex angle is `θᵢ = (i + offset)·2π/24` (not snapped
+to the bin center); the confidence head gates which bins hold a vertex (absent bins encode
+distance 0, offset 0). See [data_pipeline.md](data_pipeline.md) for the exact tensor formats.

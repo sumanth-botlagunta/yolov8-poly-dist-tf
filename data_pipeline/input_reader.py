@@ -173,7 +173,8 @@ class InputReader:
         # Mosaic: batch(4) → combine → unbatch so downstream sees single examples.
         # Pre-resize to a fixed shape before batch(4) because raw decoded images
         # have variable spatial dimensions and cannot be stacked otherwise.
-        # The mosaic fn will letterbox-resize each quadrant again to its target size.
+        # The mosaic fn then assembles a 2× canvas from these and applies
+        # random_perspective; non-mosaic samples take the single-image branch.
         if self._mosaic_module is not None:
             _H, _W = self._mosaic_module._H, self._mosaic_module._W
 
@@ -414,6 +415,10 @@ def build_input_reader_from_config(
             area_thresh=mosaic_cfg.area_thresh,
             mosaic_crop_mode=mosaic_cfg.mosaic_crop_mode,
             with_polygons=parser_cfg.with_polygons,
+            degrees=mosaic_cfg.degrees,
+            shear=mosaic_cfg.shear,
+            perspective=mosaic_cfg.perspective,
+            translate=mosaic_cfg.translate,
         )
 
     # Copy-paste (training only, when a source dataset is configured).

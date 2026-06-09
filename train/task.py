@@ -319,9 +319,15 @@ class YoloV8Task:
             metrics.update(poly_ev.evaluate())
 
         if self._config.task.per_category_metrics:
+            from configs.class_map import DETECTION_CLASSES
             per_cat = coco_ev.per_category_full_metrics()
             for cat_id, cat_m in per_cat.items():
+                # Tag as cls/<NN>_<name>/<metric>: the zero-padded index keeps
+                # TensorBoard's alphabetical ordering numeric, while the class name
+                # makes the tag readable (no need to remember the index → name map).
+                name = DETECTION_CLASSES.get(cat_id, f'class_{cat_id}')
+                label = f'{cat_id:02d}_{name}'
                 for mn, mv in cat_m.items():
-                    metrics[f'cls/{cat_id}/{mn}'] = mv
+                    metrics[f'cls/{label}/{mn}'] = mv
 
         return metrics
