@@ -103,6 +103,7 @@ class SGDTorch(tf.Module):
     def apply_gradients(
         self,
         grads_and_vars: List[Tuple[Optional[tf.Tensor], tf.Variable]],
+        clip_norm: Optional[float] = None,
         **kwargs,
     ) -> None:
         # Under MirroredStrategy each replica holds the gradient of its own batch
@@ -111,6 +112,16 @@ class SGDTorch(tf.Module):
         # gradient, since the loss is normalized by the global object count). This
         # is a no-op under a single replica, so single-device training is unchanged.
         grads_and_vars = self._all_reduce_gradients(list(grads_and_vars))
+
+        # Global-norm gradient clipping is applied AFTER the cross-replica sum so it
+        # acts on the full-batch gradient (clipping per-replica 1/N gradients first
+        # would under-clip and make multi-GPU diverge from single-GPU). No-op when
+        # clip_norm is None/<=0. clip_by_global_norm passes None grads through.
+        if clip_norm is not None and clip_norm > 0.0:
+            _grads = [g for g, _ in grads_and_vars]
+            _vars  = [v for _, v in grads_and_vars]
+            _grads, _ = tf.clip_by_global_norm(_grads, clip_norm)
+            grads_and_vars = list(zip(_grads, _vars))
 
         base_lr = self.lr
         mu      = self._current_momentum()

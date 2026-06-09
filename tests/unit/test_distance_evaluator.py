@@ -111,6 +111,26 @@ class TestDistanceEvaluator(unittest.TestCase):
         m = ev.evaluate()
         self.assertGreaterEqual(m['dist_rmse'], m['dist_mae'] - 1e-6)
 
+    def test_caller_must_pass_log_not_metres(self):
+        """Contract guard: the evaluator expects LOG-space inputs and exps once.
+
+        The detection generator emits distance in METRES (already exp'd). Callers
+        (train/task.py, tools/eval.py) must np.log() it before update(); passing
+        metres directly double-exponentiates and yields a wildly wrong error.
+        """
+        pred_metres = np.array([2.0])           # 2 m predicted
+        gt_log      = np.array([math.log(2.0)])  # GT is also 2 m
+
+        # CORRECT caller behaviour: log the metre prediction → perfect match.
+        ev_ok = DistanceEvaluator()
+        ev_ok.update(np.log(pred_metres), gt_log)
+        self.assertAlmostEqual(ev_ok.evaluate()['dist_mae'], 0.0, places=5)
+
+        # BUGGY behaviour (metres treated as log): exp(2)=7.39 vs 2 → large error.
+        ev_bug = DistanceEvaluator()
+        ev_bug.update(pred_metres, gt_log)
+        self.assertGreater(ev_bug.evaluate()['dist_mae'], 1.0)
+
 
 if __name__ == '__main__':
     unittest.main()

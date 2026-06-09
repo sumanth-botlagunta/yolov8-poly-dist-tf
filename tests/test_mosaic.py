@@ -14,7 +14,7 @@ import unittest
 import numpy as np
 import tensorflow as tf
 
-from data_pipeline.mosaic import Mosaic, _transform_boxes
+from data_pipeline.mosaic import Mosaic, _transform_boxes, _transform_polygons
 
 
 def _make_batch4(h: int = 20, w: int = 20, n: int = 1) -> dict:
@@ -78,6 +78,32 @@ class TestMosaic(unittest.TestCase):
         np.testing.assert_allclose(
             out.numpy()[0], [0.1, 0.1, 0.6, 0.6], atol=1e-6
         )
+
+    def test_transform_polygons_invalidates_out_of_bounds(self):
+        """A source-valid vertex pushed off-canvas must become -1, not clamp to edge.
+
+        Content occupies 50px placed at quadrant offset (80,80) on a 100×100 canvas.
+        Vertex (0.1, 0.1) → ((0.1*50+80)/100)=0.85 → in bounds, kept.
+        Vertex (0.9, 0.9) → ((0.9*50+80)/100)=1.25 → out of bounds, must be -1.
+        Padding vertex (-1,-1) stays -1.
+        """
+        # one instance, 3 (x,y) pairs flattened to [1, 6]
+        polys = tf.constant([[0.1, 0.1, 0.9, 0.9, -1.0, -1.0]], dtype=tf.float32)
+        out = _transform_polygons(
+            polys,
+            pad_top=tf.constant(0), pad_left=tf.constant(0),
+            new_h=tf.constant(50), new_w=tf.constant(50),
+            offset_y=tf.constant(80), offset_x=tf.constant(80),
+            H_out=tf.constant(100), W_out=tf.constant(100),
+        ).numpy()[0]
+        # in-bounds vertex kept (≈0.85)
+        np.testing.assert_allclose(out[0:2], [0.85, 0.85], atol=1e-5)
+        # out-of-bounds vertex invalidated, not clamped to 1.0
+        self.assertEqual(out[2], -1.0)
+        self.assertEqual(out[3], -1.0)
+        # padding stays -1
+        self.assertEqual(out[4], -1.0)
+        self.assertEqual(out[5], -1.0)
 
 
 if __name__ == "__main__":
