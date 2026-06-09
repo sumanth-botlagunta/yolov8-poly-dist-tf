@@ -155,6 +155,30 @@ class TestPolygonEvaluator(unittest.TestCase):
         self.assertGreaterEqual(m['poly_mIoU'], 0.0)
         self.assertLessEqual(m['poly_mIoU'],    1.0)
 
+    def test_crowd_gt_excluded_from_recall(self):
+        """A crowd GT must not count toward the recall denominator.
+
+        One matched GT + one crowd GT (no detection for it): recall should be 1.0
+        (1 matched / 1 evaluable), not 0.5 (which counting the crowd would give).
+        """
+        ev = PolygonEvaluator(image_size=(_H, _W))
+        # Two GT boxes; one matched by the single detection, one a crowd region.
+        bbox_a = [0.3, 0.3, 0.7, 0.7]
+        bbox_b = [0.0, 0.0, 0.1, 0.1]
+        gt_boxes    = np.array([[bbox_a, bbox_b]], dtype=np.float32)        # [1,2,4]
+        gt_polygons = np.stack([_make_gt_poly_72(0.1), _make_gt_poly_72(0.1)])[np.newaxis]
+        n_gt        = np.array([2], dtype=np.int32)
+        is_crowd    = np.array([[False, True]])   # second GT is crowd
+
+        pred_boxes    = np.array([[bbox_a]], dtype=np.float32)              # [1,1,4]
+        pred_polygons = _make_pred_poly_24x3(0.1)[np.newaxis, np.newaxis]
+        pred_scores   = np.ones([1, 1], dtype=np.float32)
+        num_dets      = np.array([1], dtype=np.int32)
+
+        ev.update(pred_boxes, pred_polygons, pred_scores, num_dets,
+                  gt_boxes, gt_polygons, n_gt, gt_is_crowd=is_crowd)
+        self.assertAlmostEqual(ev.evaluate()['poly_recall50'], 1.0, places=5)
+
 
 if __name__ == '__main__':
     unittest.main()

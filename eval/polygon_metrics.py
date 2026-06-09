@@ -114,6 +114,23 @@ def _bbox_iou_matrix(boxes_a: np.ndarray, boxes_b: np.ndarray) -> np.ndarray:
     return np.where(union > 0, inter / union, 0.0).astype(np.float32)
 
 
+def _eval_gt_mask(n_g, i, gt_is_crowd, gt_is_dontcare) -> np.ndarray:
+    """Boolean [n_g] mask of GT to evaluate (drop crowd / dontcare)."""
+    keep = np.ones(n_g, dtype=bool)
+    if gt_is_crowd is not None:
+        keep &= ~np.asarray(gt_is_crowd[i, :n_g], dtype=bool)
+    if gt_is_dontcare is not None:
+        keep &= ~np.asarray(gt_is_dontcare[i, :n_g], dtype=bool)
+    return keep
+
+
+def _count_eval_gt(n_g, i, gt_is_crowd, gt_is_dontcare) -> int:
+    """Count of evaluable (non-crowd/dontcare) GT for image i."""
+    if n_g == 0:
+        return 0
+    return int(_eval_gt_mask(n_g, i, gt_is_crowd, gt_is_dontcare).sum())
+
+
 class PolygonEvaluator:
     """Accumulates prediction/GT polygon pairs and computes mask IoU metrics.
 
@@ -143,6 +160,8 @@ class PolygonEvaluator:
         gt_boxes:         np.ndarray,
         gt_polygons:      np.ndarray,
         n_gt:             np.ndarray,
+        gt_is_crowd:      Optional[np.ndarray] = None,
+        gt_is_dontcare:   Optional[np.ndarray] = None,
     ) -> None:
         """Accumulate one batch.
 
@@ -154,21 +173,33 @@ class PolygonEvaluator:
             gt_boxes:       [B, max_gt, 4] yxyx-normalized.
             gt_polygons:    [B, max_gt, 72] PolyYOLO [dist,angle_norm,conf] x 24.
             n_gt:           [B] valid GT count.
+            gt_is_crowd:    [B, max_gt] bool, optional. Crowd GT are excluded from
+                            both the recall denominator and matching (COCO semantics).
+            gt_is_dontcare: [B, max_gt] bool, optional. Excluded like crowd GT.
         """
         B = int(num_detections.shape[0])
         for i in range(B):
             n_det = int(num_detections[i])
             n_g   = int(n_gt[i])
 
-            self._n_gt_total += n_g
             self._n_dt_total += n_det
 
             if n_g == 0 or n_det == 0:
+                # Still count valid (non-crowd/dontcare) GT toward the denominator.
+                self._n_gt_total += _count_eval_gt(n_g, i, gt_is_crowd, gt_is_dontcare)
                 continue
 
-            db = np.asarray(pred_boxes[i, :n_det])   # [n_det, 4]
-            gb = np.asarray(gt_boxes[i,  :n_g])       # [n_g, 4]
-            iou_mat = _bbox_iou_matrix(db, gb)         # [n_det, n_g]
+            # Drop crowd / dontcare GT: they must not inflate the recall denominator
+            # nor be matchable (they're un-segmentable / ignore regions).
+            keep_gt = _eval_gt_mask(n_g, i, gt_is_crowd, gt_is_dontcare)   # [n_g] bool
+            self._n_gt_total += int(keep_gt.sum())
+
+            db = np.asarray(pred_boxes[i, :n_det])              # [n_det, 4]
+            gb = np.asarray(gt_boxes[i,  :n_g])[keep_gt]        # [n_keep, 4]
+            if gb.shape[0] == 0:
+                continue
+            gt_keep_idx = np.nonzero(keep_gt)[0]                # map filtered→original
+            iou_mat = _bbox_iou_matrix(db, gb)         # [n_det, n_keep]
 
             matched_dt = set()
             matched_gt = set()
@@ -183,8 +214,11 @@ class PolygonEvaluator:
                     matched_gt.add(best_gt)
 
                     # ---- compute mask IoU for this match ----
-                    p_poly = np.asarray(pred_polygons[i, di])   # [24, 3]
-                    g_poly = np.asarray(gt_polygons[i, best_gt])  # [72]
+                    # best_gt indexes the FILTERED GT (iou_mat columns); map back to
+                    # the original GT index for the polygon/box lookups in *_polygons.
+                    orig_gt = int(gt_keep_idx[best_gt])
+                    p_poly = np.asarray(pred_polygons[i, di])        # [24, 3]
+                    g_poly = np.asarray(gt_polygons[i, orig_gt])     # [72]
 
                     # Prediction: dist is channel 1 of (conf, dist, angle), normalized.
                     p_dist = np.maximum(p_poly[:, 1], 0.0)   # [24]
