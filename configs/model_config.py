@@ -162,10 +162,13 @@ class ParserConfig:
     angle_step: int = 15
     max_num_instances: int = 300
     max_vertices: int = 10938
-    # If > 0, resample every polygon to this many vertices at decode time so the
+    # Resample every polygon to this many vertices at decode time so the
     # augmentation pipeline carries [N, 2*resample_points] instead of the raw
-    # (huge) stored width. 0 = off. The 24-bin radial target is preserved.
-    resample_points: int = 0
+    # (huge) stored width. Default 64 (on); set 0 to disable. The 24-bin radial
+    # target is preserved (exact for polygons with <= resample_points vertices,
+    # within sampling tolerance for longer ones). This is a memory/cleanliness
+    # win — it is NOT the data-pipeline throughput bottleneck (profile to find that).
+    resample_points: int = 64
     aug_rand_hue: float = 0.015
     aug_rand_saturation: float = 0.7
     aug_rand_brightness: float = 0.4
