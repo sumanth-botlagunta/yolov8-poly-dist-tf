@@ -187,6 +187,8 @@ def build_yolov8(config: ModelConfig) -> YoloV8:
         nms_type         = dg_cfg.nms_type,
         reg_max          = 16,
         output_poly_size = config.output_poly_size,
+        min_distance     = dg_cfg.min_distance,
+        max_distance     = dg_cfg.max_distance,
     )
 
     model = YoloV8(

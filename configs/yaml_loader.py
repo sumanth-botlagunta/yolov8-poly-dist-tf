@@ -199,8 +199,13 @@ def _build_model_config(m: Dict[str, Any], task: Dict[str, Any]) -> ModelConfig:
         max_boxes=det_gen_raw.get("max_boxes", 300),
         nms_thresh=det_gen_raw.get("nms_thresh", 0.65),
         iou_thresh=det_gen_raw.get("iou_thresh", 0.001),
+        score_thresh=det_gen_raw.get("score_thresh", 0.05),
         nms_type=det_gen_raw.get("nms_type", "greedy"),
         pre_nms_points=det_gen_raw.get("pre_nms_points", 30000),
+        # Inference distance clamp shares the task-level range (single source of
+        # truth) so a custom range is honoured at inference/export, not just loss.
+        min_distance=task.get("min_distance", 0.5),
+        max_distance=task.get("max_distance", 10.0),
     )
     norm_act_cfg = NormActivationConfig(
         activation=norm_act_raw.get("activation", "relu"),

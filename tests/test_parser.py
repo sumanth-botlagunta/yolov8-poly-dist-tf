@@ -62,6 +62,30 @@ class TestV8ParserExtended(unittest.TestCase):
         # Both boxes are valid and in-range (area_thresh=0, no flip/affine).
         self.assertEqual(int(self.labels["n_gt"]), 2)
 
+    def test_n_gt_clamped_to_max_num_instances(self):
+        # Regression: with more objects than max_num_instances, _pad_labels
+        # truncates the label tensors, so the stored n_gt must be clamped to the
+        # padded width — otherwise the loss builds a mask wider than the tensors.
+        parser = V8ParserExtended(
+            output_size=_OUT, expanded_strides=_STRIDES, levels=["3", "4", "5"],
+            angle_step=15, random_flip=False, albumentations_frequency=0.0,
+            aug_rand_hue=0.0, aug_rand_saturation=0.0, aug_rand_brightness=0.0,
+            aug_rand_translate=0.0, aug_scale_min=1.0, aug_scale_max=1.0,
+            area_thresh=0.0, max_num_instances=3,
+        )
+        boxes = tf.constant([[0.1 * i, 0.1, 0.1 * i + 0.05, 0.2] for i in range(5)],
+                            dtype=tf.float32)
+        data = {
+            "image": tf.constant(np.full((80, 80, 3), 100, np.uint8)),
+            "groundtruth_boxes": boxes,
+            "groundtruth_classes": tf.constant([1, 2, 3, 4, 5], dtype=tf.int64),
+            "groundtruth_polygons": tf.fill([5, 8], -1.0),
+            "groundtruth_is_crowd": tf.constant([False] * 5),
+        }
+        _, labels = parser._parse_train_data(data)
+        self.assertEqual(int(labels["n_gt"]), 3)
+        self.assertEqual(tuple(labels["bbox"].shape), (3, 4))
+
 
 class TestLetterboxPolygonTransform(unittest.TestCase):
     """Eval-path letterbox must transform polygons with the same scale+pad as boxes.

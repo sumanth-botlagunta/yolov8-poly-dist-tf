@@ -185,7 +185,10 @@ class V8ParserExtended(Parser):
             'bbox':         boxes,
             'classes':      classes,
             'polygons':     poly_labels,
-            'n_gt':         tf.cast(n_gt, tf.int64),
+            # Clamp to the padded width: _pad_labels truncates to
+            # max_num_instances, so an un-clamped n_gt would make the loss build
+            # a mask_gt wider than the (truncated) label tensors → shape crash.
+            'n_gt':         tf.cast(tf.minimum(n_gt, self._max_num_instances), tf.int64),
             'ignore_bg':    tf.constant(0, dtype=tf.int64),
             'log_distance': log_dist,
         }
@@ -245,7 +248,7 @@ class V8ParserExtended(Parser):
             'bbox':         boxes,
             'classes':      classes,
             'polygons':     poly_labels,
-            'n_gt':         tf.cast(n_gt, tf.int64),
+            'n_gt':         tf.cast(tf.minimum(n_gt, self._max_num_instances), tf.int64),
             'ignore_bg':    tf.constant(0, dtype=tf.int64),
             'log_distance': log_dist,
             # Eval extras (not present in train labels)
