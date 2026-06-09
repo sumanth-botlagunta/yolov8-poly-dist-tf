@@ -131,6 +131,8 @@ def main(_):
                     )
 
         if poly_ev:
+            ic = labels.get('is_crowd')
+            idc = labels.get('is_dontcare')
             poly_ev.update(
                 pred_boxes=predictions['bbox'].numpy(),
                 pred_polygons=predictions['polygons'].numpy(),
@@ -139,6 +141,8 @@ def main(_):
                 gt_boxes=labels['bbox'].numpy(),
                 gt_polygons=labels['polygons'].numpy(),
                 n_gt=labels['n_gt'].numpy(),
+                gt_is_crowd=(ic.numpy() if ic is not None else None),
+                gt_is_dontcare=(idc.numpy() if idc is not None else None),
             )
 
         # Collect raw detections for JSON export. Use a running image-id base

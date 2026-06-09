@@ -48,6 +48,14 @@ def _concat_batch_dicts(
     """
     det_img, det_labels = det
     dist_img, dist_labels = dist
+    # Guard against schema drift: iterating only det_labels would silently drop any
+    # key the distance parser adds but the detection parser doesn't (or crash on a
+    # missing key). Require identical label schemas.
+    if set(det_labels) != set(dist_labels):
+        raise ValueError(
+            "Detection/distance label schema mismatch — keys must match exactly. "
+            f"detection={sorted(det_labels)} distance={sorted(dist_labels)}"
+        )
     merged_img = tf.concat([det_img, dist_img], axis=0)
     merged_labels = {
         k: tf.concat([det_labels[k], dist_labels[k]], axis=0)

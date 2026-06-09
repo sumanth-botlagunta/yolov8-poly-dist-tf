@@ -208,86 +208,109 @@ class YoloV8Task:
             model.deploy = original_deploy
         return {'predictions': predictions, 'labels': labels}
 
-    def aggregate_logs(self, state, step_outputs):
-        """Accumulate per-step prediction/GT dicts for end-of-epoch evaluation."""
-        if state is None:
-            state = {'predictions': [], 'labels': []}
-        state['predictions'].append(step_outputs['predictions'])
-        state['labels'].append(step_outputs['labels'])
-        return state
-
-    def reduce_aggregated_logs(self, aggregated_logs, global_step=None):
-        """Compute mAP, F1@50, distance and polygon metrics from accumulated logs."""
+    def _build_eval_state(self) -> Dict:
+        """Construct the COCO/distance/polygon evaluators for one validation pass."""
         from eval.coco_metrics import COCOEvaluator
         from eval.distance_metrics import DistanceEvaluator
         from eval.polygon_metrics import PolygonEvaluator
-        import numpy as np
 
-        task_cfg  = self._config.task
-        img_size  = task_cfg.model.input_size[:2]  # [H, W]
+        task_cfg = self._config.task
+        img_size = tuple(task_cfg.model.input_size[:2])  # (H, W)
 
         coco_ev = COCOEvaluator(
             num_classes=task_cfg.num_classes,
-            image_size=tuple(img_size),
+            image_size=img_size,
             ignore_dontcare=task_cfg.ignore_dontcare,
             ignore_iscrowds=task_cfg.ignore_iscrowds,
             iscrowds_labels=task_cfg.iscrowds_labels,
         )
-        val_has_distance = getattr(self._config.task.validation_data, 'with_distance', False)
+        val_has_distance = getattr(task_cfg.validation_data, 'with_distance', False)
         dist_ev = DistanceEvaluator() if (task_cfg.with_distance and val_has_distance) else None
-        poly_ev = PolygonEvaluator(image_size=tuple(img_size)) if task_cfg.with_polygons else None
+        poly_ev = PolygonEvaluator(image_size=img_size) if task_cfg.with_polygons else None
+        return {'coco': coco_ev, 'dist': dist_ev, 'poly': poly_ev}
 
-        for preds, labels in zip(
-            aggregated_logs['predictions'], aggregated_logs['labels']
-        ):
-            coco_ev.update(preds, labels)
+    def _update_evaluators(self, state: Dict, preds: Dict, labels: Dict) -> None:
+        """Update the evaluators with one batch (converts to numpy immediately).
 
-            if dist_ev is not None:
-                # Per-image: match each GT to its highest-IoU detection (bbox IoU
-                # >= 0.5), then compare that detection's predicted distance to the
-                # GT distance. Feeding all-vs-all positionally would mis-pair (or
-                # crash when n_gt > n_det), so we build explicit 1:1 matched pairs.
-                from eval.polygon_metrics import _bbox_iou_matrix
+        Streaming the per-batch update here — rather than buffering every batch's
+        raw prediction/label tensors until end-of-epoch — bounds host memory to the
+        evaluators' (much smaller) accumulators on large validation sets.
+        """
+        import numpy as np
 
-                n_gt  = labels['n_gt'].numpy()
-                gt_ld = labels['log_distance'].numpy()        # [B, M]  log-metres
-                gt_bx = labels['bbox'].numpy()                # [B, M, 4] yxyx-norm
-                # preds['distance'] is in METRES (the detection generator already
-                # exp'd + clipped it). DistanceEvaluator expects BOTH inputs in log
-                # space (it exponentiates internally), so convert pred back to log
-                # to match the GT — otherwise the metric double-exponentiates.
-                pd_d  = np.log(preds['distance'].numpy())     # [B, max_det] log-metres
-                pd_bx = preds['bbox'].numpy()                 # [B, max_det, 4]
-                nd    = preds['num_detections'].numpy()       # [B]
-                for i in range(len(n_gt)):
-                    ng, ndi = int(n_gt[i]), int(nd[i])
-                    if ng == 0 or ndi == 0:
-                        continue
-                    iou = _bbox_iou_matrix(gt_bx[i, :ng], pd_bx[i, :ndi])  # [ng, ndi]
-                    matched_det = set()
-                    pred_pairs, gt_pairs = [], []
-                    for g in range(ng):
-                        d = int(iou[g].argmax())
-                        if iou[g, d] >= 0.5 and d not in matched_det:
-                            matched_det.add(d)
-                            pred_pairs.append(pd_d[i, d])
-                            gt_pairs.append(gt_ld[i, g])
-                    if pred_pairs:
-                        dist_ev.update(
-                            np.asarray(pred_pairs, dtype=np.float32),
-                            np.asarray(gt_pairs, dtype=np.float32),
-                        )
+        coco_ev, dist_ev, poly_ev = state['coco'], state['dist'], state['poly']
+        coco_ev.update(preds, labels)
 
-            if poly_ev is not None:
-                poly_ev.update(
-                    pred_boxes=preds['bbox'].numpy(),
-                    pred_polygons=preds['polygons'].numpy(),
-                    pred_scores=preds['confidence'].numpy(),
-                    num_detections=preds['num_detections'].numpy(),
-                    gt_boxes=labels['bbox'].numpy(),
-                    gt_polygons=labels['polygons'].numpy(),
-                    n_gt=labels['n_gt'].numpy(),
-                )
+        if dist_ev is not None:
+            # Match each GT to its highest-IoU detection (bbox IoU >= 0.5), then
+            # compare that detection's predicted distance to the GT distance.
+            # preds['distance'] is in METRES (already exp'd by the generator);
+            # DistanceEvaluator expects log space, so convert pred back to log.
+            from eval.polygon_metrics import _bbox_iou_matrix
+
+            n_gt  = labels['n_gt'].numpy()
+            gt_ld = labels['log_distance'].numpy()        # [B, M]  log-metres
+            gt_bx = labels['bbox'].numpy()                # [B, M, 4] yxyx-norm
+            pd_d  = np.log(preds['distance'].numpy())     # [B, max_det] log-metres
+            pd_bx = preds['bbox'].numpy()                 # [B, max_det, 4]
+            nd    = preds['num_detections'].numpy()       # [B]
+            for i in range(len(n_gt)):
+                ng, ndi = int(n_gt[i]), int(nd[i])
+                if ng == 0 or ndi == 0:
+                    continue
+                iou = _bbox_iou_matrix(gt_bx[i, :ng], pd_bx[i, :ndi])  # [ng, ndi]
+                matched_det = set()
+                pred_pairs, gt_pairs = [], []
+                for g in range(ng):
+                    d = int(iou[g].argmax())
+                    if iou[g, d] >= 0.5 and d not in matched_det:
+                        matched_det.add(d)
+                        pred_pairs.append(pd_d[i, d])
+                        gt_pairs.append(gt_ld[i, g])
+                if pred_pairs:
+                    dist_ev.update(
+                        np.asarray(pred_pairs, dtype=np.float32),
+                        np.asarray(gt_pairs, dtype=np.float32),
+                    )
+
+        if poly_ev is not None:
+            # Pass crowd/dontcare flags so they're excluded from the recall
+            # denominator and matching (they're ignore regions). Eval labels carry
+            # these; guard with .get for non-eval label dicts.
+            ic = labels.get('is_crowd')
+            idc = labels.get('is_dontcare')
+            poly_ev.update(
+                pred_boxes=preds['bbox'].numpy(),
+                pred_polygons=preds['polygons'].numpy(),
+                pred_scores=preds['confidence'].numpy(),
+                num_detections=preds['num_detections'].numpy(),
+                gt_boxes=labels['bbox'].numpy(),
+                gt_polygons=labels['polygons'].numpy(),
+                n_gt=labels['n_gt'].numpy(),
+                gt_is_crowd=(ic.numpy() if ic is not None else None),
+                gt_is_dontcare=(idc.numpy() if idc is not None else None),
+            )
+
+    def aggregate_logs(self, state, step_outputs):
+        """Update evaluators incrementally with one validation batch.
+
+        Builds the evaluators on the first call and streams each batch into them, so
+        raw prediction/label tensors are not retained across the epoch.
+        """
+        if state is None:
+            state = self._build_eval_state()
+        self._update_evaluators(state, step_outputs['predictions'], step_outputs['labels'])
+        return state
+
+    def reduce_aggregated_logs(self, aggregated_logs, global_step=None):
+        """Finalize mAP, F1@50, distance and polygon metrics from the evaluators."""
+        if aggregated_logs is None:
+            # No validation batches were seen.
+            return {}
+
+        coco_ev = aggregated_logs['coco']
+        dist_ev = aggregated_logs['dist']
+        poly_ev = aggregated_logs['poly']
 
         metrics = coco_ev.evaluate()
         if dist_ev is not None:
