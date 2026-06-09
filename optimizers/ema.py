@@ -26,9 +26,9 @@ class ExponentialMovingAverage(tf.Module):
     Usage:
         ema_opt = ExponentialMovingAverage(base_optimizer, model)
         ema_opt.apply_gradients(grads_and_vars)   # updates both real + shadow
-        ema_opt.swap_weights(model)               # eval: swap to shadow
+        ema_opt.swap_in(model)                     # eval: load EMA (shadow) weights
         ...evaluate...
-        ema_opt.swap_weights(model)               # restore real weights
+        ema_opt.swap_out(model)                    # restore real weights
     """
 
     def __init__(
@@ -51,6 +51,10 @@ class ExponentialMovingAverage(tf.Module):
             tf.Variable(tf.identity(v), trainable=False, name=f'ema_shadow_{i}')
             for i, v in enumerate(self._model_vars)
         ]
+        # Holds a full snapshot of the live weights while EMA weights are swapped
+        # in for evaluation. None when not swapped in. Not a tf.Variable (and so
+        # not checkpointed): it is transient eval-only state.
+        self._backup = None
 
     def build(self, variables) -> None:
         """Pre-create the inner optimizer's slots (cross-replica context).
@@ -71,8 +75,19 @@ class ExponentialMovingAverage(tf.Module):
             )
         return tf.constant(self._average_decay, dtype=tf.float32)
 
-    def swap_weights(self, model: tf.keras.Model) -> None:
-        """Swap all model variables with their shadow counterparts in-place."""
+    def swap_in(self, model: tf.keras.Model) -> None:
+        """Load EMA (shadow) weights into the model for evaluation.
+
+        Crash-safe by construction, unlike a symmetric live<->shadow swap:
+          * The shadow (EMA) weights are NEVER mutated here, so even if this is
+            interrupted the EMA state — which is also what gets checkpointed —
+            stays intact.
+          * The full live snapshot is taken BEFORE any model variable is
+            overwritten. If the snapshot raises, no variable was touched; if the
+            assign loop is interrupted, ``swap_out`` still restores every
+            variable from the complete snapshot.
+        Pair every ``swap_in`` with a ``swap_out`` (use try/finally).
+        """
         model_vars = model.variables
         if len(model_vars) != len(self._shadows):
             raise ValueError(
@@ -82,10 +97,28 @@ class ExponentialMovingAverage(tf.Module):
                 "(otherwise zip() would silently truncate and skip swapping some "
                 "weights during evaluation)."
             )
+        if self._backup is not None:
+            raise RuntimeError(
+                "EMA.swap_in() called while already swapped in; call swap_out() "
+                "first. Nesting swap_in would overwrite the live-weight backup "
+                "with EMA weights and lose the originals."
+            )
+        # Full live snapshot first (completes or raises before any var is touched).
+        self._backup = [tf.identity(v) for v in model_vars]
         for var, shadow in zip(model_vars, self._shadows):
-            live = tf.identity(var)
             var.assign(tf.identity(shadow))
-            shadow.assign(live)
+
+    def swap_out(self, model: tf.keras.Model) -> None:
+        """Restore the live weights saved by ``swap_in``.
+
+        Idempotent: a no-op when not currently swapped in, so a ``finally`` block
+        can call it unconditionally without risking a double restore.
+        """
+        if self._backup is None:
+            return
+        for var, backup in zip(model.variables, self._backup):
+            var.assign(backup)
+        self._backup = None
 
     def apply_gradients(self, grads_and_vars, **kwargs):
         """Apply gradients to real weights, then update all shadow weights."""

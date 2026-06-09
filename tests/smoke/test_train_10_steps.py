@@ -206,16 +206,20 @@ class TestDrySmoke:
             f"Restored global_step={int(restored_step)}, expected 10"
 
     def test_ema_swap_restore_symmetry(self, setup):
-        """swap_weights called twice returns model to original live values."""
+        """swap_in loads EMA shadows; swap_out restores the original live weights."""
         model, optimizer = setup['model'], setup['optimizer']
-        live_before = [tf.identity(v).numpy() for v in model.variables]
+        live_before   = [tf.identity(v).numpy() for v in model.variables]
+        shadow_before = [tf.identity(s).numpy() for s in optimizer._shadows]
 
-        optimizer.swap_weights(model)   # live ← shadows
-        optimizer.swap_weights(model)   # live ← original
+        optimizer.swap_in(model)    # live ← shadows (EMA in)
+        for v, shadow in zip(model.variables, shadow_before):
+            assert np.allclose(v.numpy(), shadow, atol=1e-7), \
+                f"Variable {v.name} did not load the EMA shadow on swap_in"
 
+        optimizer.swap_out(model)   # live ← original
         for v, before in zip(model.variables, live_before):
             assert np.allclose(v.numpy(), before, atol=1e-7), \
-                f"Variable {v.name} not restored after double swap"
+                f"Variable {v.name} not restored after swap_out"
 
 
 # ---------------------------------------------------------------------------

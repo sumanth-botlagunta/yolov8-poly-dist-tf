@@ -25,13 +25,28 @@ log = logging.getLogger(__name__)
 
 
 def _checkpoint_has_ema(ckpt_path: str) -> bool:
-    """True if the checkpoint stores EMA shadow variables (a periodic ckpt-N)."""
+    """True if the checkpoint stores EMA shadow variables (a periodic ckpt-N).
+
+    Raises if the checkpoint has an ``optimizer/`` subtree but no recognizable
+    EMA markers — that means a periodic checkpoint whose EMA wrapper attribute
+    names drifted, and silently falling back to the RAW weights would deploy the
+    worse, non-averaged weights without any signal (fail-closed-but-wrong).
+    """
     try:
         names = [n for n, _ in tf.train.list_variables(ckpt_path)]
     except Exception as e:  # pragma: no cover - malformed/missing path
         log.warning("Could not list checkpoint variables (%s); assuming no EMA.", e)
         return False
-    return any(('_shadows' in n) or ('ema_step' in n) for n in names)
+    has_ema = any(('_shadows' in n) or ('ema_step' in n) for n in names)
+    has_optimizer = any('optimizer/' in n for n in names)
+    if has_optimizer and not has_ema:
+        raise RuntimeError(
+            f"Checkpoint {ckpt_path} has an 'optimizer/' subtree but no EMA "
+            "markers ('_shadows'/'ema_step'). Refusing to silently load RAW "
+            "(non-EMA) weights — the EMA wrapper variable names may have changed. "
+            "Update _checkpoint_has_ema's markers to match optimizers/ema.py."
+        )
+    return has_ema
 
 
 def restore_eval_weights(model: tf.keras.Model, ckpt_path: str) -> str:
@@ -54,8 +69,14 @@ def restore_eval_weights(model: tf.keras.Model, ckpt_path: str) -> str:
 
         sgd = SGDTorch(lr_fn=lambda step: tf.constant(0.0), warmup_steps=0)
         ema = ExponentialMovingAverage(optimizer=sgd, model=model)
+        # expect_partial: the SGD slot variables are intentionally not rebuilt
+        # here (we only need the EMA shadows + model graph). assert_existing_
+        # objects_matched() is NOT used — it false-positives on the unbuilt
+        # optimizer slots even for a valid checkpoint. A missing/typo'd path
+        # still fails loudly: restore() raises NotFoundError on a nonexistent
+        # checkpoint, and _checkpoint_has_ema guards the renamed-EMA case.
         tf.train.Checkpoint(model=model, optimizer=ema).restore(ckpt_path).expect_partial()
-        ema.swap_weights(model)   # model/ (raw) <-> shadows (EMA) → model now holds EMA
+        ema.swap_in(model)   # load EMA shadows into the live model for eval/export
         log.info("Restored EMA weights from periodic checkpoint: %s", ckpt_path)
         return 'ema'
 
