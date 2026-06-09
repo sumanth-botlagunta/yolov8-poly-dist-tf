@@ -1,17 +1,24 @@
 """Mosaic and MixUp augmentation combining multiple images.
 
-Mosaic stitches 4 images into a single training sample, significantly
-expanding the effective receptive field seen per step.  MixUp blends
-two images with a beta-distributed weight.
+Mosaic (Ultralytics-style) stitches 4 images into a 2×-size canvas at a random
+center — each image is placed at full scale toward the center with overflow
+cropped (no letterbox padding) — then a single ``random_perspective`` (rotation +
+scale + shear + translate) warps and crops the canvas back to the output size.
+The same ``random_perspective`` is applied to non-mosaic single images, so it is
+the one geometric transform in the pipeline (the parser no longer does affine).
 
-Configuration from experiment_config.yaml:
+Configuration (parser.mosaic in the experiment YAML):
     mosaic_frequency: 0.5
     mixup_frequency: 0.0
-    mosaic_center: 0.2   (max offset of stitch point from image center)
-    aug_scale_min: 0.4
-    aug_scale_max: 1.9
-    mosaic_crop_mode: scale
-    area_thresh: 0.5     (minimum visible box area fraction to keep)
+    mosaic_center: 0.25      (half-range of the split point as a fraction; the
+                              2× canvas split lands in [H(1-2c), H(1+2c)])
+    aug_scale_min / aug_scale_max: per-image scale range AND the random_perspective
+                              scale-gain bounds.
+    degrees: 10.0            (rotation ±, degrees)
+    shear: 2.0               (shear ±, degrees)
+    perspective: 0.0         (perspective coefficient ±; 0 disables)
+    translate: 0.1           (translation ± as a fraction of output size)
+    area_thresh: 0.5         (min visible box-area fraction to keep)
 
 Classes:
     Mosaic: Manages both Mosaic and MixUp augmentations.
@@ -19,177 +26,83 @@ Classes:
 
 from __future__ import annotations
 
-import math
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Tuple
 
 import tensorflow as tf
+
+from data_pipeline.augmentations import random_perspective
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _letterbox_resize_to(
-    image: tf.Tensor,
-    target_h: tf.Tensor,
-    target_w: tf.Tensor,
-) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
-    """Letterbox-resize image to (target_h, target_w) with gray padding (114).
+def _place_in_cell(
+    R: tf.Tensor,
+    cell_h: tf.Tensor,
+    cell_w: tf.Tensor,
+    top_y: tf.Tensor,
+    top_x: tf.Tensor,
+) -> tf.Tensor:
+    """Place a resized image R into a (cell_h, cell_w) gray-114 cell.
 
-    Returns:
-        image_out:  uint8 [target_h, target_w, 3]
-        scale:      float32 scalar — the uniform scale applied
-        pad_top:    int32 scalar pixels of top padding
-        pad_left:   int32 scalar pixels of left padding
-        new_h, new_w: int32 scaled dimensions before padding
+    R's top-left corner is positioned at (top_y, top_x) within the cell (may be
+    negative → R is cropped); regions of the cell not covered by R stay 114.
+    Pure crop + pad so it runs in graph mode.
     """
-    h_in = tf.cast(tf.shape(image)[0], tf.float32)
-    w_in = tf.cast(tf.shape(image)[1], tf.float32)
-    th_f = tf.cast(target_h, tf.float32)
-    tw_f = tf.cast(target_w, tf.float32)
+    nh = tf.shape(R)[0]
+    nw = tf.shape(R)[1]
+    src_y0 = tf.maximum(0, -top_y)
+    src_x0 = tf.maximum(0, -top_x)
+    dst_y0 = tf.minimum(tf.maximum(0, top_y), cell_h)
+    dst_x0 = tf.minimum(tf.maximum(0, top_x), cell_w)
+    copy_h = tf.maximum(0, tf.minimum(nh - src_y0, cell_h - dst_y0))
+    copy_w = tf.maximum(0, tf.minimum(nw - src_x0, cell_w - dst_x0))
 
-    scale = tf.minimum(th_f / h_in, tw_f / w_in)
-    new_h = tf.maximum(tf.cast(tf.round(h_in * scale), tf.int32), 1)
-    new_w = tf.maximum(tf.cast(tf.round(w_in * scale), tf.int32), 1)
-
-    image = tf.cast(
-        tf.image.resize(tf.cast(image, tf.float32), [new_h, new_w], method='bilinear'),
-        tf.uint8,
-    )
-
-    pad_top    = (target_h - new_h) // 2
-    pad_left   = (target_w - new_w) // 2
-    pad_bottom = target_h - new_h - pad_top
-    pad_right  = target_w - new_w - pad_left
-
-    image_out = tf.pad(
-        image,
-        [[pad_top, pad_bottom], [pad_left, pad_right], [0, 0]],
+    R_crop = tf.slice(R, [src_y0, src_x0, 0], [copy_h, copy_w, 3])
+    pad_b = cell_h - dst_y0 - copy_h
+    pad_r = cell_w - dst_x0 - copy_w
+    return tf.pad(
+        R_crop,
+        [[dst_y0, pad_b], [dst_x0, pad_r], [0, 0]],
         constant_values=114,
     )
-    return image_out, scale, pad_top, pad_left, new_h, new_w
 
 
-def _transform_boxes(
-    boxes: tf.Tensor,
-    scale: tf.Tensor,
-    pad_top: tf.Tensor,
-    pad_left: tf.Tensor,
-    new_h: tf.Tensor,
-    new_w: tf.Tensor,
-    offset_y: tf.Tensor,
-    offset_x: tf.Tensor,
-    H_out: tf.Tensor,
-    W_out: tf.Tensor,
-    area_thresh: float = 0.5,
+def _scale_box_poly_to_canvas(
+    ex: Dict[str, tf.Tensor],
+    nh: tf.Tensor, nw: tf.Tensor,
+    padh: tf.Tensor, padw: tf.Tensor,
+    H2: tf.Tensor, W2: tf.Tensor,
 ) -> Tuple[tf.Tensor, tf.Tensor]:
-    """Transform boxes from input-normalised to output-normalised coordinates.
+    """Map an example's boxes/polygons (input-normalized) into 2× canvas-normalized.
 
-    The input image was letterbox-resized so its content occupies (new_h, new_w)
-    pixels with the given padding, then placed at (offset_y, offset_x) in the
-    output. ``new_h``/``new_w`` are the *exact* scaled dimensions returned by
-    ``_letterbox_resize_to`` (not re-derived from padding, which is off by up to
-    1px for odd letterbox padding).
-
-    Returns:
-        boxes_out: float32 [N, 4] clipped to [0,1]
-        keep_mask: bool [N]
+    canvas_px = coord_in_px * scaled_dim + pad; then / canvas size. No clipping —
+    the subsequent random_perspective clips to the output edge.
     """
-    H_out_f  = tf.cast(H_out,   tf.float32)
-    W_out_f  = tf.cast(W_out,   tf.float32)
-    pad_top_f  = tf.cast(pad_top,  tf.float32)
-    pad_left_f = tf.cast(pad_left, tf.float32)
-    off_y_f    = tf.cast(offset_y, tf.float32)
-    off_x_f    = tf.cast(offset_x, tf.float32)
-    # Boxes are normalised by INPUT size. The input content occupies new_h × new_w
-    # pixels inside the quadrant after letterbox resize, offset by (pad_top, pad_left),
-    # then placed at (offset_y, offset_x) in the output:
-    #   y_out_norm = (y_in_norm * new_h + pad_top + offset_y) / H_out
-    new_h_f = tf.cast(new_h, tf.float32)
-    new_w_f = tf.cast(new_w, tf.float32)
+    nh_f = tf.cast(nh, tf.float32); nw_f = tf.cast(nw, tf.float32)
+    padh_f = tf.cast(padh, tf.float32); padw_f = tf.cast(padw, tf.float32)
+    H2_f = tf.cast(H2, tf.float32); W2_f = tf.cast(W2, tf.float32)
 
-    ymin_out = (boxes[:, 0] * new_h_f + pad_top_f  + off_y_f) / H_out_f
-    xmin_out = (boxes[:, 1] * new_w_f + pad_left_f + off_x_f) / W_out_f
-    ymax_out = (boxes[:, 2] * new_h_f + pad_top_f  + off_y_f) / H_out_f
-    xmax_out = (boxes[:, 3] * new_w_f + pad_left_f + off_x_f) / W_out_f
+    boxes = ex.get('groundtruth_boxes', tf.zeros([0, 4]))
+    ymin = (boxes[:, 0] * nh_f + padh_f) / H2_f
+    xmin = (boxes[:, 1] * nw_f + padw_f) / W2_f
+    ymax = (boxes[:, 2] * nh_f + padh_f) / H2_f
+    xmax = (boxes[:, 3] * nw_f + padw_f) / W2_f
+    boxes_c = tf.stack([ymin, xmin, ymax, xmax], axis=1)
 
-    boxes_raw = tf.stack([ymin_out, xmin_out, ymax_out, xmax_out], axis=1)
-
-    # Clip to [0, 1]
-    boxes_clipped = tf.clip_by_value(boxes_raw, 0.0, 1.0)
-
-    # Compute visible fraction (area_after / area_before)
-    area_before = (
-        (boxes_raw[:, 2] - boxes_raw[:, 0]) *
-        (boxes_raw[:, 3] - boxes_raw[:, 1])
-    )
-    area_after = (
-        (boxes_clipped[:, 2] - boxes_clipped[:, 0]) *
-        (boxes_clipped[:, 3] - boxes_clipped[:, 1])
-    )
-    # Keep if area_after / area_before >= area_thresh (and box has positive area)
-    keep = tf.logical_and(
-        area_before > 1e-6,
-        area_after >= area_thresh * area_before,
-    )
-
-    return boxes_clipped, keep
-
-
-def _transform_polygons(
-    polygons: tf.Tensor,
-    pad_top: tf.Tensor,
-    pad_left: tf.Tensor,
-    new_h: tf.Tensor,
-    new_w: tf.Tensor,
-    offset_y: tf.Tensor,
-    offset_x: tf.Tensor,
-    H_out: tf.Tensor,
-    W_out: tf.Tensor,
-) -> tf.Tensor:
-    """Transform flat polygon xy pairs from input-normalised to output-normalised.
-
-    Args:
-        polygons: float32 [N, max_v] flat xy pairs, -1 padded.
-        new_h, new_w: exact scaled content dimensions from ``_letterbox_resize_to``.
-
-    Returns:
-        float32 [N, max_v] transformed, clipped to [0,1] (invalid → -1).
-    """
-    H_out_f    = tf.cast(H_out,   tf.float32)
-    W_out_f    = tf.cast(W_out,   tf.float32)
-    pad_top_f  = tf.cast(pad_top,  tf.float32)
-    pad_left_f = tf.cast(pad_left, tf.float32)
-    off_y_f    = tf.cast(offset_y, tf.float32)
-    off_x_f    = tf.cast(offset_x, tf.float32)
-    new_h_f = tf.cast(new_h, tf.float32)
-    new_w_f = tf.cast(new_w, tf.float32)
-
-    N   = tf.shape(polygons)[0]
-    max_v = tf.shape(polygons)[1]
-    pts = tf.reshape(polygons, [N, max_v // 2, 2])  # [N, n_pairs, (x, y)]
-
-    valid_x = pts[:, :, 0] >= 0.0  # [N, n_pairs] — source validity
-
-    x_out = (pts[:, :, 0] * new_w_f + pad_left_f + off_x_f) / W_out_f
-    y_out = (pts[:, :, 1] * new_h_f + pad_top_f  + off_y_f) / H_out_f
-
-    # A source-valid vertex that lands outside the mosaic canvas is invalidated
-    # (-1), not clamped to the edge — clamping would inject a false radial distance
-    # into the PolyYOLO target at mosaic seams. Matches augmentations.random_affine
-    # and copy_paste. (The old guard used only valid_x, so out-of-bounds vertices
-    # were silently pinned to the boundary.)
-    in_bounds = tf.logical_and(
-        tf.logical_and(x_out >= 0.0, x_out <= 1.0),
-        tf.logical_and(y_out >= 0.0, y_out <= 1.0),
-    )
-    final_valid = tf.logical_and(valid_x, in_bounds)
-    neg1 = tf.fill(tf.shape(x_out), -1.0)
-    x_out = tf.where(final_valid, x_out, neg1)
-    y_out = tf.where(final_valid, y_out, neg1)
-
-    pts_out = tf.stack([x_out, y_out], axis=-1)
-    return tf.reshape(pts_out, [N, max_v])
+    polys = ex.get('groundtruth_polygons', tf.zeros([0, 2]))
+    N = tf.shape(polys)[0]
+    max_v = tf.shape(polys)[1]
+    pts = tf.reshape(polys, [N, max_v // 2, 2])
+    valid = pts[:, :, 0] >= 0.0
+    x_c = (pts[:, :, 0] * nw_f + padw_f) / W2_f
+    y_c = (pts[:, :, 1] * nh_f + padh_f) / H2_f
+    neg1 = tf.fill(tf.shape(x_c), -1.0)
+    x_c = tf.where(valid, x_c, neg1)
+    y_c = tf.where(valid, y_c, neg1)
+    polys_c = tf.reshape(tf.stack([x_c, y_c], axis=-1), [N, max_v])
+    return boxes_c, polys_c
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +110,7 @@ def _transform_polygons(
 # ---------------------------------------------------------------------------
 
 class Mosaic:
-    """Mosaic (4-image stitch) and MixUp augmentation with polygon support."""
+    """Mosaic (4-image stitch) + random_perspective, with polygon support."""
 
     def __init__(
         self,
@@ -211,6 +124,10 @@ class Mosaic:
         aug_scale_max: float = 1.9,
         area_thresh: float = 0.5,
         with_polygons: bool = True,
+        degrees: float = 10.0,
+        shear: float = 2.0,
+        perspective: float = 0.0,
+        translate: float = 0.1,
     ):
         self._H = output_size[0]
         self._W = output_size[1]
@@ -223,21 +140,23 @@ class Mosaic:
         self._scale_max   = aug_scale_max
         self._area_thresh = area_thresh
         self._with_polys  = with_polygons
+        self._degrees     = degrees
+        self._shear       = shear
+        self._perspective = perspective
+        self._translate   = translate
 
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
 
     def mosaic_fn(self, is_training: bool = True) -> Callable:
-        """Return a function for use in tf.data.Dataset.map().
+        """Return a function for tf.data.Dataset.map() over a batch of 4 samples.
 
-        The function expects a batch of 4 samples (each field has a leading
-        dim of 4) and returns a dict with a leading dim of 1 so that the
-        subsequent .unbatch() produces individual examples.
+        Both the mosaic branch and the single-image branch run random_perspective,
+        so every training image gets the full geometric transform exactly once.
         """
 
         def _fn(batch: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
-            # Split batch-of-4 into 4 individual example dicts
             def _select(d: Dict, i: int) -> Dict:
                 return {k: v[i] for k, v in d.items()}
 
@@ -247,20 +166,80 @@ class Mosaic:
             four  = _select(batch, 3)
 
             if not is_training:
-                # Eval: return just the first image with leading dim=1
-                result = one
+                result = self._single(one)
             else:
                 do_mosaic = tf.random.uniform([]) < self._mosaic_freq
                 result = tf.cond(
                     do_mosaic,
                     lambda: self._mosaic(one, two, three, four),
-                    lambda: one,  # no mosaic: pass first image through
+                    lambda: self._single(one),
                 )
 
-            # Wrap in batch dim of 1 so .unbatch() works correctly
             return {k: tf.expand_dims(v, 0) for k, v in result.items()}
 
         return _fn
+
+    # ------------------------------------------------------------------
+    # Geometric transform helpers
+    # ------------------------------------------------------------------
+
+    def _warp(
+        self,
+        image: tf.Tensor,
+        boxes: tf.Tensor,
+        polygons: tf.Tensor,
+    ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+        """random_perspective with this module's configured params → output size."""
+        return random_perspective(
+            image, boxes, polygons,
+            target_h=self._H, target_w=self._W,
+            degrees=self._degrees,
+            translate=self._translate,
+            scale=max(self._scale_max - 1.0, 1.0 - self._scale_min),
+            shear=self._shear,
+            perspective=self._perspective,
+            area_thresh=self._area_thresh,
+        )
+
+    @staticmethod
+    def _filtered_anns(
+        ex: Dict[str, tf.Tensor],
+        boxes: tf.Tensor,
+        polygons: tf.Tensor,
+        keep: tf.Tensor,
+    ) -> Dict[str, tf.Tensor]:
+        """Build the output annotation dict, filtered by the perspective keep mask.
+
+        Per-box side tensors (classes/crowd/area/dontcare/dists) are taken from ex
+        and masked by keep (same ordering as the boxes fed to random_perspective).
+        """
+        def _side(key, default_val, dtype):
+            v = ex.get(key, tf.zeros([0], dtype))
+            v = tf.cast(v, dtype)
+            return tf.boolean_mask(v, keep)
+
+        return {
+            'groundtruth_boxes':    tf.boolean_mask(boxes, keep),
+            'groundtruth_polygons': tf.boolean_mask(polygons, keep),
+            'groundtruth_classes':  _side('groundtruth_classes',  0, tf.int64),
+            'groundtruth_is_crowd': _side('groundtruth_is_crowd', False, tf.bool),
+            'groundtruth_area':     _side('groundtruth_area',     0.0, tf.float32),
+            'groundtruth_dontcare': _side('groundtruth_dontcare', 0, tf.int64),
+            'groundtruth_dists':    _side('groundtruth_dists',    0.0, tf.float32),
+            'source_id':            ex.get('source_id', tf.constant('mosaic')),
+        }
+
+    def _single(self, ex: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+        """Non-mosaic path: random_perspective on one (already output-sized) image."""
+        img = ex['image']
+        boxes = ex.get('groundtruth_boxes', tf.zeros([0, 4]))
+        polys = ex.get('groundtruth_polygons', tf.zeros([0, 2]))
+        img_out, boxes_out, keep, polys_out = self._warp(img, boxes, polys)
+        anns = self._filtered_anns(ex, boxes_out, polys_out, keep)
+        anns['image']  = img_out
+        anns['height'] = tf.constant(self._H, tf.int32)
+        anns['width']  = tf.constant(self._W, tf.int32)
+        return anns
 
     # ------------------------------------------------------------------
     # Mosaic implementation
@@ -273,145 +252,94 @@ class Mosaic:
         three: Dict[str, tf.Tensor],
         four:  Dict[str, tf.Tensor],
     ) -> Dict[str, tf.Tensor]:
-        """Stitch 4 images at a random center point and merge annotations.
+        """Assemble a 2× canvas (per-image scale + offset + crop) then warp to output.
 
-        Layout (quadrant → example):
-            top-left  = one   |  top-right  = two
-            ──────────────────────────────────────
-            bot-left  = three |  bot-right  = four
-
-        Args:
-            one / two / three / four: individual decoded example dicts.
-
-        Returns:
-            Single merged example dict (no batch dim).
+        Quadrant → example: TL=one, TR=two, BL=three, BR=four. Each image is scaled
+        by a per-image random factor and placed so its center-adjacent corner abuts
+        the random split point (xc, yc); overflow is cropped, gaps stay 114.
         """
-        H = self._H
-        W = self._W
-        H_t = tf.constant(H, tf.int32)
-        W_t = tf.constant(W, tf.int32)
+        H, W = self._H, self._W
+        H2 = tf.constant(2 * H, tf.int32)
+        W2 = tf.constant(2 * W, tf.int32)
 
-        # Random mosaic center
-        lo = 0.5 - self._center
-        hi = 0.5 + self._center
-        cy = tf.cast(tf.round(tf.random.uniform([], lo, hi) * H), tf.int32)
-        cx = tf.cast(tf.round(tf.random.uniform([], lo, hi) * W), tf.int32)
-        cy = tf.clip_by_value(cy, 1, H - 1)
-        cx = tf.clip_by_value(cx, 1, W - 1)
+        # Random split point on the 2× canvas: [H(1-2c), H(1+2c)] clipped.
+        c = self._center
+        yc = tf.cast(tf.round(tf.random.uniform([], H * (1.0 - 2.0 * c), H * (1.0 + 2.0 * c))), tf.int32)
+        xc = tf.cast(tf.round(tf.random.uniform([], W * (1.0 - 2.0 * c), W * (1.0 + 2.0 * c))), tf.int32)
+        yc = tf.clip_by_value(yc, 1, 2 * H - 1)
+        xc = tf.clip_by_value(xc, 1, 2 * W - 1)
 
-        # Build each quadrant piece
-        imgs, ann_list = [], []
-        quadrant_defs = [
-            (one,   cy,      cx,      0,  0),   # top-left
-            (two,   cy,      W_t-cx,  0,  cx),  # top-right
-            (three, H_t-cy,  cx,      cy, 0),   # bot-left
-            (four,  H_t-cy,  W_t-cx,  cy, cx),  # bot-right
-        ]
+        examples = [one, two, three, four]
+        cells, boxes_list, polys_list = [], [], []
 
-        for ex, qh, qw, off_y, off_x in quadrant_defs:
-            img_q, anns_q = self._place_quadrant(ex, qh, qw, off_y, off_x, H_t, W_t)
-            imgs.append(img_q)
-            ann_list.append(anns_q)
+        # (cell_h, cell_w, cell_top_y_fn, cell_top_x_fn, canvas_off_y, canvas_off_x)
+        # cell_top_* depend on the per-image scaled (nh, nw).
+        for i, ex in enumerate(examples):
+            img = ex['image']
+            h_in = tf.shape(img)[0]
+            w_in = tf.shape(img)[1]
+            scale = tf.random.uniform([], self._scale_min, self._scale_max)
+            nh = tf.maximum(tf.cast(tf.round(tf.cast(h_in, tf.float32) * scale), tf.int32), 1)
+            nw = tf.maximum(tf.cast(tf.round(tf.cast(w_in, tf.float32) * scale), tf.int32), 1)
+            R = tf.cast(tf.image.resize(tf.cast(img, tf.float32), [nh, nw], method='bilinear'), tf.uint8)
 
-        # Assemble canvas
-        top    = tf.concat([imgs[0], imgs[1]], axis=1)  # [cy,   W, 3]
-        bottom = tf.concat([imgs[2], imgs[3]], axis=1)  # [H-cy, W, 3]
-        canvas = tf.concat([top, bottom], axis=0)        # [H,    W, 3]
+            if i == 0:    # TL
+                cell_h, cell_w = yc, xc
+                top_y, top_x = yc - nh, xc - nw
+                off_y, off_x = tf.constant(0, tf.int32), tf.constant(0, tf.int32)
+            elif i == 1:  # TR
+                cell_h, cell_w = yc, W2 - xc
+                top_y, top_x = yc - nh, tf.constant(0, tf.int32)
+                off_y, off_x = tf.constant(0, tf.int32), xc
+            elif i == 2:  # BL
+                cell_h, cell_w = H2 - yc, xc
+                top_y, top_x = tf.constant(0, tf.int32), xc - nw
+                off_y, off_x = yc, tf.constant(0, tf.int32)
+            else:         # BR
+                cell_h, cell_w = H2 - yc, W2 - xc
+                top_y, top_x = tf.constant(0, tf.int32), tf.constant(0, tf.int32)
+                off_y, off_x = yc, xc
 
-        # Merge annotations
-        merged = self._merge_annotations(ann_list)
-        merged['image']  = canvas
-        merged['height'] = tf.constant(H, tf.int32)
-        merged['width']  = tf.constant(W, tf.int32)
-        return merged
+            cell = _place_in_cell(R, cell_h, cell_w, top_y, top_x)
+            cells.append(cell)
 
-    def _place_quadrant(
-        self,
-        ex:     Dict[str, tf.Tensor],
-        qh:     tf.Tensor,   # quadrant height (int32)
-        qw:     tf.Tensor,   # quadrant width  (int32)
-        off_y:  tf.Tensor,   # y offset in output canvas
-        off_x:  tf.Tensor,   # x offset in output canvas
-        H_out:  tf.Tensor,
-        W_out:  tf.Tensor,
-    ) -> Tuple[tf.Tensor, Dict[str, tf.Tensor]]:
-        """Resize one example to fit its quadrant and transform annotations.
+            padh = off_y + top_y
+            padw = off_x + top_x
+            b_c, p_c = _scale_box_poly_to_canvas(ex, nh, nw, padh, padw, H2, W2)
+            boxes_list.append(b_c)
+            polys_list.append(p_c)
 
-        Returns:
-            (image_piece [qh, qw, 3], annotations_dict)
-        """
-        img = ex['image']  # uint8 [h, w, 3]
+        # Assemble 2× canvas from the 4 quadrant cells.
+        top    = tf.concat([cells[0], cells[1]], axis=1)   # [yc,    2W, 3]
+        bottom = tf.concat([cells[2], cells[3]], axis=1)   # [2H-yc, 2W, 3]
+        canvas = tf.concat([top, bottom], axis=0)          # [2H,    2W, 3]
 
-        # Letterbox-resize to quadrant size
-        img_q, _scale, pad_top, pad_left, new_h, new_w = _letterbox_resize_to(img, qh, qw)
+        boxes_all = tf.concat(boxes_list, axis=0)
+        polys_all = tf.concat(polys_list, axis=0)
 
-        # Transform boxes
-        boxes   = ex.get('groundtruth_boxes', tf.zeros([0, 4]))
-        classes = ex.get('groundtruth_classes', tf.zeros([0], tf.int64))
-        is_crowd= ex.get('groundtruth_is_crowd', tf.zeros([0], tf.bool))
-        area    = ex.get('groundtruth_area', tf.zeros([0]))
-        dontcare= ex.get('groundtruth_dontcare', tf.zeros([0], tf.int64))
-        dists   = ex.get('groundtruth_dists', tf.zeros([0]))
-        polygons= ex.get('groundtruth_polygons', tf.zeros([0, 2]))
-
-        boxes_out, keep = _transform_boxes(
-            boxes, _scale, pad_top, pad_left,
-            new_h, new_w, off_y, off_x, H_out, W_out,
-            area_thresh=self._area_thresh,
-        )
-
-        # Filter to kept boxes
-        boxes_out  = tf.boolean_mask(boxes_out,  keep)
-        classes    = tf.boolean_mask(classes,    keep)
-        is_crowd   = tf.boolean_mask(is_crowd,   keep)
-        area       = tf.boolean_mask(area,       keep)
-        dontcare   = tf.boolean_mask(dontcare,   keep)
-        dists      = tf.boolean_mask(dists,      keep)
-
-        anns = {
-            'groundtruth_boxes':    boxes_out,
-            'groundtruth_classes':  classes,
-            'groundtruth_is_crowd': is_crowd,
-            'groundtruth_area':     area,
-            'groundtruth_dontcare': dontcare,
-            'groundtruth_dists':    dists,
+        # Concatenate per-box side tensors across the 4 examples (same order).
+        def _cat(key, default, dtype):
+            return tf.concat(
+                [tf.cast(ex.get(key, tf.zeros([0], dtype)), dtype) for ex in examples],
+                axis=0,
+            )
+        merged_src = {
+            'groundtruth_classes':  _cat('groundtruth_classes',  0, tf.int64),
+            'groundtruth_is_crowd': _cat('groundtruth_is_crowd', False, tf.bool),
+            'groundtruth_area':     _cat('groundtruth_area',     0.0, tf.float32),
+            'groundtruth_dontcare': _cat('groundtruth_dontcare', 0, tf.int64),
+            'groundtruth_dists':    _cat('groundtruth_dists',    0.0, tf.float32),
+            'source_id':            one.get('source_id', tf.constant('mosaic')),
         }
 
-        if self._with_polys and polygons.shape[-1] != 0:
-            polygons_out = _transform_polygons(
-                polygons, pad_top, pad_left,
-                new_h, new_w, off_y, off_x, H_out, W_out,
-            )
-            polygons_out = tf.boolean_mask(polygons_out, keep)
-            anns['groundtruth_polygons'] = polygons_out
-        else:
-            # Always emit the key (even when polygon training is disabled) so the
-            # mosaic branch's dict structure matches the non-mosaic passthrough in
-            # mosaic_fn's tf.cond — the decoders emit groundtruth_polygons
-            # unconditionally, so omitting it here raises a branch-structure
-            # AssertionError under graph mode (breaks the bbox-only tier).
-            anns['groundtruth_polygons'] = tf.zeros(
-                [0, tf.shape(polygons)[-1]], polygons.dtype
-            )
+        # One geometric warp of the whole canvas → output size.
+        img_out, boxes_out, keep, polys_out = self._warp(canvas, boxes_all, polys_all)
 
-        # Carry source_id from first example
-        anns['source_id'] = ex.get('source_id', tf.constant('mosaic'))
-
-        return img_q, anns
-
-    @staticmethod
-    def _merge_annotations(ann_list: List[Dict]) -> Dict[str, tf.Tensor]:
-        """Concatenate per-quadrant annotation dicts."""
-        merged: Dict[str, tf.Tensor] = {}
-        keys = set(ann_list[0].keys())
-        for key in keys:
-            tensors = [a[key] for a in ann_list if key in a]
-            if key == 'source_id':
-                merged[key] = tensors[0]  # keep first
-                continue
-            if len(tensors) > 0:
-                merged[key] = tf.concat(tensors, axis=0)
-        return merged
+        anns = self._filtered_anns(merged_src, boxes_out, polys_out, keep)
+        anns['image']  = img_out
+        anns['height'] = tf.constant(H, tf.int32)
+        anns['width']  = tf.constant(W, tf.int32)
+        return anns
 
     # ------------------------------------------------------------------
     # MixUp (disabled by default: mixup_frequency=0.0)
@@ -423,12 +351,10 @@ class Mosaic:
         two: Dict[str, tf.Tensor],
     ) -> Dict[str, tf.Tensor]:
         """Blend two images with a beta-distributed weight."""
-        # Beta(8, 8) weight — strongly centred around 0.5 per Ultralytics convention
         r = tf.random.uniform([])
         img1 = tf.cast(one['image'], tf.float32)
         img2 = tf.cast(two['image'], tf.float32)
 
-        # Resize img2 to match img1 size
         h1 = tf.shape(img1)[0]
         w1 = tf.shape(img1)[1]
         img2 = tf.image.resize(img2, [h1, w1], method='bilinear')
@@ -437,7 +363,6 @@ class Mosaic:
         result = dict(one)
         result['image'] = tf.cast(blended, tf.uint8)
 
-        # Merge annotations from both
         for key in ['groundtruth_boxes', 'groundtruth_classes',
                     'groundtruth_is_crowd', 'groundtruth_area',
                     'groundtruth_dontcare', 'groundtruth_dists',

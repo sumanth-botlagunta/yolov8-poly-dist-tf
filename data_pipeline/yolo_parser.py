@@ -36,7 +36,6 @@ from data_pipeline.augmentations import (
     clip_boxes,
     clip_polygon_coords,
     hsv_augment,
-    random_affine,
     random_horizontal_flip,
 )
 from data_pipeline.parser import Parser
@@ -125,14 +124,11 @@ class V8ParserExtended(Parser):
                 image, boxes, polygons, self._max_vertices
             )
 
-        # 3. Random affine (translate + scale)
-        image, boxes, polygons = random_affine(
-            image, boxes, polygons,
-            translate=self._aug_rand_translate,
-            scale_min=self._aug_scale_min,
-            scale_max=self._aug_scale_max,
-            output_size=self._output_size,
-        )
+        # 3. Geometric augmentation (rotation/scale/shear/translate) is now done
+        #    upstream in the mosaic stage's random_perspective — for BOTH the mosaic
+        #    and single-image branches — so the parser no longer applies an affine
+        #    here (doing so would double-warp). The image already arrives at
+        #    output_size from that stage.
 
         # 4. Clip boxes; filter degenerate and too-small boxes
         pre_areas = (
