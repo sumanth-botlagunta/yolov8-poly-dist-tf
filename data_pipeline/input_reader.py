@@ -414,6 +414,10 @@ def build_input_reader_from_config(
             area_thresh=mosaic_cfg.area_thresh,
             mosaic_crop_mode=mosaic_cfg.mosaic_crop_mode,
             with_polygons=parser_cfg.with_polygons,
+            degrees=mosaic_cfg.degrees,
+            shear=mosaic_cfg.shear,
+            perspective=mosaic_cfg.perspective,
+            translate=mosaic_cfg.translate,
         )
 
     # Copy-paste (training only, when a source dataset is configured).

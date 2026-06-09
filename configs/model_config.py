@@ -147,6 +147,14 @@ class MosaicConfig:
     mosaic_crop_mode: str = "scale"
     area_thresh: float = 0.5
     jitter: float = 0.0
+    # Full-affine (random_perspective) params applied after mosaic assembly and to
+    # non-mosaic single images. degrees/shear in degrees; translate as a fraction of
+    # output size; perspective coefficient (0 disables). scale gain uses
+    # aug_scale_min/aug_scale_max (scale ∈ [aug_scale_min, aug_scale_max]).
+    degrees: float = 10.0
+    shear: float = 2.0
+    perspective: float = 0.0
+    translate: float = 0.1
 
 
 @dataclasses.dataclass

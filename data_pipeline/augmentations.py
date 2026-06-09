@@ -145,7 +145,177 @@ def random_horizontal_flip(
 
 
 # ---------------------------------------------------------------------------
-# Random affine (scale + translate letterbox)
+# Random perspective (full affine: rotation + scale + shear + translate)
+# ---------------------------------------------------------------------------
+
+def _transform_points_px(xy_px: tf.Tensor, M: tf.Tensor) -> tf.Tensor:
+    """Apply a 3x3 (input->output) matrix to [..., 2] (x, y) pixel points.
+
+    Returns [..., 2] output pixel points (perspective divide applied).
+    """
+    flat = tf.reshape(xy_px, [-1, 2])                       # [P, 2]
+    ones = tf.ones([tf.shape(flat)[0], 1], flat.dtype)
+    hom  = tf.concat([flat, ones], axis=1)                  # [P, 3]
+    out  = tf.matmul(hom, M, transpose_b=True)              # [P, 3]
+    w    = out[:, 2:3]
+    w    = tf.where(tf.abs(w) < 1e-12, tf.ones_like(w), w)
+    out_xy = out[:, :2] / w                                 # [P, 2]
+    return tf.reshape(out_xy, tf.shape(xy_px))
+
+
+def random_perspective(
+    image: tf.Tensor,
+    boxes: tf.Tensor,
+    polygons: tf.Tensor,
+    target_h: int,
+    target_w: int,
+    degrees: float = 10.0,
+    translate: float = 0.1,
+    scale: float = 0.5,
+    shear: float = 2.0,
+    perspective: float = 0.0,
+    area_thresh: float = 0.1,
+    min_side: float = 0.005,
+) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Full-affine geometric augmentation (Ultralytics random_perspective).
+
+    Composes center → perspective → rotation·scale → shear → translate and warps
+    the input to a (target_h, target_w) output (gray 114 fill on voids). When the
+    input is larger than the target (e.g. a 2× mosaic canvas) this center-crops to
+    the target while applying the affine; when input == target it warps in place.
+
+    Boxes are transformed by their 4 corners then re-fit to an axis-aligned box and
+    clipped to the edge (kept by visible-area fraction + min side). Polygon vertices
+    are transformed and clipped to the edge (remapped onto the border, per the
+    project's clip-to-edge convention); originally-padded (-1) vertices stay -1.
+
+    Args:
+        image:    uint8 [H, W, 3].
+        boxes:    float32 [N, 4] yxyx normalized to the INPUT size.
+        polygons: float32 [N, max_vertices] flat xy pairs (normalized to INPUT), -1 padded.
+        target_h, target_w: output size.
+        degrees:  max rotation magnitude (degrees, ±).
+        translate: max translation as a fraction of the output size (±).
+        scale:    scale-gain magnitude; scale ∈ [1-scale, 1+scale].
+        shear:    max shear magnitude (degrees, ±).
+        perspective: max perspective coefficient (±); 0 disables.
+        area_thresh: min visible-area fraction (after-clip / before-clip) to keep a box.
+        min_side: min normalized side length to keep a box.
+
+    Returns:
+        (image_out uint8 [target_h, target_w, 3], boxes_out [N,4] normalized to OUTPUT,
+         keep_mask [N] bool, polygons_out [N, max_vertices] normalized to OUTPUT).
+    """
+    image_f = tf.cast(image, tf.float32)
+    h_in = tf.cast(tf.shape(image)[0], tf.float32)
+    w_in = tf.cast(tf.shape(image)[1], tf.float32)
+    th_i = tf.cast(target_h, tf.int32)
+    tw_i = tf.cast(target_w, tf.int32)
+    th_f = tf.cast(target_h, tf.float32)
+    tw_f = tf.cast(target_w, tf.float32)
+    deg2rad = math.pi / 180.0
+
+    def _mat(rows):
+        return tf.reshape(tf.stack([tf.cast(v, tf.float32) for v in rows]), [3, 3])
+
+    one  = tf.constant(1.0)
+    zero = tf.constant(0.0)
+
+    # Center input on the origin.
+    C = _mat([one, zero, -w_in / 2.0,
+              zero, one, -h_in / 2.0,
+              zero, zero, one])
+    # Perspective.
+    px = tf.random.uniform([], -perspective, perspective) if perspective > 0 else zero
+    py = tf.random.uniform([], -perspective, perspective) if perspective > 0 else zero
+    P = _mat([one, zero, zero,
+              zero, one, zero,
+              px,  py,  one])
+    # Rotation + scale (combined).
+    ang = tf.random.uniform([], -degrees, degrees) * deg2rad
+    sgn = tf.random.uniform([], 1.0 - scale, 1.0 + scale)
+    ca = tf.cos(ang) * sgn
+    sa = tf.sin(ang) * sgn
+    R = _mat([ca, -sa, zero,
+              sa,  ca, zero,
+              zero, zero, one])
+    # Shear (degrees → tan).
+    shx = tf.tan(tf.random.uniform([], -shear, shear) * deg2rad)
+    shy = tf.tan(tf.random.uniform([], -shear, shear) * deg2rad)
+    Sh = _mat([one, shx, zero,
+               shy, one, zero,
+               zero, zero, one])
+    # Translate to output centre + random offset.
+    tx = (0.5 + tf.random.uniform([], -translate, translate)) * tw_f
+    ty = (0.5 + tf.random.uniform([], -translate, translate)) * th_f
+    T = _mat([one, zero, tx,
+              zero, one, ty,
+              zero, zero, one])
+
+    M = T @ Sh @ R @ P @ C   # input → output
+
+    # Image warp uses the inverse (output → input) map, normalized so M_inv[2,2]=1.
+    M_inv = tf.linalg.inv(M)
+    M_inv = M_inv / M_inv[2, 2]
+    transforms = tf.stack([
+        M_inv[0, 0], M_inv[0, 1], M_inv[0, 2],
+        M_inv[1, 0], M_inv[1, 1], M_inv[1, 2],
+        M_inv[2, 0], M_inv[2, 1],
+    ])[tf.newaxis]   # [1, 8]
+
+    image_out = tf.raw_ops.ImageProjectiveTransformV3(
+        images=image_f[tf.newaxis],
+        transforms=transforms,
+        output_shape=tf.stack([th_i, tw_i]),
+        fill_value=114.0,
+        interpolation="BILINEAR",
+        fill_mode="CONSTANT",
+    )
+    image_out = tf.cast(tf.squeeze(image_out, 0), tf.uint8)
+    image_out.set_shape([target_h, target_w, 3])
+
+    # ---- Boxes: transform 4 corners, re-fit AABB, clip to edge ----
+    ymin, xmin, ymax, xmax = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+    # Corners in INPUT pixels: [N, 4, 2] (x, y)
+    cx = tf.stack([xmin, xmax, xmin, xmax], axis=1) * w_in   # [N, 4]
+    cy = tf.stack([ymin, ymin, ymax, ymax], axis=1) * h_in   # [N, 4]
+    corners = tf.stack([cx, cy], axis=-1)                    # [N, 4, 2]
+    corners_out = _transform_points_px(corners, M)           # [N, 4, 2] output px
+    ox = corners_out[..., 0] / tw_f                          # [N, 4] normalized
+    oy = corners_out[..., 1] / th_f
+    bx_min = tf.reduce_min(ox, axis=1); bx_max = tf.reduce_max(ox, axis=1)
+    by_min = tf.reduce_min(oy, axis=1); by_max = tf.reduce_max(oy, axis=1)
+    boxes_raw = tf.stack([by_min, bx_min, by_max, bx_max], axis=1)
+    boxes_clip = tf.clip_by_value(boxes_raw, 0.0, 1.0)
+
+    area_before = (boxes_raw[:, 2] - boxes_raw[:, 0]) * (boxes_raw[:, 3] - boxes_raw[:, 1])
+    h_c = boxes_clip[:, 2] - boxes_clip[:, 0]
+    w_c = boxes_clip[:, 3] - boxes_clip[:, 1]
+    area_after = h_c * w_c
+    keep = tf.logical_and(
+        tf.logical_and(area_before > 1e-9, area_after >= area_thresh * area_before),
+        tf.logical_and(h_c >= min_side, w_c >= min_side),
+    )
+
+    # ---- Polygons: transform vertices, clip to edge (keep -1 padding) ----
+    N = tf.shape(polygons)[0]
+    max_v = tf.shape(polygons)[1]
+    pts = tf.reshape(polygons, [N, max_v // 2, 2])           # [N, P, (x, y)]
+    valid = pts[:, :, 0] >= 0.0                              # source validity
+    pts_px = tf.stack([pts[:, :, 0] * w_in, pts[:, :, 1] * h_in], axis=-1)
+    pts_out = _transform_points_px(pts_px, M)                # [N, P, 2] output px
+    x_out = tf.clip_by_value(pts_out[..., 0] / tw_f, 0.0, 1.0)
+    y_out = tf.clip_by_value(pts_out[..., 1] / th_f, 0.0, 1.0)
+    neg1 = tf.fill(tf.shape(x_out), -1.0)
+    x_out = tf.where(valid, x_out, neg1)
+    y_out = tf.where(valid, y_out, neg1)
+    polygons_out = tf.reshape(tf.stack([x_out, y_out], axis=-1), [N, max_v])
+
+    return image_out, boxes_clip, keep, polygons_out
+
+
+# ---------------------------------------------------------------------------
+# Random affine (scale + translate letterbox) — legacy, retained for callers
 # ---------------------------------------------------------------------------
 
 def random_affine(
