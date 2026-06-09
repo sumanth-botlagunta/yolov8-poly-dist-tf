@@ -45,14 +45,16 @@ def main(_):
     model_cfg = config.task.model
 
     # ---- Build and restore ----
+    from tools.ckpt_loading import restore_eval_weights
+
     model = build_yolov8(model_cfg)
     model.deploy = True
     model.build_and_init(model_cfg.input_size)
 
-    ckpt   = tf.train.Checkpoint(model=model)
-    status = ckpt.restore(FLAGS.checkpoint)
-    status.expect_partial()
-    log.info("Checkpoint restored: %s", FLAGS.checkpoint)
+    # Prefer EMA weights — exporting raw weights from a periodic checkpoint would
+    # ship a worse model than the trainer validated/deployed.
+    kind = restore_eval_weights(model, FLAGS.checkpoint)
+    log.info("Checkpoint restored (%s weights): %s", kind, FLAGS.checkpoint)
 
     # ---- Concrete function for tracing ----
     H, W = model_cfg.input_size[0], model_cfg.input_size[1]
