@@ -33,13 +33,14 @@ BCE-with-logits summed over classes, divided by `target_scores_sum`. `ignore_bg=
 samples) masks the class loss to foreground anchors only.
 
 ## Polygon — `polygon_loss.py`
-Three per-vertex components over the 24 bins:
-- `polygon_angle_loss` — sigmoid-CE over angle bins, **averaged** over vertices (`reduce_mean`),
-  divided by `target_scores_sum`.
-- `polygon_dist_loss` — L2 on `(target − softplus(pred))`, **averaged** over vertices
-  (`reduce_mean`), divided by `num_objs`.
-- `polygon_conf_loss` — BCE on vertex validity, **averaged** over vertices (`reduce_mean`),
-  divided by `num_objs`.
+Three per-vertex components over the 24 bins. The `conf` channel of the target is the per-bin
+validity mask (`vertex_mask`); `angle`/`dist` average over the **valid vertices only**, while
+`conf` averages over **all 24** bins. All three normalize by `num_objs`:
+- `polygon_angle_loss` — `BCE(sigmoid(pred), sub-bin offset)`, offset =
+  `(vertex_angle − bin_start)/angle_step ∈ [0,1)`; **mean over valid vertices**, ÷ `num_objs`.
+- `polygon_dist_loss` — `(target_radius − softplus(pred))²`; **mean over valid vertices**, ÷ `num_objs`.
+- `polygon_conf_loss` — BCE on per-bin vertex validity; **mean over all 24 bins** (must see empty
+  bins to learn to predict 0), ÷ `num_objs`.
 Combined in `tal_loss.py:_polygon_loss` with the component gains; the overall `poly_gain`
 multiplier is applied inside `_polygon_loss`.
 
@@ -62,14 +63,16 @@ are not directly comparable across heads:
 | box CIoU / DFL | `target_scores_sum`, per-anchor weighted | — |
 | cls | `target_scores_sum` | — |
 | distance | `num_objs` (total batch GT count) | — |
-| polygon angle | `target_scores_sum` | **mean** over 24 |
-| polygon dist / conf | `num_objs` | **mean** over 24 |
+| polygon angle | `num_objs` | **mean over valid vertices** |
+| polygon dist | `num_objs` | **mean over valid vertices** |
+| polygon conf | `num_objs` | **mean over all 24 bins** |
 
 Consequences:
-- `dist_gain` and the poly dist/conf gains are on a different scale than the detection gains
-  (they divide by `num_objs`, not `target_scores_sum`).
-- Polygon angle uses `target_scores_sum` while dist/conf use `num_objs` — the gains encode this
-  difference. **Do not change the vertex count without re-checking the gains.**
+- `dist_gain` and the poly gains divide by `num_objs` (not `target_scores_sum`), so they are on a
+  different scale than the detection gains.
+- `angle`/`dist` average over the **valid** vertex count per anchor (empty bins do not dilute the
+  mean); `conf` averages over all 24 (it classifies validity). **Re-tune the poly gains if you
+  change the masking or vertex count.**
 
 These conventions are pinned by `tests/test_polygon_loss_conventions.py`.
 

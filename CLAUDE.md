@@ -33,7 +33,9 @@ Three config-driven tiers share the same code:
 
 ### Data Pipeline
 
-Multi-TFDS weighted sampling → Copy-Paste augmentation → Mosaic (4-image stitch) → Albumentations → Flip/Jitter/Affine → HSV → Polygon preprocessing
+Multi-TFDS weighted sampling → Copy-Paste augmentation → Mosaic (2× canvas assembly + `random_perspective`: rotation/scale/shear/translate, clip-to-edge) → Flip → HSV → Albumentations → Polygon preprocessing
+
+The geometric transform (`random_perspective`) is applied inside the mosaic stage for **both** the 4-image mosaic and non-mosaic single images; the parser no longer applies a separate affine.
 
 The distance dataset (`servingbot_polygon:1.0.1`) is a **separate stream** merged via `tf.data.Dataset.zip()` and concatenated on the batch dimension. Distance-only samples carry `ignore_bg=1` to suppress class loss on background. The distance stream is **training-only** (no validation merge path).
 
@@ -46,7 +48,7 @@ Polygons go through three formats across the pipeline:
 | Stage | Format |
 |-------|--------|
 | TFDS input | `[N, max_vertices+2]` flat xy normalized, padded with -1 |
-| PolyYOLO target (training/loss) | `[N, 72]` = `[dist, angle_norm, conf] × 24` (interleaved; see `losses/tal_loss.py:_polygon_loss`) |
+| PolyYOLO target (training/loss) | `[N, 72]` = `[dist, angle, conf] × 24` (interleaved; `angle` = sub-bin offset in `[0,1)`; see `losses/tal_loss.py:_polygon_loss`) |
 | Cartesian (eval GT) | `[N, max_vertices, 2]` yx denormalized |
 
 ### Model Heads
@@ -74,10 +76,13 @@ polygon loss.
 - Distance L1 divides by `num_objs` (total GT object count in the batch, both detection and
   distance streams). The valid-sentinel mask (`gt_distance > -10.0`) is applied to the
   numerator inside `distance_l1_loss`; detection-stream GTs contribute zero to the numerator.
-- Polygon **angle** uses `reduce_mean` over the 24 vertices, normalized by `target_scores_sum`.
-- Polygon **dist** uses L2+softplus: `mean((target - softplus(pred))²)` over 24 vertices,
-  normalized by `num_objs`. Formula matches old-codebase MSE convention.
-- Polygon **conf** uses `reduce_mean` of BCE over 24 vertices, normalized by `num_objs`.
+- Polygon **angle** target is the per-bin **sub-bin offset** `(vertex_angle − bin_start)/angle_step ∈ [0,1)`
+  (not a one-hot). Loss = BCE on `sigmoid(pred)`, averaged over the **valid vertices only**
+  (masked by the conf channel), normalized by `num_objs`. Decode: `vertex_angle = (i + sigmoid(pred))·angle_step`.
+- Polygon **dist** uses L2+softplus: `(target − softplus(pred))²`, averaged over the **valid
+  vertices only** (masked by the conf channel), normalized by `num_objs`.
+- Polygon **conf** uses `reduce_mean` of BCE over **all 24** vertices (not masked — it learns
+  per-bin validity, including the empty bins), normalized by `num_objs`.
 - All three polygon sub-losses (`poly_angle_loss`, `poly_dist_loss`, `poly_conf_loss`) are
   logged separately to TensorBoard; the combined `poly_loss` is their gain-weighted sum
   multiplied by `poly_gain`.
@@ -95,8 +100,8 @@ data_pipeline/
   tfds_decoders.py     # PolygonDecoder, ServingBot decoders
   input_reader.py      # Multi-TFDS weighted sampling + distance-stream merge
   copy_paste.py        # CopyAndPaste (prob=0.2, applied before Mosaic)
-  mosaic.py            # Mosaic (freq=0.5) + MixUp (freq=0.0)
-  augmentations.py     # Albumentations / flip / jitter / affine / HSV
+  mosaic.py            # Mosaic (freq=0.5): 2× canvas + random_perspective; MixUp (freq=0.0)
+  augmentations.py     # random_perspective (full affine) / flip / HSV / Albumentations
   parser.py            # Base parser interface
   yolo_parser.py       # V8ParserExtended (detection + polygon)
   distance_parser.py   # V8DistanceParser
@@ -168,7 +173,10 @@ Run with `/test` or `pytest tests/unit tests/smoke -v`.
 - **Init checkpoint**: loads only backbone + decoder weights; head is randomly initialized
 - **Backbone config**: despite `depth_scale: 1.0` / `width_scale: 1.0` in the YAML, model_id is `cspdarknetv8s` (small) — the model_id takes precedence
 - **Polygon conf in predictions**: `predictions['polygons'][:, :, :, 0]` values are already sigmoid-activated by the detection generator — they are not raw logits. Apply your threshold directly.
+- **Polygon angle is a sub-bin offset**: the `poly_angle` channel is the offset within a bin (`(vertex_angle − bin_start)/angle_step ∈ [0,1)`), **not** a one-hot of the dominant bin. Decode the vertex angle as `(i + sigmoid(pred))·angle_step`; this is consumed in `detection_generator` / `polygon_metrics` / `viz_utils`. (See `losses/polygon_loss.py` for the masked-mean conventions.)
+- **Geometry lives in the mosaic stage**: `random_perspective` (rotation/scale/shear/translate, clip-to-edge) runs in `mosaic.py` for both the 4-image mosaic and single images; the parser does not apply a separate affine.
 - **Polygon sub-losses are logged separately**: TensorBoard tags `train/poly_angle_loss`, `train/poly_dist_loss`, and `train/poly_conf_loss` allow diagnosing which polygon component is not converging.
+- **TensorBoard scalars carry names + formulae**: every scalar is written with a markdown `description` (`train/metric_meta.py`); per-category metrics are tagged by class name (`val/cls/<NN>_<name>/<metric>`), not bare index.
 
 ## Dependencies
 

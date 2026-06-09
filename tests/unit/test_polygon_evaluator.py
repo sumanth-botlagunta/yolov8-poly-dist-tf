@@ -8,7 +8,7 @@ Validates:
     - poly_recall50 is fraction of matched GTs.
 
 Coordinate contract (must match data_pipeline/yolo_parser._preprocess_polygons_v2):
-    - GT polygon is [dist, angle_norm, conf] x 24 interleaved (NOT [dx, dy, conf]).
+    - GT polygon is [dist, angle, conf] x 24 interleaved (NOT [dx, dy, conf]).
     - Prediction polygon is (conf, dist, angle) per vertex.
     - Radial distances are NORMALIZED [0, ~1.4], scaled to pixels per-axis at
       rasterization. A regression to the old (dx, dy) decode or to pixel-space
@@ -32,22 +32,23 @@ def _uniform_radii(r: float) -> np.ndarray:
 
 
 def _make_gt_poly_72(r: float) -> np.ndarray:
-    """GT PolyYOLO format: [dist, angle_norm, conf] x 24 for a circle of radius r.
+    """GT PolyYOLO format: [dist, angle, conf] x 24 for a circle of radius r.
 
-    r is a NORMALIZED radial distance (the parser emits normalized radii).
+    r is a NORMALIZED radial distance (the parser emits normalized radii). The
+    angle channel is the sub-bin offset in [0, 1); 0 here = vertices on bin
+    centres (matching the prediction fixture).
     """
     dist = _uniform_radii(r)
-    angle_norm = np.zeros(_NUM_VERTS, dtype=np.float32)
-    angle_norm[0] = 1.0   # dominant bin one-hot (all radii equal → bin 0)
+    angle = np.zeros(_NUM_VERTS, dtype=np.float32)   # sub-bin offset 0 (bin centres)
     conf = np.ones(_NUM_VERTS, dtype=np.float32)
-    return np.stack([dist, angle_norm, conf], axis=1).ravel()  # [72]
+    return np.stack([dist, angle, conf], axis=1).ravel()  # [72]
 
 
 def _make_pred_poly_24x3(r: float) -> np.ndarray:
     """Prediction polygon in [24, 3] = (conf, dist, angle) format, normalized r."""
     dist  = _uniform_radii(r)
     conf  = np.ones(_NUM_VERTS, dtype=np.float32)
-    angle = np.zeros(_NUM_VERTS, dtype=np.float32)
+    angle = np.zeros(_NUM_VERTS, dtype=np.float32)   # sub-bin offset 0 (bin centres)
     return np.stack([conf, dist, angle], axis=1)   # [24, 3]
 
 

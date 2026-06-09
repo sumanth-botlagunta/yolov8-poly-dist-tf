@@ -1,14 +1,17 @@
 """Tests for polygon format conversion (_preprocess_polygons_v2).
 
 The PolyYOLO target is the interleaved radial format
-``[dist, angle_norm, conf] × (360/angle_step)``:
+``[dist, angle, conf] × (360/angle_step)``:
 
     - PolyYOLO output shape is [N, 360/angle_step * 3].
     - dist is the radial distance from the box center to the bin's vertex.
+    - angle is the sub-bin offset (vertex_angle - bin_start)/angle_step in [0, 1)
+      on occupied bins, 0.0 on absent bins.
     - conf is 1.0 for bins that received a valid vertex and 0.0 for absent bins;
       absent bins also carry dist == 0.0 (so the dist head learns to collapse them).
 """
 
+import math
 import unittest
 
 import numpy as np
@@ -38,7 +41,7 @@ class TestPreprocessPolygonsV2(unittest.TestCase):
         out = self.parser._preprocess_polygons_v2(_BOX, _POLY, angle_step=15)
         self.out = out.numpy()
         self.dist = self.out[0, 0::3]   # [24]
-        self.angle = self.out[0, 1::3]  # [24] one-hot
+        self.angle = self.out[0, 1::3]  # [24] sub-bin offset in [0,1)
         self.conf = self.out[0, 2::3]   # [24]
 
     def test_output_shape(self):
@@ -60,18 +63,41 @@ class TestPreprocessPolygonsV2(unittest.TestCase):
         absent[[0, 6]] = False
         np.testing.assert_array_equal(self.dist[absent], 0.0)
         np.testing.assert_array_equal(self.conf[absent], 0.0)
-        # angle_norm is a one-hot over the dominant bin.
-        self.assertEqual(int(self.angle.sum()), 1)
+        # The two vertices sit exactly on bin starts (0°, 90°), so their sub-bin
+        # offset is 0; every angle entry is therefore 0 here.
+        self.assertAlmostEqual(self.angle[0], 0.0, places=5)
+        self.assertAlmostEqual(self.angle[6], 0.0, places=5)
+        np.testing.assert_array_equal(self.angle[absent], 0.0)
+
+
+class TestSubBinAngleOffset(unittest.TestCase):
+    """A vertex not on a bin boundary must produce its fractional offset."""
+
+    def test_offset_is_fractional_position_in_bin(self):
+        parser = _make_parser()
+        box = tf.constant([[0.0, 0.0, 1.0, 1.0]], dtype=tf.float32)  # centre (0.5,0.5)
+        # One vertex at 7.5° (the middle of bin 0) at radius 0.4.
+        r, ang = 0.4, math.radians(7.5)
+        x = 0.5 + r * math.cos(ang)
+        y = 0.5 + r * math.sin(ang)
+        poly = tf.constant([[x, y, -1.0, -1.0]], dtype=tf.float32)
+        out = parser._preprocess_polygons_v2(box, poly, angle_step=15).numpy()
+        dist, angle, conf = out[0, 0::3], out[0, 1::3], out[0, 2::3]
+        self.assertEqual(int(conf.sum()), 1)
+        self.assertEqual(conf[0], 1.0)                 # bin 0
+        self.assertAlmostEqual(dist[0], r, places=4)   # radial distance preserved
+        self.assertAlmostEqual(angle[0], 0.5, places=4)  # 7.5° / 15° = 0.5
 
 
 class TestEmptyPolygonAngleTarget(unittest.TestCase):
-    """A box with NO valid vertices must produce an all-zero angle target.
+    """A box with NO valid vertices must produce all-zero polygon targets.
 
-    Regression guard for the argmax(all-zeros)=bin0 bug, which emitted a spurious
-    angle_norm=1.0 at bin 0 and drove polygon_angle_loss on polygon-less objects.
+    The sub-bin offset is gated on conf (per-bin validity), so empty polygons get
+    angle == 0 everywhere — no spurious offset target drives polygon_angle_loss on
+    polygon-less objects (the angle/dist losses are masked by conf anyway).
     """
 
-    def test_no_vertices_angle_all_zero(self):
+    def test_no_vertices_targets_all_zero(self):
         parser = _make_parser()
         box = tf.constant([[0.0, 0.0, 1.0, 1.0]], dtype=tf.float32)
         # All vertices invalid (-1 padded).
@@ -80,15 +106,15 @@ class TestEmptyPolygonAngleTarget(unittest.TestCase):
         angle = out[0, 1::3]
         conf  = out[0, 2::3]
         dist  = out[0, 0::3]
-        self.assertEqual(int(angle.sum()), 0, "empty polygon must have no dominant angle bin")
+        np.testing.assert_array_equal(angle, 0.0)
         np.testing.assert_array_equal(conf, 0.0)
         np.testing.assert_array_equal(dist, 0.0)
 
-    def test_present_polygon_still_has_one_hot(self):
-        """The guard must NOT suppress the angle target when a vertex exists."""
+    def test_present_polygon_keeps_validity(self):
+        """A present vertex must still set conf=1 even when its sub-bin offset is 0."""
         parser = _make_parser()
         out = parser._preprocess_polygons_v2(_BOX, _POLY, angle_step=15).numpy()
-        self.assertEqual(int(out[0, 1::3].sum()), 1)
+        self.assertEqual(int(out[0, 2::3].sum()), 2)   # two occupied bins (0 and 6)
 
 
 if __name__ == "__main__":
