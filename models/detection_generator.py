@@ -233,8 +233,12 @@ class YoloV8Layer:
 
         for level in ["3", "4", "5"]:
             stride = _LEVEL_STRIDES[level]
-            box_raw = raw_outputs["box"][level]         # [B, H, W, 4*reg_max]
-            cls_raw = raw_outputs["cls"][level]         # [B, H, W, num_classes]
+            # Cast to float32 up front: under a mixed_bfloat16 policy the head
+            # emits bfloat16, which would otherwise clash with the float32
+            # constants/grids below and the float32 fn_output_signature. No-op
+            # under the default float32 policy.
+            box_raw = tf.cast(raw_outputs["box"][level], tf.float32)  # [B, H, W, 4*reg_max]
+            cls_raw = tf.cast(raw_outputs["cls"][level], tf.float32)  # [B, H, W, num_classes]
 
             B = tf.shape(box_raw)[0]
             fH = tf.shape(box_raw)[1]
@@ -263,12 +267,12 @@ class YoloV8Layer:
             all_cls.append(cls_flat)
 
             if has_poly:
-                all_poly_angle.append(tf.reshape(raw_outputs["poly_angle"][level], [B, -1, self.output_poly_size]))
-                all_poly_dist.append( tf.reshape(raw_outputs["poly_dist"][level],  [B, -1, self.output_poly_size]))
-                all_poly_conf.append( tf.reshape(raw_outputs["poly_conf"][level],  [B, -1, self.output_poly_size]))
+                all_poly_angle.append(tf.cast(tf.reshape(raw_outputs["poly_angle"][level], [B, -1, self.output_poly_size]), tf.float32))
+                all_poly_dist.append( tf.cast(tf.reshape(raw_outputs["poly_dist"][level],  [B, -1, self.output_poly_size]), tf.float32))
+                all_poly_conf.append( tf.cast(tf.reshape(raw_outputs["poly_conf"][level],  [B, -1, self.output_poly_size]), tf.float32))
 
             if has_dist:
-                all_dist.append(tf.reshape(raw_outputs["dist"][level][:, :, :, 0], [B, -1]))
+                all_dist.append(tf.cast(tf.reshape(raw_outputs["dist"][level][:, :, :, 0], [B, -1]), tf.float32))
 
         boxes  = tf.concat(all_boxes, axis=1)   # [B, N_anchors, 4]
         scores = tf.concat(all_cls,   axis=1)   # [B, N_anchors, nc]
