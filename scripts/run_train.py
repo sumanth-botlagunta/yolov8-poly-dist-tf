@@ -146,7 +146,10 @@ def _apply_runtime_config(runtime_cfg, debug: bool) -> None:
         tf.config.optimizer.set_jit(True)
         logging.info("XLA JIT compilation enabled.")
 
-    if runtime_cfg.mixed_precision_dtype == "float16":
+    # Normalize so trailing whitespace / case / common aliases can't silently
+    # bypass the dtype handling and fall through to float32 unannounced.
+    precision = (runtime_cfg.mixed_precision_dtype or "float32").strip().lower()
+    if precision in ("float16", "fp16", "half", "mixed_float16"):
         # float16 needs dynamic loss scaling to avoid gradient underflow, but the
         # custom SGDTorch optimizer + bare GradientTape training step do not apply
         # any loss scaling. Enabling mixed_float16 here would train poorly / stall
@@ -157,9 +160,16 @@ def _apply_runtime_config(runtime_cfg, debug: bool) -> None:
             "has no loss scaling, so float16 gradients would underflow. Use "
             "'bfloat16' (no loss scaling needed) or 'float32'."
         )
-    elif runtime_cfg.mixed_precision_dtype == "bfloat16":
+    elif precision in ("bfloat16", "bf16", "mixed_bfloat16"):
         tf.keras.mixed_precision.set_global_policy("mixed_bfloat16")
         logging.info("Mixed precision: bfloat16 policy active.")
+    elif precision in ("float32", "fp32", ""):
+        pass  # default policy; nothing to do
+    else:
+        raise ValueError(
+            f"Unknown mixed_precision_dtype={runtime_cfg.mixed_precision_dtype!r}. "
+            "Expected one of: 'float32', 'bfloat16', 'float16'."
+        )
 
 
 def main(_):

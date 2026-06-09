@@ -56,12 +56,11 @@ class _ConvBnAct(tf.keras.layers.Layer):
             padding="same",
             use_bias=False,
         )
-        bn_cls = (
-            tf.keras.layers.experimental.SyncBatchNormalization
-            if use_sync_bn
-            else tf.keras.layers.BatchNormalization
+        # Keras 3 / TF 2.16 removed tf.keras.layers.experimental.SyncBatchNormalization;
+        # synchronized BN is now a flag on BatchNormalization.
+        self.bn = tf.keras.layers.BatchNormalization(
+            momentum=norm_momentum, epsilon=norm_epsilon, synchronized=use_sync_bn
         )
-        self.bn = bn_cls(momentum=norm_momentum, epsilon=norm_epsilon)
         self.act = tf.keras.layers.Activation(activation)
 
     def call(self, x: tf.Tensor, training: bool = False) -> tf.Tensor:

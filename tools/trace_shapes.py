@@ -60,11 +60,17 @@ _SUBS = [
 ]
 
 
+def _strip_colon_zero(name: str) -> str:
+    """Strip the Keras ``:0`` suffix only (not ``str.rstrip(":0")``, which would
+    mangle names ending in ``0`` such as ``conv2d_10:0`` -> ``conv2d_1``)."""
+    return name[:-2] if name.endswith(":0") else name
+
+
 def _normalize(name: str) -> str:
     for prefix in _STRIP_PREFIXES:
         if name.startswith(prefix):
             name = name[len(prefix):]
-    name = name.rstrip(":0")
+    name = _strip_colon_zero(name)
     for old, new in _SUBS:
         name = name.replace(old, new)
     return name
@@ -111,7 +117,7 @@ def _load_config(config_path: str) -> Tuple[str, List[Tuple[str, tuple]], List[s
     model.build_and_init(cfg.task.model.input_size)
 
     label = Path(config_path).stem
-    items = [(v.name.rstrip(":0"), tuple(v.shape)) for v in model.variables]
+    items = [(_strip_colon_zero(v.name), tuple(v.shape)) for v in model.variables]
     return label, items, []   # configs have no scalar metadata
 
 

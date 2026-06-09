@@ -44,6 +44,12 @@ from _table import Table
 # Name normalization
 # ---------------------------------------------------------------------------
 
+def _strip_colon_zero(name: str) -> str:
+    """Strip the Keras ``:0`` suffix only (not ``str.rstrip(":0")``, which would
+    mangle names ending in ``0`` such as ``conv2d_10:0`` -> ``conv2d_1``)."""
+    return name[:-2] if name.endswith(":0") else name
+
+
 _STRIP_PREFIXES = ["yolo_model/", "model/", "yolov8/", "yolo_v8/"]
 
 _SUBS = [
@@ -61,7 +67,7 @@ def _normalize(name: str) -> str:
     for prefix in _STRIP_PREFIXES:
         if name.startswith(prefix):
             name = name[len(prefix):]
-    name = name.rstrip(":0")
+    name = _strip_colon_zero(name)
     for old, new in _SUBS:
         name = name.replace(old, new)
     return name
@@ -112,7 +118,7 @@ def load_model(config_path: str) -> Dict[str, Tuple[tuple, str]]:
     model.build_and_init(cfg.task.model.input_size)
 
     return {
-        v.name.rstrip(":0"): (tuple(v.shape), v.dtype.name)
+        _strip_colon_zero(v.name): (tuple(v.shape), v.dtype.name)
         for v in model.variables
     }
 
