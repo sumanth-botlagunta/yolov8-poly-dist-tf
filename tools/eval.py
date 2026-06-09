@@ -44,24 +44,16 @@ log = logging.getLogger(__name__)
 
 
 def _load_model_from_checkpoint(config, ckpt_path: str) -> tf.keras.Model:
-    """Build model, restore EMA weights from checkpoint if present."""
+    """Build model and restore EMA weights (falls back to raw if none present)."""
     from models.yolo_v8 import build_yolov8
-    from optimizers.sgd_warmup import SGDTorch
-    from optimizers.ema import ExponentialMovingAverage
+    from tools.ckpt_loading import restore_eval_weights
 
     model = build_yolov8(config.task.model)
     model.deploy = True
     model.build_and_init(config.task.model.input_size)
 
-    # Try to restore full checkpoint (model + EMA shadows)
-    ckpt = tf.train.Checkpoint(model=model)
-    status = ckpt.restore(ckpt_path)
-    try:
-        status.expect_partial()
-        log.info("Checkpoint restored: %s", ckpt_path)
-    except Exception as e:
-        log.warning("Checkpoint restore warning: %s", e)
-
+    kind = restore_eval_weights(model, ckpt_path)
+    log.info("Checkpoint restored (%s weights): %s", kind, ckpt_path)
     return model
 
 
