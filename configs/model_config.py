@@ -83,6 +83,8 @@ class DetectionGeneratorConfig:
     score_thresh: float = 0.05
     nms_type: str = "greedy"
     pre_nms_points: int = 30000
+    min_distance: float = 0.5
+    max_distance: float = 10.0
 
 
 @dataclasses.dataclass

@@ -92,7 +92,7 @@ class V8DistanceParser(Parser):
         labels = {
             'bbox': boxes,
             'classes': classes,
-            'n_gt': tf.cast(n_gt, tf.int64),
+            'n_gt': tf.cast(tf.minimum(n_gt, self._max_num_instances), tf.int64),
             'ignore_bg': tf.constant(1, dtype=tf.int64),  # ← distance stream
             'log_distance': log_dists,
             # Polygon fields are zeros (ignored by loss when with_distance=True).
@@ -117,7 +117,7 @@ class V8DistanceParser(Parser):
         labels = {
             'bbox': boxes,
             'classes': classes,
-            'n_gt': tf.cast(n_gt, tf.int64),
+            'n_gt': tf.cast(tf.minimum(n_gt, self._max_num_instances), tf.int64),
             'ignore_bg': tf.constant(1, dtype=tf.int64),
             'log_distance': log_dists,
             'polygons': tf.zeros(
