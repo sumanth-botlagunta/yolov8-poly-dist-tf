@@ -45,6 +45,18 @@ class TestConfigLoading(unittest.TestCase):
         self.assertEqual(bf16.task.losses.iou_gain, base.task.losses.iou_gain)
         self.assertEqual(bf16.trainer.train_epochs, base.trainer.train_epochs)
 
+    def test_detection_generator_score_thresh_and_distance_wired(self):
+        """score_thresh and the task distance range must reach the generator
+        config (regression: both were previously dropped by the loader)."""
+        from configs.yaml_loader import _build_model_config
+
+        m = {"detection_generator": {"score_thresh": 0.3}}
+        task = {"min_distance": 1.5, "max_distance": 22.0}
+        mc = _build_model_config(m, task)
+        self.assertAlmostEqual(mc.detection_generator.score_thresh, 0.3)
+        self.assertAlmostEqual(mc.detection_generator.min_distance, 1.5)
+        self.assertAlmostEqual(mc.detection_generator.max_distance, 22.0)
+
     def test_deep_merge_is_recursive(self):
         base = {"a": {"x": 1, "y": 2}, "b": 3}
         override = {"a": {"y": 20, "z": 30}, "c": 4}

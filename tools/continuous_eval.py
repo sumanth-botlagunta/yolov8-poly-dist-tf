@@ -34,9 +34,12 @@ def _eval_checkpoint(config, ckpt_path: str) -> dict:
     model.deploy = True
     model.build_and_init(config.task.model.input_size)
 
-    ckpt = tf.train.Checkpoint(model=model)
-    ckpt.restore(ckpt_path).expect_partial()
-    log.info("Loaded checkpoint: %s", ckpt_path)
+    # Prefer EMA weights (what the trainer validates with and tools/eval.py uses)
+    # so the continuous-eval curve matches the official eval rather than the
+    # noisier raw-weight curve.
+    from tools.ckpt_loading import restore_eval_weights
+    kind = restore_eval_weights(model, ckpt_path)
+    log.info("Loaded checkpoint (%s weights): %s", kind, ckpt_path)
 
     val_ds   = task.build_inputs(config.task.validation_data)
     img_size = tuple(config.task.model.input_size[:2])

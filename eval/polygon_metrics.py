@@ -14,8 +14,12 @@ GT format (from yolo_parser._preprocess_polygons_v2):
     - angle_norm (1::3): one-hot dominant bin; conf (2::3): per-bin validity
 
 Both prediction and GT radial distances are normalized [0, ~1.4] relative to the
-box-center origin (matching the parser).  They are scaled to pixels per-axis at
-rasterization time, so non-square inputs stay self-consistent with the parser.
+box-center origin (matching the parser).  The parser stores each radius as a
+single *isotropic* normalized distance (sqrt(dx^2+dy^2)); decomposing it per-axis
+(`* w` / `* h`) only reconstructs the original vertex when ``w == h``.  This
+evaluator therefore requires square inputs and asserts it at construction time
+(see PolygonEvaluator.__init__); non-square support would need the radius stored
+in pixel space.
 
 Vertex angles: theta_i = i * 2*pi / 24  (i = 0..23, 0 = right, CCW)
 
@@ -141,6 +145,14 @@ class PolygonEvaluator:
 
     def __init__(self, image_size: Tuple[int, int] = (672, 672), iou_thresh: float = 0.5):
         self._H, self._W = image_size
+        # Radial-distance reconstruction is only correct for square inputs (the
+        # parser stores a single isotropic radius). Fail loudly rather than
+        # silently report distorted mIoU on a non-square config.
+        if self._H != self._W:
+            raise ValueError(
+                "PolygonEvaluator requires square inputs (the radial polygon "
+                f"radius is isotropic); got H={self._H}, W={self._W}."
+            )
         self._iou_thresh  = iou_thresh
         self._mask_ious:  List[float] = []
         self._n_matched   = 0
