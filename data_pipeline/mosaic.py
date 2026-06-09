@@ -169,14 +169,24 @@ def _transform_polygons(
     max_v = tf.shape(polygons)[1]
     pts = tf.reshape(polygons, [N, max_v // 2, 2])  # [N, n_pairs, (x, y)]
 
-    valid_x = pts[:, :, 0] >= 0.0  # [N, n_pairs]
+    valid_x = pts[:, :, 0] >= 0.0  # [N, n_pairs] — source validity
 
     x_out = (pts[:, :, 0] * new_w_f + pad_left_f + off_x_f) / W_out_f
     y_out = (pts[:, :, 1] * new_h_f + pad_top_f  + off_y_f) / H_out_f
 
-    # Clip and restore -1 for invalid
-    x_out = tf.where(valid_x, tf.clip_by_value(x_out, 0.0, 1.0), tf.fill(tf.shape(x_out), -1.0))
-    y_out = tf.where(valid_x, tf.clip_by_value(y_out, 0.0, 1.0), tf.fill(tf.shape(y_out), -1.0))
+    # A source-valid vertex that lands outside the mosaic canvas is invalidated
+    # (-1), not clamped to the edge — clamping would inject a false radial distance
+    # into the PolyYOLO target at mosaic seams. Matches augmentations.random_affine
+    # and copy_paste. (The old guard used only valid_x, so out-of-bounds vertices
+    # were silently pinned to the boundary.)
+    in_bounds = tf.logical_and(
+        tf.logical_and(x_out >= 0.0, x_out <= 1.0),
+        tf.logical_and(y_out >= 0.0, y_out <= 1.0),
+    )
+    final_valid = tf.logical_and(valid_x, in_bounds)
+    neg1 = tf.fill(tf.shape(x_out), -1.0)
+    x_out = tf.where(final_valid, x_out, neg1)
+    y_out = tf.where(final_valid, y_out, neg1)
 
     pts_out = tf.stack([x_out, y_out], axis=-1)
     return tf.reshape(pts_out, [N, max_v])
