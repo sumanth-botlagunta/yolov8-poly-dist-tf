@@ -196,7 +196,7 @@ class YoloV8Task:
     ) -> Dict[str, tf.Tensor]:
         """Single evaluation step using EMA weights.
 
-        EMA swap_weights is managed at the epoch level, not per step.
+        EMA swap_in/swap_out is managed at the epoch level, not per step.
         Runs the model in deploy=True mode to obtain decoded detections.
         """
         images, labels = inputs

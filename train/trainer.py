@@ -171,11 +171,11 @@ class YoloV8Trainer:
             # (shadow) weights swapped in as the live weights — that state would
             # silently corrupt subsequent training and any checkpoint saved after.
             val_start = time.time()
-            self._optimizer.swap_weights(self._model)
+            self._optimizer.swap_in(self._model)
             try:
                 val_metrics = self._run_validation()
             finally:
-                self._optimizer.swap_weights(self._model)
+                self._optimizer.swap_out(self._model)
             val_time = time.time() - val_start
 
             # ---- best checkpoint ----
@@ -545,12 +545,12 @@ class YoloV8Trainer:
         os.makedirs(best_dir, exist_ok=True)
         # try/finally: a write failure (e.g. disk full) must not leave EMA weights
         # swapped in as the live weights.
-        self._optimizer.swap_weights(self._model)
+        self._optimizer.swap_in(self._model)
         try:
             best_ckpt = tf.train.Checkpoint(model=self._model)
             best_ckpt.write(os.path.join(best_dir, 'ckpt'))
         finally:
-            self._optimizer.swap_weights(self._model)
+            self._optimizer.swap_out(self._model)
 
         # Write a human-readable metadata file alongside the checkpoint.
         meta_path = os.path.join(best_dir, 'best_info.yaml')
