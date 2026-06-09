@@ -384,6 +384,15 @@ class Mosaic:
             )
             polygons_out = tf.boolean_mask(polygons_out, keep)
             anns['groundtruth_polygons'] = polygons_out
+        else:
+            # Always emit the key (even when polygon training is disabled) so the
+            # mosaic branch's dict structure matches the non-mosaic passthrough in
+            # mosaic_fn's tf.cond — the decoders emit groundtruth_polygons
+            # unconditionally, so omitting it here raises a branch-structure
+            # AssertionError under graph mode (breaks the bbox-only tier).
+            anns['groundtruth_polygons'] = tf.zeros(
+                [0, tf.shape(polygons)[-1]], polygons.dtype
+            )
 
         # Carry source_id from first example
         anns['source_id'] = ex.get('source_id', tf.constant('mosaic'))
