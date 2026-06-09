@@ -158,7 +158,7 @@ def render_gt_images(
                        bbox     [M, 4]   yxyx normalized
                        classes  [M]
                        n_gt     scalar int (valid GT count; rows past it are padding)
-                       polygons [M, 72]  [dist, angle_norm, conf] x 24 interleaved,
+                       polygons [M, 72]  [dist, angle, conf] x 24 interleaved,
                                  radial about the box centre (optional / absent or
                                  all-zero when with_polygons=False).
         draw_box:    Whether to draw GT boxes.

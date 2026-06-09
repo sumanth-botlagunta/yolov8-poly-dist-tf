@@ -8,14 +8,17 @@ distance datasets are separate streams merged at the batch level.
 ```
 multi-TFDS weighted sampling
    → Copy-Paste            (copy_paste.py, prob 0.2)      ← BEFORE mosaic, on decoded data
-   → Mosaic (4-image)      (mosaic.py, freq 0.5; MixUp freq 0.0)
-   → Albumentations / flip / jitter / affine / HSV  (augmentations.py)
+   → Mosaic                (mosaic.py, freq 0.5): 2× canvas assembly + random_perspective
+                           (rotation/scale/shear/translate, clip-to-edge); non-mosaic
+                           images take the single-image branch (same random_perspective)
+   → flip / HSV / Albumentations  (augmentations.py, in the parser)
    → parser polygon preprocessing  (yolo_parser.py / distance_parser.py)
    → batch + prefetch
 ```
 
 The order matters: copy-paste augments *within* an image and must run before mosaic stitches
-four images together.
+four images together. The geometric affine lives in the mosaic stage (`random_perspective`),
+applied to **both** the mosaic and single-image branches — the parser no longer does an affine.
 
 ## Decoding — `tfds_decoders.py`
 - `PolygonDecoder` — detection + polygon datasets.
@@ -51,20 +54,23 @@ training step; each sub-stream also prefetches internally.
 | Stage | Format | Notes |
 |-------|--------|-------|
 | TFDS input | `[N, max_vertices+2]` flat xy, normalized, **-1 padded** | both x and y are -1 for an invalid/padded pair |
-| PolyYOLO target (loss) | `[N, 72] = [dist, angle_norm, conf] × 24` interleaved | `tal_loss.py:_polygon_loss` reads `0::3`=dist, `1::3`=angle one-hot, `2::3`=conf |
+| PolyYOLO target (loss) | `[N, 72] = [dist, angle, conf] × 24` interleaved | `tal_loss.py:_polygon_loss` reads `0::3`=dist, `1::3`=sub-bin angle offset, `2::3`=conf |
 | Eval Cartesian GT | `[N, max_vertices, 2]` yx denormalized | for mask IoU |
 
 **Radial encoding** (`_preprocess_polygons_v2`): for each of 24 angle bins, find valid vertices
 whose angle from the box center falls in the bin and take the max-radius one; `dist` = that
-radius, `conf` = 1 if any vertex present, and the single bin with the global max radius gets the
-one-hot `angle_norm`. **Absent bins encode `dist = 0`, `conf = 0`** — so the distance head learns
-to collapse non-existent vertices (intended PolyYOLO behavior).
+radius, `conf` = 1 if any vertex present, and `angle` = that vertex's **sub-bin offset**
+`(vertex_angle − bin_start)/angle_step ∈ [0,1)` (so the exact vertex angle is recoverable, not
+just the bin). **Absent bins encode `dist = 0`, `angle = 0`, `conf = 0`** — so the distance head
+learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode uses
+`vertex_angle = (i + angle)·angle_step` in `detection_generator` / `polygon_metrics` / `viz_utils`.
 
 ## Coordinate conventions (read carefully)
 - GT boxes from decoders/parsers: **`yxyx` normalized** `[0,1]`.
 - The loss/assigner convert to **`xyxy` pixels**.
-- Mosaic transforms map input-normalized → output-normalized using the **exact** scaled
-  dimensions (`new_h/new_w`) returned by `_letterbox_resize_to` (not re-derived from padding).
+- Mosaic builds a 2× (2H×2W) canvas in pixel space, maps each image's labels into it
+  (`_scale_box_poly_to_canvas`), then `random_perspective` warps + crops back to output size,
+  re-fitting boxes from their transformed corners and clipping boxes/polygons to the edge.
 
 ## Performance notes
 - Every `.map` uses `num_parallel_calls=AUTOTUNE`.

@@ -110,11 +110,19 @@ boxes and polygon overlays rendered by `train/viz_utils.py`.
 
 ## Polygon sub-loss metrics
 The three polygon loss components are logged separately:
-- `train/poly_angle_loss` — angle bin BCE (averaged over 24 bins per anchor)
-- `train/poly_dist_loss`  — radial distance L1
-- `train/poly_conf_loss`  — vertex confidence BCE
+- `train/poly_angle_loss` — sub-bin angle-offset BCE (mean over the **valid** vertices per anchor)
+- `train/poly_dist_loss`  — radial distance L2 `(softplus(pred) − target)²` (mean over valid vertices)
+- `train/poly_conf_loss`  — vertex-validity BCE (mean over all 24 bins)
 
 These are useful for diagnosing which polygon component is not converging.
+
+## TensorBoard tag names & descriptions
+Every scalar is written with a markdown `description` (full name + formula) shown in the
+TensorBoard tooltip — the registry lives in `train/metric_meta.py`. Per-category detection
+metrics are tagged `val/cls/<NN>_<class-name>/<metric>` (e.g. `val/cls/35_label_35/ap50`): the
+zero-padded index keeps TensorBoard's ordering numeric while the class name (from
+`configs/class_map.py:DETECTION_CLASSES`) makes the tag readable without a lookup. Fill in real
+names in `DETECTION_CLASSES` and they propagate to the tags and the image-overlay labels.
 
 ## Continuous evaluation
 `tools/continuous_eval.py` watches an `output_dir` for new checkpoints and evaluates each one,
