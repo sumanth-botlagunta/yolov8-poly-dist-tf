@@ -129,3 +129,69 @@ def render_summary_images(
         out.append(canvas)
 
     return np.stack(out, axis=0)   # [N, H, W, 3]
+
+
+def render_gt_images(
+    images: list,
+    gts_list: list,
+    draw_box: bool = True,
+    draw_poly: bool = True,
+    class_names=None,
+) -> "np.ndarray":
+    """Draw ground-truth boxes and PolyYOLO polygons onto images.
+
+    Mirrors render_summary_images but consumes the label dicts emitted by the
+    parsers, so it serves both the train-augmentation and validation GT
+    summaries. Overlaying the (post-augmentation) GT also makes mosaic/affine/
+    flip misalignment visible at a glance.
+
+    Args:
+        images:    List of float32 [H, W, 3] arrays with pixel values in [0, 1].
+        gts_list:  List of per-image GT dicts with numpy arrays:
+                       bbox     [M, 4]   yxyx normalized
+                       classes  [M]
+                       n_gt     scalar int (valid GT count; rows past it are padding)
+                       polygons [M, 72]  [dist, angle_norm, conf] x 24 interleaved,
+                                 radial about the box centre (optional / absent or
+                                 all-zero when with_polygons=False).
+        draw_box:    Whether to draw GT boxes.
+        draw_poly:   Whether to overlay GT polygons.
+        class_names: Optional id->name map (list or dict) used for the box label.
+
+    Returns:
+        uint8 numpy array [N, H, W, 3], or None if opencv is unavailable.
+    """
+    try:
+        import cv2  # noqa: F401 — just to check availability
+    except Exception as e:  # not only ImportError: missing libGL / shadowed cv2
+        log.warning("Ground-truth image summaries skipped — cv2 import failed (%r).", e)
+        return None
+
+    out = []
+    for img, gt in zip(images, gts_list):
+        canvas  = np.clip(img * 255.0, 0, 255).astype(np.uint8).copy()
+        ng      = int(gt['n_gt'])
+        boxes   = gt['bbox']        # [M, 4] yxyx normalized
+        classes = gt['classes']     # [M]
+        polys   = gt.get('polygons')  # [M, 72] or None
+        for i in range(ng):
+            box    = boxes[i]       # [y1, x1, y2, x2]
+            cls_id = int(classes[i])
+            color  = _color(cls_id)
+
+            if draw_box:
+                name = (class_names[cls_id]
+                        if class_names is not None and cls_id < len(class_names)
+                        else f'c{cls_id}')
+                _draw_box(canvas, box[0], box[1], box[2], box[3], color, str(name))
+
+            if draw_poly and polys is not None:
+                p    = polys[i]              # [72] = [dist, angle_norm, conf] x 24
+                cy_n = (box[0] + box[2]) / 2.0
+                cx_n = (box[1] + box[3]) / 2.0
+                _draw_polygon(canvas, cx_n, cy_n,
+                              poly_conf=p[2::3],   # per-bin validity (0/1)
+                              poly_dist=p[0::3])   # per-bin radial distance
+        out.append(canvas)
+
+    return np.stack(out, axis=0)   # [N, H, W, 3]

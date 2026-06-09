@@ -433,26 +433,30 @@ class YoloV8Trainer:
         n_summary      = getattr(task_cfg, 'summary_image_num', 10) if do_img_summary else 0
 
         summary_images = []   # list of float32 [H, W, 3]
-        summary_preds  = []   # list of per-image numpy dicts
+        summary_preds  = []   # list of per-image prediction numpy dicts
+        summary_gts    = []   # list of per-image ground-truth numpy dicts
         n_collected    = 0
+        _GT_KEYS       = ('bbox', 'classes', 'n_gt', 'polygons')
 
         logs = None
         for inputs in self._val_ds:
-            images, _ = inputs
+            images, labels = inputs
             step_out   = self._compiled_val_step(inputs)
             logs       = self._task.aggregate_logs(logs, step_out)
 
             if n_collected < n_summary:
                 imgs_np = images.numpy()   # [B, H, W, 3]
                 preds   = step_out['predictions']
-                # Convert prediction tensors to numpy once per batch
+                # Convert prediction + GT tensors to numpy once per batch
                 preds_np = {k: (v.numpy() if hasattr(v, 'numpy') else v)
                             for k, v in preds.items()}
+                gts_np   = {k: labels[k].numpy() for k in _GT_KEYS if k in labels}
                 batch_sz = imgs_np.shape[0]
                 take     = min(batch_sz, n_summary - n_collected)
                 for i in range(take):
                     summary_images.append(imgs_np[i])
                     summary_preds.append({k: v[i] for k, v in preds_np.items()})
+                    summary_gts.append({k: v[i] for k, v in gts_np.items()})
                 n_collected += take
 
         val_metrics = self._task.reduce_aggregated_logs(
@@ -460,39 +464,86 @@ class YoloV8Trainer:
         )
 
         if summary_images:
-            self._log_image_summaries(summary_images, summary_preds)
+            self._log_image_summaries(summary_images, summary_preds, summary_gts)
 
         return val_metrics
 
-    def _log_image_summaries(self, images: list, preds_list: list) -> None:
-        """Render and write prediction-overlay images to TensorBoard."""
-        from train.viz_utils import render_summary_images
+    def _log_image_summaries(self, images: list, preds_list: list,
+                             gts_list: list = None) -> None:
+        """Render prediction- and ground-truth-overlay images to TensorBoard.
+
+        Writes two tags at the same step so they can be flipped between for a
+        direct prediction-vs-GT comparison: ``val/predictions`` and
+        ``val/ground_truth``. Boxes are labelled with the class taxonomy names.
+        """
+        from train.viz_utils import render_summary_images, render_gt_images
+        from configs.class_map import DETECTION_CLASSES
         task_cfg  = self._config.task
         draw_box  = getattr(task_cfg, 'summary_image_draw_box',  True)
         draw_poly = getattr(task_cfg, 'summary_image_draw_poly', True)
+        step      = int(self._global_step)
 
-        canvas = render_summary_images(
-            images, preds_list,
-            draw_box=draw_box,
-            draw_poly=draw_poly,
+        pred_canvas = render_summary_images(
+            images, preds_list, draw_box=draw_box, draw_poly=draw_poly,
+            class_names=DETECTION_CLASSES,
         )
-        if canvas is None:
+        gt_canvas = None
+        if gts_list:
+            gt_canvas = render_gt_images(
+                images, gts_list, draw_box=draw_box, draw_poly=draw_poly,
+                class_names=DETECTION_CLASSES,
+            )
+
+        if pred_canvas is None and gt_canvas is None:
             return  # opencv not available
 
-        step = int(self._global_step)
         with self._tb_writer.as_default():
             # TensorBoard expects float [N, H, W, C] in [0, 1] or uint8 [N, H, W, C]
-            tf.summary.image('val/predictions', canvas, step=step,
-                             max_outputs=len(canvas))
+            if pred_canvas is not None:
+                tf.summary.image('val/predictions', pred_canvas, step=step,
+                                 max_outputs=len(pred_canvas))
+            if gt_canvas is not None:
+                tf.summary.image('val/ground_truth', gt_canvas, step=step,
+                                 max_outputs=len(gt_canvas))
         self._tb_writer.flush()
 
     def _log_aug_images(self, inputs, step: int) -> None:
-        """Log a sample of augmented training images to TensorBoard once per epoch."""
+        """Log augmented training images with ground-truth overlays once per epoch.
+
+        Overlaying the post-augmentation GT boxes/polygons turns this into a
+        visual check that mosaic/affine/flip kept the labels aligned with the
+        pixels. Falls back to raw frames if labels are absent or opencv is
+        unavailable.
+        """
         try:
-            images = inputs[0] if isinstance(inputs, (tuple, list)) else inputs
+            from train.viz_utils import render_gt_images
+            from configs.class_map import DETECTION_CLASSES
+            task_cfg = self._config.task
+            n_cfg    = getattr(task_cfg, 'summary_image_num', 10)
+
+            images  = inputs[0] if isinstance(inputs, (tuple, list)) else inputs
+            labels  = (inputs[1] if isinstance(inputs, (tuple, list)) and len(inputs) > 1
+                       else None)
             imgs_np = images.numpy()   # [B, H, W, 3] float32 in [0,1]
-            n = min(imgs_np.shape[0], getattr(self._config.task, 'summary_image_num', 10))
-            canvas = (imgs_np[:n] * 255.0).clip(0, 255).astype('uint8')
+            n       = min(imgs_np.shape[0], n_cfg)
+
+            canvas = None
+            if labels is not None:
+                draw_box  = getattr(task_cfg, 'summary_image_draw_box',  True)
+                draw_poly = getattr(task_cfg, 'summary_image_draw_poly', True)
+                gt_keys   = ('bbox', 'classes', 'n_gt', 'polygons')
+                gts_np    = {k: labels[k].numpy() for k in gt_keys if k in labels}
+                gts_list  = [{k: v[i] for k, v in gts_np.items()} for i in range(n)]
+                canvas    = render_gt_images(
+                    list(imgs_np[:n]), gts_list,
+                    draw_box=draw_box, draw_poly=draw_poly,
+                    class_names=DETECTION_CLASSES,
+                )
+
+            if canvas is None:
+                # No labels, or opencv unavailable → log the raw augmented frames.
+                canvas = (imgs_np[:n] * 255.0).clip(0, 255).astype('uint8')
+
             with self._tb_writer.as_default():
                 tf.summary.image('train/augmentations', canvas, step=step, max_outputs=n)
             self._tb_writer.flush()
