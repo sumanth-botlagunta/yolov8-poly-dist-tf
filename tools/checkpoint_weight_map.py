@@ -60,6 +60,16 @@ from typing import Dict, List, Optional, Tuple
 ROLES = ("kernel", "bias", "gamma", "beta", "moving_mean", "moving_variance")
 WEIGHT_MODULES = ("backbone", "decoder", "head")
 
+
+def _strip_colon_zero(name: str) -> str:
+    """Strip the Keras ``:0`` tensor suffix only.
+
+    ``str.rstrip(":0")`` strips every trailing ``:`` / ``0`` character, which
+    mangles legitimate names ending in ``0`` (``conv2d_10:0`` -> ``conv2d_1``,
+    ``bn_0:0`` -> ``bn_``). This removes the suffix and nothing else.
+    """
+    return name[:-2] if name.endswith(":0") else name
+
 # ---------------------------------------------------------------------------
 # Manual overrides — fill these for anything `report` lists as ambiguous/wrong.
 # Key   = exact legacy checkpoint key (incl. /.ATTRIBUTES/VARIABLE_VALUE).
@@ -158,13 +168,16 @@ def role_of(name_or_tail: str) -> Optional[str]:
     Robust to full scoped names: takes the last ``/`` segment first, so
     ``backbone/stem_conv1/conv2d/kernel:0`` -> ``kernel``.
     """
-    n = name_or_tail.split("/")[-1].rstrip(":0").lstrip("_")
+    n = _strip_colon_zero(name_or_tail.split("/")[-1]).lstrip("_")
     # exact first
     if n in ROLES:
         return n
-    # truncated tails like 'moving_varia...' / 'moving_mean/...'
+    # truncated tails like 'moving_varia...' / 'moving_mean/...'. Use an 8-char
+    # prefix so 'moving_mean' ('moving_m') and 'moving_variance' ('moving_v')
+    # stay distinguishable — a 6-char prefix ('moving') collides and silently
+    # mis-roles variance as mean, swapping BN running stats.
     for r in ROLES:
-        if n.startswith(r[:6]):
+        if n.startswith(r[:8]):
             return r
     return None
 
@@ -198,7 +211,7 @@ def _resolve_path(v, module_name: str, path_map: Dict[int, str]) -> str:
     if p:
         return p
     # last resort: the (possibly scoped) variable name
-    return getattr(v, "name", "").rstrip(":0")
+    return _strip_colon_zero(getattr(v, "name", ""))
 
 
 def _new_block_name(path: str, module: str) -> str:

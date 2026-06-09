@@ -334,7 +334,11 @@ def test_frozen_map_transfers_values_end_to_end():
         r["var"].assign(tf.zeros_like(r["var"]))
 
     stats = apply_frozen_map(_FakeReader(shapes, tensors), model, modules=None)
-    assert stats == {"loaded": 336, "skipped": 0, "not_found": 0}
+    assert stats["loaded"] == 336
+    assert stats["skipped"] == 0
+    assert stats["not_found"] == 0
+    # Per-module coverage feeds the migrate_with_frozen write-guard.
+    assert stats["loaded_by_module"] == {"backbone": 135, "decoder": 90, "head": 111}
     for i, (old_key, canon) in enumerate(LEGACY_TO_NEW.items()):
         r = by_canon[canon]
         assert np.allclose(r["var"].numpy(), tensors[old_key]), f"value mismatch: {canon}"

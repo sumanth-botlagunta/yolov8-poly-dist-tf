@@ -163,7 +163,8 @@ Run with `/test` or `pytest tests/unit tests/smoke -v`.
 - **Copy-Paste order**: applied on decoded data *before* Mosaic
 - **Copy-Paste source**: separate TFDS `cleaner_copy_paste:1.0.0` with RGBA images (4-channel alpha mask)
 - **Crowd handling**: `skip_crowd_during_training=True` filters at parse time; `ignore_bg` flag masks class loss at loss time
-- **Smart bias init**: class bias = `log(5 / num_classes / (640/stride)^2)`; box bias = 1.0
+- **Smart bias init**: class bias = `log(5 / num_classes / (input_size/stride)^2)`; box bias = 1.0
+  (`input_size` is the live model input, 672 — matches all checkpoints, which are 672×672)
 - **Init checkpoint**: loads only backbone + decoder weights; head is randomly initialized
 - **Backbone config**: despite `depth_scale: 1.0` / `width_scale: 1.0` in the YAML, model_id is `cspdarknetv8s` (small) — the model_id takes precedence
 - **Polygon conf in predictions**: `predictions['polygons'][:, :, :, 0]` values are already sigmoid-activated by the detection generator — they are not raw logits. Apply your threshold directly.

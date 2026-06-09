@@ -71,11 +71,12 @@ def main(_):
 
     model = _load_model_from_checkpoint(config, FLAGS.checkpoint)
 
-    # Select split
+    # Select split. validation_data is the held-out test set here, so both
+    # 'val' and 'test' map to it; only 'train' selects the training split.
     task_cfg  = config.task
     data_cfg  = (task_cfg.train_data if FLAGS.split == 'train'
                  else task_cfg.validation_data)
-    # Override split name so we hit the correct TFDS split
+    # Force eval mode (no training-time augmentation) on the selected split.
     import dataclasses
     data_cfg = dataclasses.replace(data_cfg, is_training=False)
     val_ds   = task.build_inputs(data_cfg)
