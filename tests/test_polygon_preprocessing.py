@@ -89,6 +89,45 @@ class TestSubBinAngleOffset(unittest.TestCase):
         self.assertAlmostEqual(angle[0], 0.5, places=4)  # 7.5° / 15° = 0.5
 
 
+class TestResamplePolygons(unittest.TestCase):
+    """resample_polygons shrinks polygon width while preserving the radial target."""
+
+    def _circle_flat(self, cx, cy, r, n, pad_to):
+        a = np.linspace(0, 2 * np.pi, n, endpoint=False)
+        pts = np.stack([cx + r * np.cos(a), cy + r * np.sin(a)], 1).reshape(-1).astype(np.float32)
+        return np.concatenate([pts, -np.ones(pad_to - pts.size, np.float32)])
+
+    def test_short_polygon_preserved_exactly(self):
+        from data_pipeline.augmentations import resample_polygons
+        parser = _make_parser()
+        polys = tf.constant([self._circle_flat(0.5, 0.5, 0.3, 8, 200)])  # 8 verts, padded
+        boxes = tf.constant([[0.2, 0.2, 0.8, 0.8]], tf.float32)
+        orig = parser._preprocess_polygons_v2(boxes, polys, 15).numpy()
+        red = resample_polygons(polys, 64)
+        self.assertEqual(int(red.shape[1]), 128)   # 2 * 64
+        out = parser._preprocess_polygons_v2(boxes, red, 15).numpy()
+        # <= K vertices → radial target identical (dist + conf).
+        np.testing.assert_allclose(out[:, 0::3], orig[:, 0::3], atol=1e-5)
+        np.testing.assert_array_equal(out[:, 2::3], orig[:, 2::3])
+
+    def test_long_polygon_radial_target_close(self):
+        from data_pipeline.augmentations import resample_polygons
+        parser = _make_parser()
+        polys = tf.constant([self._circle_flat(0.5, 0.5, 0.3, 2000, 5469 * 2)])
+        boxes = tf.constant([[0.2, 0.2, 0.8, 0.8]], tf.float32)
+        orig = parser._preprocess_polygons_v2(boxes, polys, 15).numpy()
+        out = parser._preprocess_polygons_v2(boxes, resample_polygons(polys, 128), 15).numpy()
+        # downsampled but per-bin distances stay within sampling tolerance.
+        np.testing.assert_allclose(out[:, 0::3], orig[:, 0::3], atol=1e-3)
+
+    def test_empty_polygon_is_all_minus_one(self):
+        from data_pipeline.augmentations import resample_polygons
+        polys = tf.fill([1, 200], -1.0)
+        red = resample_polygons(polys, 32).numpy()
+        self.assertEqual(red.shape, (1, 64))
+        np.testing.assert_array_equal(red, -1.0)
+
+
 class TestEmptyPolygonAngleTarget(unittest.TestCase):
     """A box with NO valid vertices must produce all-zero polygon targets.
 
