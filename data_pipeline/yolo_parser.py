@@ -271,16 +271,17 @@ class V8ParserExtended(Parser):
     ) -> tf.Tensor:
         """Convert raw polygon vertices to PolyYOLO radial format.
 
-        Output format per instance: [dist_0, angle_norm_0, conf_0, ..., dist_23, angle_norm_23, conf_23]
-            dist:       radial distance from box center to the vertex assigned to this bin.
-            angle_norm: 1.0 for the dominant bin (max dist across all bins), 0.0 elsewhere.
-            conf:       1.0 if any valid vertex assigned to this bin, else 0.0.
+        Output format per instance: [dist_0, angle_0, conf_0, ..., dist_23, angle_23, conf_23]
+            dist:  radial distance from box center to the vertex assigned to this bin.
+            angle: sub-bin angular offset (vertex_angle - bin_start) / angle_step in
+                   [0, 1) on bins that hold a vertex, 0.0 on empty bins.
+            conf:  1.0 if any valid vertex assigned to this bin, else 0.0.
 
         For each of the 24 angle bins (0°, 15°, ..., 345°):
             - Find all valid polygon vertices whose angle from box center falls in the bin.
             - Select the vertex with maximum radial distance as the bin representative.
-            - dist = sqrt(dx² + dy²), conf = 1.0 if any vertex present.
-        The bin with maximum dist across all bins gets angle_norm = 1.0 (one-hot dominant bin).
+            - dist = sqrt(dx² + dy²), conf = 1.0 if any vertex present, and
+              angle = that vertex's fractional position within the bin.
 
         Args:
             boxes:    float32 [N, 4] yxyx normalized (used for box centers).
@@ -334,18 +335,18 @@ class V8ParserExtended(Parser):
         # Confidence: 1.0 if any valid vertex was assigned to this bin
         conf_bins = tf.cast(max_dists > 0.0, tf.float32)  # [N, n_angles]
 
-        # Dominant bin (max dist across all bins) → one-hot angle label.
-        # Guard: a box with no valid vertices has all-zero max_dists, so argmax
-        # would return bin 0 and emit a spurious angle_norm=1.0 there — driving the
-        # polygon angle loss toward bin 0 on polygon-less objects. Gate the one-hot
-        # on "has at least one vertex" so empty polygons get an all-zero angle target.
-        dominant_bin = tf.argmax(max_dists, axis=1, output_type=tf.int32)  # [N]
-        has_vertex = tf.cast(
-            tf.reduce_max(max_dists, axis=1, keepdims=True) > 0.0, tf.float32
-        )  # [N, 1]
-        angle_bins = tf.one_hot(dominant_bin, n_angles) * has_vertex  # [N, n_angles]
+        # Sub-bin angular offset: (vertex_angle - bin_start) / angle_step in [0, 1),
+        # i.e. the fractional position of the vertex within its angular bin. This
+        # lets the model recover the exact vertex angle, not just the bin index.
+        frac = angles_deg / angle_step - tf.math.floor(angles_deg / angle_step)  # [N, n_pairs]
+        # Per bin, take the offset of the vertex that owns it (the max-radial-dist
+        # one — the same vertex whose distance is regressed in max_dists).
+        best_pair  = tf.argmax(dists_assigned, axis=1, output_type=tf.int32)  # [N, n_angles]
+        angle_bins = tf.gather(frac, best_pair, batch_dims=1)                # [N, n_angles]
+        # Empty bins (no vertex) carry offset 0.0; the loss masks them out via conf.
+        angle_bins = angle_bins * conf_bins                                  # [N, n_angles]
 
-        # Interleave [dist0, angle_norm0, conf0, dist1, angle_norm1, conf1, ...]
+        # Interleave [dist0, angle0, conf0, dist1, angle1, conf1, ...]
         result = tf.stack([max_dists, angle_bins, conf_bins], axis=-1)  # [N, n_angles, 3]
         return tf.reshape(result, [N, n_angles * 3])                     # [N, n_angles*3]
 

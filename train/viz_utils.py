@@ -42,13 +42,17 @@ def _draw_box(canvas, y1n, x1n, y2n, x2n, color, label: str) -> None:
                     lineType=cv2.LINE_AA)
 
 
-def _draw_polygon(canvas, cxn, cyn, poly_conf, poly_dist, n_verts: int = 24) -> None:
+def _draw_polygon(canvas, cxn, cyn, poly_conf, poly_dist, poly_angle=None,
+                  n_verts: int = 24) -> None:
     """Draw a PolyYOLO radial polygon on a uint8 HWC canvas (in-place).
 
     Args:
         cxn, cyn:  Box center in normalized [0,1] coords.
         poly_conf: [n_verts] sigmoid-activated confidences in [0,1].
         poly_dist: [n_verts] predicted radial distance (normalized image space).
+        poly_angle: Optional [n_verts] sub-bin angular offset in [0,1); the vertex
+                    angle becomes (i + offset) * (2*pi/n_verts). When None, the
+                    bin centre angle i * (2*pi/n_verts) is used.
         n_verts:   Number of radial vertices (default 24).
     """
     import cv2
@@ -56,12 +60,14 @@ def _draw_polygon(canvas, cxn, cyn, poly_conf, poly_dist, n_verts: int = 24) -> 
     cx_px = cxn * W
     cy_px = cyn * H
 
+    bin_w = 2.0 * math.pi / n_verts
     pts = []
     for i in range(n_verts):
         conf = float(poly_conf[i])   # already sigmoid-activated by detection_generator
         if conf < 0.4:
             continue
-        angle_rad = i * (2.0 * math.pi / n_verts)
+        off = float(poly_angle[i]) if poly_angle is not None else 0.0
+        angle_rad = (i + off) * bin_w
         d = max(0.0, float(poly_dist[i]))
         # dx/dy in normalized image space → pixels
         px = int(cx_px + d * math.cos(angle_rad) * W)
@@ -125,7 +131,8 @@ def render_summary_images(
                 cx_n = (box[1] + box[3]) / 2.0
                 _draw_polygon(canvas, cx_n, cy_n,
                               poly_conf=poly[:, 0],
-                              poly_dist=poly[:, 1])
+                              poly_dist=poly[:, 1],
+                              poly_angle=poly[:, 2])
         out.append(canvas)
 
     return np.stack(out, axis=0)   # [N, H, W, 3]
@@ -186,12 +193,13 @@ def render_gt_images(
                 _draw_box(canvas, box[0], box[1], box[2], box[3], color, str(name))
 
             if draw_poly and polys is not None:
-                p    = polys[i]              # [72] = [dist, angle_norm, conf] x 24
+                p    = polys[i]              # [72] = [dist, angle, conf] x 24
                 cy_n = (box[0] + box[2]) / 2.0
                 cx_n = (box[1] + box[3]) / 2.0
                 _draw_polygon(canvas, cx_n, cy_n,
                               poly_conf=p[2::3],   # per-bin validity (0/1)
-                              poly_dist=p[0::3])   # per-bin radial distance
+                              poly_dist=p[0::3],   # per-bin radial distance
+                              poly_angle=p[1::3])  # per-bin sub-bin offset [0,1)
         out.append(canvas)
 
     return np.stack(out, axis=0)   # [N, H, W, 3]
