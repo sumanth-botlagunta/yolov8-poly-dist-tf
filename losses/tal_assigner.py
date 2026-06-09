@@ -139,6 +139,16 @@ class TaskAlignedAssigner:
         fg_mask       = tf.reduce_any(candidate_mask, axis=-1)     # [B, A] bool
 
         # ── 7. Gather assigned GT attributes ─────────────────────────────
+        # INVARIANT: for BACKGROUND anchors (fg_mask == False) target_gt_idx is 0
+        # (argmax over an all-zero row), so every target_* below holds GT-0's
+        # values, NOT a meaningful assignment. Consumers MUST mask by fg_mask.
+        # Do NOT "clean this up" by zeroing the background targets: TaskAlignedLoss
+        # computes CIoU on ALL anchors before weighting by fg_mask, and CIoU on a
+        # zeroed [0,0,0,0] box hits atan(0/0)=NaN — then NaN*0 (the bg weight)
+        # poisons the whole box loss. GT-0 is a real, finite box, which keeps that
+        # masked-out term finite. The GT-0 gather is therefore load-bearing for
+        # NaN-safety, not a bug. target_scores below IS zeroed for background
+        # (via assigned_align * fg_mask), which is what the cls loss reads.
         target_labels = tf.gather(gt_labels, target_gt_idx, batch_dims=1)   # [B, A]
         target_bboxes = tf.gather(gt_bboxes, target_gt_idx, batch_dims=1)   # [B, A, 4]
 

@@ -13,10 +13,37 @@ Usage:
 from __future__ import annotations
 
 import dataclasses
+import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import yaml
+
+log = logging.getLogger(__name__)
+
+
+def _warn_unknown_keys(
+    section: Dict[str, Any],
+    recognized: set,
+    section_name: str,
+    ignored: frozenset = frozenset(),
+) -> None:
+    """Warn (never raise) about keys the loader does not consume in a section.
+
+    The loader pulls keys with ``.get()``, so a typo (e.g. ``iou_gian`` for
+    ``iou_gain``) silently falls back to the default with no signal. This surfaces
+    such typos in the high-impact flat sections (loss gains, runtime). ``ignored``
+    lists known-vestigial keys that are intentionally unparsed.
+    """
+    if not isinstance(section, dict):
+        return
+    unknown = set(section) - set(recognized) - set(ignored)
+    if unknown:
+        log.warning(
+            "Unrecognized key(s) in '%s' config — ignored, default used: %s. "
+            "Recognized: %s",
+            section_name, sorted(unknown), sorted(recognized),
+        )
 
 from configs.model_config import (
     AcslConfig,
@@ -123,7 +150,17 @@ def _fill_derived_fields(config: ExperimentConfig) -> None:
 # Private helpers — one per major sub-tree
 # ---------------------------------------------------------------------------
 
+_RUNTIME_KEYS = frozenset({
+    "distribution_strategy", "num_gpus", "mixed_precision_dtype", "run_eagerly",
+    "enable_xla", "num_cores_per_replica", "num_packs",
+})
+
+
 def _build_runtime_config(r: Dict[str, Any]) -> RuntimeConfig:
+    # per_gpu_thread_count is a known vestigial TF-Vision key (not used here).
+    _warn_unknown_keys(
+        r, _RUNTIME_KEYS, "runtime", ignored=frozenset({"per_gpu_thread_count"})
+    )
     return RuntimeConfig(
         distribution_strategy=r.get("distribution_strategy", "mirrored"),
         num_gpus=r.get("num_gpus", -1),
@@ -232,7 +269,16 @@ def _build_model_config(m: Dict[str, Any], task: Dict[str, Any]) -> ModelConfig:
     )
 
 
+_LOSS_KEYS = frozenset({
+    "iou_gain", "cls_gain", "dfl_gain", "dist_gain", "poly_dist_gain",
+    "poly_conf_gain", "poly_angle_gain", "poly_gain", "tal_alpha", "tal_beta",
+    "topk", "acsl",
+})
+
+
 def _build_loss_config(l: Dict[str, Any]) -> LossConfig:
+    # max_delta is a known vestigial TF-Vision key (not used by this codebase).
+    _warn_unknown_keys(l, _LOSS_KEYS, "losses", ignored=frozenset({"max_delta"}))
     acsl_raw = l.get("acsl", {})
     acsl_cfg = AcslConfig(
         use_acsl=acsl_raw.get("use_acsl", False),
