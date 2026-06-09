@@ -20,7 +20,7 @@ task:
   gradient_clip_norm: 0.0
   find_best_score_thresh: true
   summary_types: scalar,image
-  summary_image_num: 10
+  summary_image_num: 20
   summary_image_draw_box: true
   summary_image_draw_poly: true
   per_category_metrics: false
