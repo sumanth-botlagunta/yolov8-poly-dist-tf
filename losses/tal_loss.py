@@ -318,8 +318,8 @@ class TaskAlignedLossExtended:
             conf:  1.0 if a valid vertex was assigned to this bin (the validity
                    mask used by the angle/dist losses).
 
-        All three normalize by num_objs. angle and dist average over the VALID
-        vertices only (masked by conf); conf averages over all 24 bins.
+        All three normalize by num_objs and average over the VALID vertices only
+        (masked by conf).
 
         Returns:
             (poly_total, angle_loss, dist_loss_val, conf_loss_val)
@@ -340,7 +340,7 @@ class TaskAlignedLossExtended:
             pd_poly_dist, target_dist, vertex_mask, fg_mask, num_objs
         )
         conf_loss_val = polygon_conf_loss(
-            pd_poly_conf, conf, fg_mask, num_objs
+            pd_poly_conf, conf, vertex_mask, fg_mask, num_objs
         )
 
         poly_total = self.poly_gain * (

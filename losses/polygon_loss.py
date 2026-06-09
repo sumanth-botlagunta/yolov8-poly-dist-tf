@@ -5,15 +5,16 @@ Implements the three per-vertex loss components:
             averaged over the VALID vertices of each anchor.
     dist:   L2 regression on (target - softplus(pred))^2, averaged over the
             VALID vertices of each anchor.
-    conf:   binary cross-entropy on per-bin vertex validity, averaged over ALL
-            bins (it must see empty bins to learn to predict 0 there).
+    conf:   binary cross-entropy on per-bin vertex validity, averaged over the
+            VALID vertices of each anchor (masked, like angle/dist).
 
 All three normalize by num_objs (total GT object count in the batch) and are
 computed only on foreground anchors.
 
 "Valid vertex" = a bin that received a ground-truth vertex; supplied as a
-per-bin mask (vertex_mask). dist and angle only carry a meaningful target on
-those bins, so they average over the valid count, not over all 24 bins.
+per-bin mask (vertex_mask). All three losses average over the valid count, not
+over all 24 bins. (Masking conf means the head is not trained to reject empty
+bins — see polygon_conf_loss.)
 
 Functions:
     polygon_angle_loss: sub-bin angular-offset BCE (masked to valid vertices).
@@ -99,18 +100,23 @@ def polygon_dist_loss(
 def polygon_conf_loss(
     pd_conf: tf.Tensor,
     target_conf: tf.Tensor,
+    vertex_mask: tf.Tensor,
     fg_mask: tf.Tensor,
     num_objs: tf.Tensor,
 ) -> tf.Tensor:
-    """BCE loss for per-vertex validity confidence, over ALL bins.
+    """BCE loss for per-vertex validity confidence, over the VALID vertices.
 
-    Averages BCE over all V=24 bins per anchor (NOT masked: the conf head must
-    learn to output 0 on empty bins), sums over foreground anchors, and
-    normalizes by num_objs.
+    Averages BCE over the valid vertices of each anchor (masked by vertex_mask,
+    the same per-bin validity used by the angle/dist losses), sums over
+    foreground anchors, and normalizes by num_objs.
+
+    Note: because empty bins are masked out, this does not train the conf head to
+    output 0 on empty bins — it only reinforces conf on bins that hold a vertex.
 
     Args:
         pd_conf:     float32 [batch, anchors, num_vertices]  logits
         target_conf: float32 [batch, anchors, num_vertices]  0 or 1
+        vertex_mask: float32 [batch, anchors, num_vertices]  1.0 on valid bins
         fg_mask:     bool    [batch, anchors]
         num_objs:    float32 scalar  total valid GT object count in batch
 
@@ -120,6 +126,6 @@ def polygon_conf_loss(
     bce = tf.nn.sigmoid_cross_entropy_with_logits(
         labels=target_conf, logits=pd_conf
     )  # [B, A, V]
-    bce_mean = tf.reduce_mean(bce, axis=-1)    # [B, A] — mean over all V bins
-    fg_float = tf.cast(fg_mask, tf.float32)    # [B, A]
-    return tf.reduce_sum(bce_mean * fg_float) / num_objs
+    per_anchor = _masked_vertex_mean(bce, vertex_mask)   # [B, A] — mean over valid
+    fg_float = tf.cast(fg_mask, tf.float32)              # [B, A]
+    return tf.reduce_sum(per_anchor * fg_float) / num_objs
