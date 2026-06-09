@@ -307,18 +307,19 @@ class TaskAlignedLossExtended:
         pd_poly_conf: tf.Tensor,
         target_polygons: tf.Tensor,
         fg_mask: tf.Tensor,
-        target_scores_sum: tf.Tensor,
         num_objs: tf.Tensor,
     ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Combined PolyYOLO polygon loss (angle + dist + conf).
 
-        target_polygons layout: [dist0, angle_norm0, conf0, dist1, angle_norm1, conf1, ...]
-            dist:       radial distance from box center (stored pre-computed by parser).
-            angle_norm: 1.0 for the dominant bin (one-hot), 0.0 elsewhere.
-            conf:       1.0 if any valid vertex was assigned to this bin.
+        target_polygons layout: [dist0, angle0, conf0, dist1, angle1, conf1, ...]
+            dist:  radial distance from box center (pre-computed by parser).
+            angle: sub-bin angular offset (vertex_angle - bin_start)/angle_step
+                   in [0, 1) on bins that hold a vertex, 0.0 elsewhere.
+            conf:  1.0 if a valid vertex was assigned to this bin (the validity
+                   mask used by the angle/dist losses).
 
-        angle normalizes by target_scores_sum (TAL convention).
-        dist and conf normalize by num_objs (old-codebase convention).
+        All three normalize by num_objs. angle and dist average over the VALID
+        vertices only (masked by conf); conf averages over all 24 bins.
 
         Returns:
             (poly_total, angle_loss, dist_loss_val, conf_loss_val)
@@ -328,14 +329,15 @@ class TaskAlignedLossExtended:
             conf_loss_val: raw polygon confidence loss
         """
         target_dist  = target_polygons[:, :, 0::3]   # [B, A, 24]
-        target_angle = target_polygons[:, :, 1::3]   # [B, A, 24] — already one-hot
-        conf         = target_polygons[:, :, 2::3]   # [B, A, 24]
+        target_angle = target_polygons[:, :, 1::3]   # [B, A, 24] — sub-bin offset
+        conf         = target_polygons[:, :, 2::3]   # [B, A, 24] — per-bin validity
+        vertex_mask  = conf                          # valid-vertex mask for angle/dist
 
         angle_loss = polygon_angle_loss(
-            pd_poly_angle, target_angle, fg_mask, target_scores_sum
+            pd_poly_angle, target_angle, vertex_mask, fg_mask, num_objs
         )
         dist_loss_val = polygon_dist_loss(
-            pd_poly_dist, target_dist, fg_mask, num_objs
+            pd_poly_dist, target_dist, vertex_mask, fg_mask, num_objs
         )
         conf_loss_val = polygon_conf_loss(
             pd_poly_conf, conf, fg_mask, num_objs
@@ -523,7 +525,7 @@ class TaskAlignedLossExtended:
         if self.with_polygons and pd_poly_angle is not None:
             poly_loss_val, poly_angle_l, poly_dist_l, poly_conf_l = self._polygon_loss(
                 pd_poly_angle, pd_poly_dist, pd_poly_conf,
-                target_polygons, fg_mask, target_scores_sum, num_objs,
+                target_polygons, fg_mask, num_objs,
             )
 
         # ── 6. Apply gains and aggregate ──────────────────────────────

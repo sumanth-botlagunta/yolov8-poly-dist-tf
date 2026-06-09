@@ -46,7 +46,7 @@ Polygons go through three formats across the pipeline:
 | Stage | Format |
 |-------|--------|
 | TFDS input | `[N, max_vertices+2]` flat xy normalized, padded with -1 |
-| PolyYOLO target (training/loss) | `[N, 72]` = `[dist, angle_norm, conf] × 24` (interleaved; see `losses/tal_loss.py:_polygon_loss`) |
+| PolyYOLO target (training/loss) | `[N, 72]` = `[dist, angle, conf] × 24` (interleaved; `angle` = sub-bin offset in `[0,1)`; see `losses/tal_loss.py:_polygon_loss`) |
 | Cartesian (eval GT) | `[N, max_vertices, 2]` yx denormalized |
 
 ### Model Heads
@@ -74,10 +74,13 @@ polygon loss.
 - Distance L1 divides by `num_objs` (total GT object count in the batch, both detection and
   distance streams). The valid-sentinel mask (`gt_distance > -10.0`) is applied to the
   numerator inside `distance_l1_loss`; detection-stream GTs contribute zero to the numerator.
-- Polygon **angle** uses `reduce_mean` over the 24 vertices, normalized by `target_scores_sum`.
-- Polygon **dist** uses L2+softplus: `mean((target - softplus(pred))²)` over 24 vertices,
-  normalized by `num_objs`. Formula matches old-codebase MSE convention.
-- Polygon **conf** uses `reduce_mean` of BCE over 24 vertices, normalized by `num_objs`.
+- Polygon **angle** target is the per-bin **sub-bin offset** `(vertex_angle − bin_start)/angle_step ∈ [0,1)`
+  (not a one-hot). Loss = BCE on `sigmoid(pred)`, averaged over the **valid vertices only**
+  (masked by the conf channel), normalized by `num_objs`. Decode: `vertex_angle = (i + sigmoid(pred))·angle_step`.
+- Polygon **dist** uses L2+softplus: `(target − softplus(pred))²`, averaged over the **valid
+  vertices only** (masked by the conf channel), normalized by `num_objs`.
+- Polygon **conf** uses `reduce_mean` of BCE over **all 24** vertices (not masked — it learns
+  per-bin validity, including the empty bins), normalized by `num_objs`.
 - All three polygon sub-losses (`poly_angle_loss`, `poly_dist_loss`, `poly_conf_loss`) are
   logged separately to TensorBoard; the combined `poly_loss` is their gain-weighted sum
   multiplied by `poly_gain`.
