@@ -7,11 +7,11 @@ These lock the current (old-codebase-matching) per-vertex reduction behavior:
       only (masked by vertex_mask), normalized by num_objs.
     - polygon_angle_loss applies BCE on the sub-bin offset target and AVERAGES
       over the VALID vertices only (masked), normalized by num_objs.
-    - polygon_conf_loss  AVERAGES BCE over ALL V bins (NOT masked — it must learn
-      to predict 0 on empty bins), normalized by num_objs.
+    - polygon_conf_loss  AVERAGES BCE over the VALID vertices only (masked, like
+      angle/dist), normalized by num_objs.
 
-All three normalize by num_objs. dist/angle ignore invalid (empty) bins; an
-anchor with no valid vertex contributes 0 (no NaN).
+All three normalize by num_objs and ignore invalid (empty) bins; an anchor with
+no valid vertex contributes 0 (no NaN).
 """
 
 import math
@@ -88,19 +88,21 @@ class TestPolygonLossConventions(unittest.TestCase):
         l2 = float(polygon_angle_loss(logits, target, m, fg, tf.constant(2.0)))
         self.assertAlmostEqual(l2, l1 / 2.0, places=5)
 
-    # ---- conf: mean BCE over ALL bins (not masked) ----
-    def test_conf_is_mean_over_all_bins(self):
+    # ---- conf: masked BCE over valid vertices only ----
+    def test_conf_averages_over_valid_only(self):
         fg, num_objs = _fg()
-        logits = tf.zeros([1, 1, _V]); target = tf.zeros([1, 1, _V])
-        # BCE(0,0)=log2 per bin; mean over all 24 → log2 (not masked).
-        loss = float(polygon_conf_loss(logits, target, fg, num_objs))
-        self.assertAlmostEqual(loss, _LOG2, places=4)
+        # Valid bins: logits=0,target=1 → BCE=log2. Invalid bins: logits=10 (huge
+        # BCE) but masked out by vertex_mask.
+        logits = tf.constant([[[0.0] * 12 + [10.0] * 12]])
+        target = tf.constant([[[1.0] * 12 + [0.0] * 12]])
+        loss = float(polygon_conf_loss(logits, target, _half_mask(), fg, num_objs))
+        self.assertAlmostEqual(loss, _LOG2, places=5)
 
     def test_conf_uses_num_objs_normalizer(self):
         fg = tf.constant([[True]])
-        logits = tf.zeros([1, 1, _V]); target = tf.zeros([1, 1, _V])
-        l1 = float(polygon_conf_loss(logits, target, fg, tf.constant(1.0)))
-        l2 = float(polygon_conf_loss(logits, target, fg, tf.constant(2.0)))
+        logits = tf.zeros([1, 1, _V]); target = tf.zeros([1, 1, _V]); m = tf.ones([1, 1, _V])
+        l1 = float(polygon_conf_loss(logits, target, m, fg, tf.constant(1.0)))
+        l2 = float(polygon_conf_loss(logits, target, m, fg, tf.constant(2.0)))
         self.assertAlmostEqual(l2, l1 / 2.0, places=5)
 
 

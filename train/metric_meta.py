@@ -50,7 +50,7 @@ METRIC_DESCRIPTIONS = {
     ),
     "poly_conf_loss": (
         "**Polygon Confidence Loss** (raw, pre-gain) — `BCE(sigmoid(pred), per-bin validity)`; "
-        "mean over **all 24** bins (learns to zero empty bins), ÷ `num_objs`."
+        "mean over the **valid vertices** (masked, like angle/dist), ÷ `num_objs`."
     ),
 
     # ---- COCO detection metrics (val) ----
