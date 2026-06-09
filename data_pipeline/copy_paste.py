@@ -182,9 +182,15 @@ class CopyAndPasteModule:
 
         # Append polygon (transform from obj-normalised to bg-normalised)
         obj_pts = obj_data.get('points', tf.constant([], tf.float32))
-        max_v = tf.shape(obj_pts)[0] if len(obj_pts.shape) > 0 else 0
+        # Use the STATIC shape (a Python int, e.g. 3972 from CopyPasteDecoder), not
+        # tf.shape(...) which returns a symbolic Tensor. This branch runs inside the
+        # tf.cond lambda in process_fn(); AutoGraph does not convert it, so a Python
+        # `if` on a symbolic Tensor raises OperatorNotAllowedInGraphError at .map()
+        # trace time. A static int keeps `max_v == 0` a real Python bool.
+        max_v = obj_pts.shape[0] if obj_pts.shape.rank and obj_pts.shape[0] is not None \
+            else tf.shape(obj_pts)[0]
 
-        if max_v == 0:
+        if isinstance(max_v, int) and max_v == 0:
             # No polygon points — use empty padded polygon
             n_poly_cols = tf.shape(bg_data['groundtruth_polygons'])[1]
             new_poly = tf.fill([1, n_poly_cols], -1.0)

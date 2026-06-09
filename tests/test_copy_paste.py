@@ -64,6 +64,33 @@ class TestCopyAndPasteModule(unittest.TestCase):
         self.assertEqual(int(out["groundtruth_boxes"].shape[0]), 2)
         np.testing.assert_array_equal(out["image"].numpy(), bg["image"].numpy())
 
+    def test_graph_mode_map_traces(self):
+        """Regression: copy-paste must trace under Dataset.map(AUTOTUNE).
+
+        The augmentation runs inside a tf.cond branch lambda (process_fn), where
+        AutoGraph does NOT convert a Python `if` on a symbolic tensor. A prior bug
+        used tf.shape(points)[0] (symbolic) in `if max_v == 0`, raising
+        OperatorNotAllowedInGraphError at .map() trace time — i.e. at pipeline
+        construction, on every shipped config. The eager-mode tests above could not
+        catch it because EagerTensor.__eq__ evaluates numerically. This pins the
+        real graph-mode path that the input pipeline uses (input_reader.py:171).
+        """
+        mod = CopyAndPasteModule(prob=1.0)
+        fn = mod.process_fn(is_training=True)
+
+        bg_ds = tf.data.Dataset.from_tensors(_bg(n=2))
+        obj_ds = tf.data.Dataset.from_tensors(_obj())
+        ds = tf.data.Dataset.zip((bg_ds, obj_ds))
+        # tf.cond traces BOTH branches regardless of prob, so this .map() is where
+        # the prior bug crashed during tracing.
+        ds = ds.map(fn, num_parallel_calls=tf.data.AUTOTUNE)
+
+        out = next(iter(ds))
+        self.assertEqual(tuple(out["image"].shape), (100, 100, 3))
+        # Object pasted → exactly one extra GT row appended.
+        self.assertEqual(int(out["groundtruth_boxes"].shape[0]), 3)
+        self.assertEqual(int(out["groundtruth_polygons"].shape[0]), 3)
+
 
 if __name__ == "__main__":
     unittest.main()
