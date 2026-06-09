@@ -107,28 +107,38 @@ class YoloV8Head(tf.keras.layers.Layer):
             setattr(self, f"cv2feat_s2_{level}", _ConvBnAct(c2, 3, **nk))
 
             # ---- box prediction from cv2feat output ----
+            # Prediction heads are pinned to float32 so logits stay float32 under a
+            # mixed_bfloat16 global policy. The loss (softmax/log_softmax/BCE in
+            # losses/tal_loss.py) has no float32 cast on head outputs, so bf16 logits
+            # would either dtype-mismatch the float32 DFL bins or lose precision.
+            # This is a no-op under the default float32 policy.
             setattr(self, f"box_pred_{level}",
                     tf.keras.layers.Conv2D(4 * self.reg_max, 1, use_bias=True,
-                                           padding="same", name=f"box_pred_{level}"))
+                                           padding="same", dtype="float32",
+                                           name=f"box_pred_{level}"))
 
             # ---- cls stem: 2 × Conv(128, 3×3), fixed at all levels ----
             setattr(self, f"cls_s1_{level}", _ConvBnAct(_CLS_HIDDEN, 3, **nk))
             setattr(self, f"cls_s2_{level}", _ConvBnAct(_CLS_HIDDEN, 3, **nk))
             setattr(self, f"cls_pred_{level}",
                     tf.keras.layers.Conv2D(self.num_classes, 1, use_bias=True,
-                                           padding="same", name=f"cls_pred_{level}"))
+                                           padding="same", dtype="float32",
+                                           name=f"cls_pred_{level}"))
 
             if self.with_polygons:
                 # poly preds: all come directly from cv2feat output (no separate stems)
                 setattr(self, f"pa_pred_{level}",
                         tf.keras.layers.Conv2D(self.output_poly_size, 1, use_bias=True,
-                                               padding="same", name=f"pa_pred_{level}"))
+                                               padding="same", dtype="float32",
+                                               name=f"pa_pred_{level}"))
                 setattr(self, f"pd_pred_{level}",
                         tf.keras.layers.Conv2D(self.output_poly_size, 1, use_bias=True,
-                                               padding="same", name=f"pd_pred_{level}"))
+                                               padding="same", dtype="float32",
+                                               name=f"pd_pred_{level}"))
                 setattr(self, f"pc_pred_{level}",
                         tf.keras.layers.Conv2D(self.output_poly_size, 1, use_bias=True,
-                                               padding="same", name=f"pc_pred_{level}"))
+                                               padding="same", dtype="float32",
+                                               name=f"pc_pred_{level}"))
 
             if self.with_distance:
                 # ---- dist stem: num_dist_block × Conv(128, 3×3), fixed at all levels ----
@@ -136,7 +146,8 @@ class YoloV8Head(tf.keras.layers.Layer):
                     setattr(self, f"dist_s{bi}_{level}", _ConvBnAct(_DIST_HIDDEN, 3, **nk))
                 setattr(self, f"dist_pred_{level}",
                         tf.keras.layers.Conv2D(self.output_dist_size, 1, use_bias=True,
-                                               padding="same", name=f"dist_pred_{level}"))
+                                               padding="same", dtype="float32",
+                                               name=f"dist_pred_{level}"))
 
         super().build(input_shape)
 
