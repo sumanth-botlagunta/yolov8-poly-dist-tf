@@ -82,9 +82,15 @@ class PolygonDecoder:
         max_vertices: int = 10938,
         class_remap_json_path: Optional[str] = None,
         num_classes: int = 39,
+        resample_points: int = 0,
     ):
         self._max_vertices = max_vertices
         self._num_classes = num_classes
+        # Optional: resample every polygon to a fixed `resample_points` vertices at
+        # decode time so the whole augmentation pipeline carries [N, 2*K] instead of
+        # the (often huge) raw stored width. 0 = off (raw width preserved). The
+        # 24-bin radial target is preserved (see augmentations.resample_polygons).
+        self._resample_points = resample_points
 
         self._class_remap: Optional[List[int]] = None
         if class_remap_json_path:
@@ -141,6 +147,12 @@ class PolygonDecoder:
             polygons = tf.cast(objects['points'], tf.float32)   # [N, pts]
         except KeyError:
             polygons = tf.zeros([n, self._max_vertices + 2], dtype=tf.float32) - 1.0
+
+        # Optionally shrink polygon width up front (valid vertices are a prefix
+        # here, before any transform) — big throughput win for huge max_vertices.
+        if self._resample_points and self._resample_points > 0:
+            from data_pipeline.augmentations import resample_polygons
+            polygons = resample_polygons(polygons, self._resample_points)
 
         # is_dontcare exists in cleaner datasets; ServingBot has no such field
         try:
