@@ -112,7 +112,7 @@ boxes and polygon overlays rendered by `train/viz_utils.py`.
 The three polygon loss components are logged separately:
 - `train/poly_angle_loss` — sub-bin angle-offset BCE (mean over the **valid** vertices per anchor)
 - `train/poly_dist_loss`  — radial distance L2 `(softplus(pred) − target)²` (mean over valid vertices)
-- `train/poly_conf_loss`  — vertex-validity BCE (mean over all 24 bins)
+- `train/poly_conf_loss`  — vertex-validity BCE (mean over the **valid** vertices, masked)
 
 These are useful for diagnosing which polygon component is not converging.
 

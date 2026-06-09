@@ -81,8 +81,9 @@ polygon loss.
   (masked by the conf channel), normalized by `num_objs`. Decode: `vertex_angle = (i + sigmoid(pred))·angle_step`.
 - Polygon **dist** uses L2+softplus: `(target − softplus(pred))²`, averaged over the **valid
   vertices only** (masked by the conf channel), normalized by `num_objs`.
-- Polygon **conf** uses `reduce_mean` of BCE over **all 24** vertices (not masked — it learns
-  per-bin validity, including the empty bins), normalized by `num_objs`.
+- Polygon **conf** uses BCE on per-bin validity, averaged over the **valid vertices only**
+  (masked by the conf channel, like angle/dist), normalized by `num_objs`. (Masking means the
+  conf head is not trained to output low confidence on empty bins.)
 - All three polygon sub-losses (`poly_angle_loss`, `poly_dist_loss`, `poly_conf_loss`) are
   logged separately to TensorBoard; the combined `poly_loss` is their gain-weighted sum
   multiplied by `poly_gain`.
