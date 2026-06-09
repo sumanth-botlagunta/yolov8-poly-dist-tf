@@ -295,7 +295,7 @@ class TaskConfig:
     smart_bias_lr: float = 0.1
     find_best_score_thresh: bool = True
     summary_types: str = "scalar,image"
-    summary_image_num: int = 10
+    summary_image_num: int = 20
     summary_image_draw_box: bool = True
     summary_image_draw_poly: bool = True
 
