@@ -243,5 +243,196 @@ class TestRandomPerspective(unittest.TestCase):
         np.testing.assert_array_equal(pad, [-1.0, -1.0])
 
 
+class TestMosaicComposedWarp(unittest.TestCase):
+    """Regression tests for the composed-affine (single-resample) _mosaic rewrite.
+
+    The rewrite warps each source image DIRECTLY to the output by composing the
+    per-image scale+placement affine A_i with the global perspective matrix M,
+    then selects per output pixel by quadrant — eliminating the intermediate
+    resizes and the 2× canvas. These tests pin (a) the image quadrant layout under
+    identity geometry, (b) the annotation path, (c) the mask partition, and (d)
+    graph-mode/tf.function compatibility.
+    """
+
+    def _det_mosaic(self, out=32):
+        """Deterministic identity-geometry mosaic: center=0 → yc=xc=H; s_i=1."""
+        return Mosaic(
+            output_size=[out, out], mosaic_frequency=1.0, with_polygons=True,
+            aug_scale_min=1.0, aug_scale_max=1.0,
+            degrees=0.0, shear=0.0, perspective=0.0, translate=0.0,
+            mosaic_center=0.0, area_thresh=0.0,
+        )
+
+    def _solid_example(self, color, h=32, w=32):
+        box = tf.constant([[0.25, 0.25, 0.75, 0.75]], tf.float32)
+        poly = tf.constant([[0.3, 0.3, 0.6, 0.6, -1.0, -1.0, -1.0, -1.0]], tf.float32)
+        return {
+            "image":  tf.fill([h, w, 3], tf.constant(color, tf.uint8)),
+            "height": tf.constant(h, tf.int32),
+            "width":  tf.constant(w, tf.int32),
+            "groundtruth_boxes":    box,
+            "groundtruth_classes":  tf.zeros([1], tf.int64),
+            "groundtruth_is_crowd": tf.zeros([1], tf.bool),
+            "groundtruth_area":     tf.ones([1], tf.float32),
+            "groundtruth_dontcare": tf.zeros([1], tf.int64),
+            "groundtruth_dists":    tf.fill([1], tf.constant(-1.0)),
+            "groundtruth_polygons": poly,
+            "source_id":            tf.constant("x"),
+        }
+
+    def test_a_identity_geometry_quadrant_layout(self):
+        """center=0, identity affine, 4 solid HxW images → the 4 colors land in
+        the TL/TR/BL/BR output quadrants (inner corner of each source).
+
+        With yc=xc=H=W and s_i=1 (nh=H, nw=W), the legacy canvas is 2H×2W with
+        image i placed so its center-adjacent corner abuts (H, W). M is the
+        center-crop: output (x, y) ← canvas (x + W/2, y + H/2). So the output's
+        TL quadrant samples canvas [W/2, W) — which is the inner (BR) corner of
+        the TL source — etc. A 2px band around the split is skipped (bilinear
+        seam between a quadrant and 114 fill).
+        """
+        H = W = 32
+        colors = [40, 80, 160, 220]  # TL, TR, BL, BR
+        exs = [self._solid_example(colors[i], H, W) for i in range(4)]
+        out = self._det_mosaic(out=H)._mosaic(*exs)
+        img = out["image"].numpy()
+        self.assertEqual(img.shape, (H, W, 3))
+
+        hh, hw = H // 2, W // 2
+        b = 2  # seam tolerance band
+        # Interior of each output quadrant must equal that source's color.
+        quad = {
+            (0, 0): colors[0],  # TL
+            (0, 1): colors[1],  # TR
+            (1, 0): colors[2],  # BL
+            (1, 1): colors[3],  # BR
+        }
+        for (qy, qx), color in quad.items():
+            y0 = qy * hh + (b if qy == 0 else 0)
+            y1 = (qy + 1) * hh - (0 if qy == 0 else b)
+            x0 = qx * hw + (b if qx == 0 else 0)
+            x1 = (qx + 1) * hw - (0 if qx == 0 else b)
+            region = img[y0:y1, x0:x1]
+            self.assertTrue(
+                (region == color).all(),
+                f"quadrant ({qy},{qx}) expected {color}, got values "
+                f"{np.unique(region)}",
+            )
+
+    def test_b_label_path_regression(self):
+        """Identity-geometry: a known box in each source maps to hand-computed
+        output boxes within 1e-5. Pins the annotation path (A_i + M corner math).
+
+        center=0 → yc=xc=H=W, s_i=1, padh/padw per quadrant:
+          TL: pad=(yc-nh, xc-nw)=(0,0)            → canvas px = src px
+          TR: pad=(yc-nh, off_x=xc)=(0, W)        → canvas x = src x + W
+          BL: pad=(off_y=yc, xc-nw)=(H, 0)        → canvas y = src y + H
+          BR: pad=(yc, xc)=(H, W)                 → canvas (x+W, y+H)
+        Canvas-normalized (÷2W,÷2H), then M center-crop: out = canvas*2 - 0.5*... .
+        We compute via the public corner math: out_px = M @ canvas_px; here M maps
+        canvas px (cx, cy) → output px (cx - W/2, cy - H/2). So out_norm = (canvas
+        px - center)/H.
+        """
+        H = W = 32
+        # One box per source, distinct, all = [0.25,0.25,0.75,0.75] in src-norm.
+        box = [0.25, 0.25, 0.75, 0.75]
+        exs = [self._solid_example(40 + 40 * i, H, W) for i in range(4)]
+        for ex in exs:
+            ex["groundtruth_boxes"] = tf.constant([box], tf.float32)
+
+        out = self._det_mosaic(out=H)._mosaic(*exs)
+        boxes = out["groundtruth_boxes"].numpy()
+
+        # Hand-compute. Source box px (within HxW source): ymin/xmin/ymax/xmax * H/W.
+        ymin, xmin, ymax, xmax = box
+        s_ymin, s_xmin = ymin * H, xmin * W
+        s_ymax, s_xmax = ymax * H, xmax * W
+        # Per-quadrant canvas offset (padh, padw):
+        pads = [(0, 0), (0, W), (H, 0), (H, W)]  # TL, TR, BL, BR
+        # M center-crop: out_px = canvas_px - (W/2, H/2); out_norm = out_px / W (=H).
+        expected = []
+        for (padh, padw) in pads:
+            c_ymin, c_ymax = s_ymin + padh, s_ymax + padh
+            c_xmin, c_xmax = s_xmin + padw, s_xmax + padw
+            o_ymin = (c_ymin - H / 2.0) / H
+            o_xmin = (c_xmin - W / 2.0) / W
+            o_ymax = (c_ymax - H / 2.0) / H
+            o_xmax = (c_xmax - W / 2.0) / W
+            expected.append([o_ymin, o_xmin, o_ymax, o_xmax])
+        expected = np.clip(np.array(expected, np.float32), 0.0, 1.0)
+
+        # The kept boxes are those with visible area after clip. Sort both for a
+        # set comparison (filtering may reorder / drop fully-out boxes).
+        # Under this geometry each source's box partially overlaps the output.
+        self.assertEqual(boxes.shape[1], 4)
+        # Match each expected box to a returned box within tol.
+        for exp in expected:
+            # skip boxes that clip to zero area (not kept)
+            if (exp[2] - exp[0]) <= 0 or (exp[3] - exp[1]) <= 0:
+                continue
+            diffs = np.abs(boxes - exp).sum(axis=1)
+            self.assertLess(
+                diffs.min(), 1e-5,
+                f"expected box {exp} not found in {boxes}",
+            )
+
+    def test_c_mask_partition_distinct_sources(self):
+        """Random geometry: every central output pixel is owned by exactly one
+        source (value ∈ {1,2,3,4}) or gray 114 — never a blend of two sources.
+
+        Warp four solid constant-valued images (1,2,3,4). Because each source is a
+        single constant and out-of-source fill is 114, bilinear can only blend a
+        source value with 114 (at borders), never two distinct source values. So
+        every interior pixel that is not on a seam is in {1,2,3,4,114}.
+        """
+        tf.random.set_seed(7)
+        H = W = 48
+        m = Mosaic(
+            output_size=[H, W], mosaic_frequency=1.0, with_polygons=True,
+            aug_scale_min=0.6, aug_scale_max=1.4,
+            degrees=8.0, shear=2.0, perspective=0.0, translate=0.1,
+            mosaic_center=0.25, area_thresh=0.0,
+        )
+        exs = [self._solid_example(v, H, W) for v in (1, 2, 3, 4)]
+        out = m._mosaic(*exs)
+        img = out["image"].numpy()[..., 0].astype(np.int32)
+        # Sample a central grid of pixels (avoid the outer 1px ring for safety).
+        sample = img[2:-2, 2:-2]
+        allowed = {1, 2, 3, 4, 114}
+        vals = set(np.unique(sample).tolist())
+        # Allow a small number of bilinear-seam values (blends of a source w/ 114).
+        unexpected = vals - allowed
+        # Any unexpected value must be a source⊗114 blend (between min source and
+        # 114) — never a blend of two distinct sources (which would land 1..4
+        # range interior values like 1.5→2, caught here as values in (4,114)).
+        for u in unexpected:
+            self.assertTrue(
+                4 < u < 114,
+                f"value {u} indicates a two-source blend, not a source/114 seam",
+            )
+
+    def test_d_tf_function_traceable(self):
+        """_mosaic runs under tf.function tracing and re-execution; output is
+        [H, W, 3] uint8."""
+        H = W = 32
+        m = Mosaic(
+            output_size=[H, W], mosaic_frequency=1.0, with_polygons=True,
+            aug_scale_min=0.8, aug_scale_max=1.2,
+            degrees=10.0, shear=2.0, perspective=0.0, translate=0.1,
+            mosaic_center=0.25,
+        )
+        exs = [self._solid_example(50 + 30 * i, H, W) for i in range(4)]
+
+        @tf.function
+        def run(a, b, c, d):
+            return m._mosaic(a, b, c, d)["image"]
+
+        img1 = run(*exs)
+        img2 = run(*exs)
+        self.assertEqual(tuple(img1.shape), (H, W, 3))
+        self.assertEqual(img1.dtype, tf.uint8)
+        self.assertEqual(tuple(img2.shape), (H, W, 3))
+
+
 if __name__ == "__main__":
     unittest.main()

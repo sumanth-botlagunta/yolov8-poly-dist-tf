@@ -10,25 +10,32 @@ tfds.load (SkipDecoding: images stay ENCODED bytes through shuffle)
    → repeat each source dataset → sample_from_datasets(weights=[95,2,3])
    → shuffle (encoded bytes — KB/element, not MB)
    → decode (tf.string branch decodes inside parallel map)
+   → pre-resize to 672² (uint8; preserves 'height'/'width' fields)
    → zip(cnp_dataset) → Copy-Paste  (copy_paste.py, prob 0.2)  ← BEFORE mosaic
-   → pre-resize to output size → padded_batch(4)
+   → padded_batch(4)
    → Mosaic                (mosaic.py): 4-in / 4-out — one group coin flip;
                            mosaic branch = 4 mosaics of the same 4 images via
-                           rotated quadrant permutations; single branch = 4
+                           rotated quadrant permutations (composed-affine, one
+                           warp per source, no 2× canvas); single branch = 4
                            independent random_perspective warps. No decoded
                            image is discarded.
    → unbatch → shuffle(128)  (decorrelates 4-sample groups before batching)
-   → flip / HSV / Albumentations  (augmentations.py, in the parser)
    → parser polygon preprocessing  (yolo_parser.py / distance_parser.py)
+                           parsers emit uint8 images — colour aug moved to GPU
    → batch(global_batch_size) + prefetch(AUTOTUNE)
+   [train_step] HSV + Albumentations + /255 (batch_color_aug.py, on GPU;
+                           Albumentations skipped for ignore_bg==1 distance rows)
 ```
 
 The order matters: copy-paste augments *within* an image and must run before mosaic stitches
-four images together. The geometric affine lives in the mosaic stage (`random_perspective`),
-applied to **both** the mosaic and single-image branches — the parser no longer does an affine.
+four images together. The pre-resize to 672² runs after decode and before copy-paste; the
+`CopyAndPasteModule` reads the preserved `height`/`width` fields to scale pasted objects by
+`(new/orig)` per axis, reproducing the relative size/placement of full-resolution compositing.
+The geometric affine lives in the mosaic stage (`random_perspective`), applied to **both** the
+mosaic and single-image branches — the parser no longer does an affine.
 
 The training stream is **infinite** (each source dataset is `.repeat()`ed before
-`sample_from_datasets`). Epoch length is enforced by the trainer (`steps_per_loop = 2388`
+`sample_from_datasets`). Epoch length is enforced by the trainer (`steps_per_loop = 2118`
 for the default config), not by data exhaustion. `tf.data.Options` sets
 `deterministic=False` (removes head-of-line blocking in parallel maps) and optionally
 `private_threadpool_size` (e.g. 13 in `yolov8_poly_dist.yaml` for cgroup-capped machines).
@@ -66,8 +73,13 @@ training step; each sub-stream also prefetches internally.
   `unsorted_segment_max` / `segment_min` formulation (replacing the old `[N, P, 24]` one-hot
   expansion) — output-equivalent including ties, and tested for exact equality.
   The 672→672 resize is skipped when the static shape already matches (mosaic path).
+  **Parsers now emit uint8 images.** Normalisation (`/255`), HSV jitter, and Albumentations
+  have moved to `data_pipeline/batch_color_aug.py` and run inside `YoloV8Task.train_step`
+  (GPU). `validation_step` casts uint8 to float32 and divides by 255 directly. This cuts
+  host→device memory traffic by 4× and frees CPU tf.data workers from colour ops.
 - `distance_parser.py:V8DistanceParser` — distance samples; encodes log-distance and sets
-  `ignore_bg`.
+  `ignore_bg`. Also emits uint8; colour aug applied in the same `train_step` batch pass
+  (Albumentations rows are gated by `ignore_bg==0` so distance-only rows skip it).
 - Crowd handling: `skip_crowd_during_training=True` filters crowd annotations at parse time.
 
 ## Polygon formats (the three representations)
@@ -89,9 +101,14 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
 ## Coordinate conventions (read carefully)
 - GT boxes from decoders/parsers: **`yxyx` normalized** `[0,1]`.
 - The loss/assigner convert to **`xyxy` pixels**.
-- Mosaic builds a 2× (2H×2W) canvas in pixel space, maps each image's labels into it
-  (`_scale_box_poly_to_canvas`), then `random_perspective` warps + crops back to output size,
-  re-fitting boxes from their transformed corners and clipping boxes/polygons to the edge.
+- Mosaic uses a **composed-affine** approach: a per-image placement affine `A_i`
+  (source-px → virtual 2× canvas-px) is composed with the global perspective matrix `M`
+  (canvas-px → output-px, drawn once via `augmentations.make_perspective_matrix`); each
+  source image is warped directly to the output in one `apply_perspective_image` call
+  (no intermediate resize, no 2× canvas allocation). The label path maps labels through
+  `_scale_box_poly_to_canvas` → `transform_boxes_polygons(M)`, identical to the legacy
+  canvas-then-warp label math. Quadrant masks are recovered by back-projecting the output
+  grid through `M⁻¹` vs the split point; out-of-canvas pixels fill with gray 114.
 
 ## Performance notes
 - Every `.map` uses `num_parallel_calls=AUTOTUNE`.
@@ -103,4 +120,12 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
   caps tf.data's worker count on cgroup-capped machines; `yolov8_poly_dist.yaml` sets it to 13.
 - The post-unbatch `shuffle(128)` breaks up the 4-sample mosaic-group correlation clusters
   before the final `batch(global_batch_size)`.
+- **Three pipeline changes target the three dominant CPU bottlenecks** (measured on the
+  13-core-capped cloud host): pre-resizing before copy-paste (~18 ms·core/img at full-res),
+  composed-affine mosaic eliminating the intermediate 2× canvas resize (~54 ms·core/img),
+  and moving colour aug to GPU (~20 ms·core/img in the parser). Together they shift
+  the heavy colour and geometry work off the CPU-capped tf.data threadpool.
+- Colour augmentation (`batch_color_aug.py`) runs inside `train_step`; the `train/data_wait_ms`
+  TensorBoard scalar (written by `YoloV8Trainer`) separates data-wait time from compute time,
+  making it easy to tell whether the bottleneck is in tf.data or on the GPU.
 - Use the `/benchmark` skill (`tools/benchmark_pipeline.py`) to measure throughput.

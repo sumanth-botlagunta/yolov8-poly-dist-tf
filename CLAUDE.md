@@ -33,16 +33,19 @@ Three config-driven tiers share the same code:
 
 ### Data Pipeline
 
-Multi-TFDS weighted sampling (each source `.repeat()`ed → stationary weights, infinite stream; images stay **encoded** through shuffle via `SkipDecoding`) → decode → Copy-Paste augmentation → Mosaic (**4-in/4-out**: 2× canvas assembly + `random_perspective`: rotation/scale/shear/translate, clip-to-edge) → small post-unbatch shuffle → Flip → HSV → Albumentations → Polygon preprocessing
+Multi-TFDS weighted sampling (each source `.repeat()`ed → stationary weights, infinite stream; images stay **encoded** through shuffle via `SkipDecoding`) → decode → pre-resize to 672² → Copy-Paste (composites at 672²; object scaled by `current/original` dims so relative size matches full-res compositing exactly) → Mosaic (**4-in/4-out**, **composed-affine**: per-image scale+placement affine folded into the global `random_perspective` matrix — one warp per source, no intermediate resizes or 2× canvas; label math bit-identical to the canvas formulation) → small post-unbatch shuffle → Flip → Polygon preprocessing → **uint8 out**. Color augmentation (normalize → HSV jitter → albumentations) runs per-BATCH on the GPU inside `train_step` (`data_pipeline/batch_color_aug.py`) with exactly the per-image randomness the parsers used to apply; albumentations applies only to detection rows (`ignore_bg == 0`).
 
 The geometric transform (`random_perspective`) is applied inside the mosaic stage for **both** the 4-image mosaic and non-mosaic single images; the parser no longer applies a separate affine.
 
 **Epoch semantics**: the training stream is infinite; the trainer runs **exactly
-`steps_per_loop` steps per epoch** (= `train_total_examples // batch` = 2388 for the
-poly_dist config) from one persistent iterator, so one epoch = one nominal data pass and
-the startup banner / LR schedule (`decay_steps = steps_per_loop × epochs`) / checkpoint
-interval are all true by construction. After a mid-epoch resume only the remainder to the
-next epoch boundary is run (`YoloV8Trainer._steps_for_epoch`). Eval datasets do not repeat.
+`steps_per_loop` steps per epoch** (= `train_total_examples // batch` = **2118** for the
+poly_dist config; 271,166 examples verified against the TFDS builders 2026-06-10) from one
+persistent iterator, so one epoch = one nominal data pass and the startup banner / LR
+schedule (`decay_steps = steps_per_loop × epochs` = 635,400) / checkpoint interval are all
+true by construction. After a mid-epoch resume only the remainder to the next epoch
+boundary is run (`YoloV8Trainer._steps_for_epoch`). Eval datasets do not repeat.
+`run_train` warns if `decay_steps != train_steps`. Step logs report compute, data-wait,
+and wall-clock throughput separately (`train/data_wait_ms`).
 
 The distance dataset (`servingbot_polygon:1.0.1`) is a **separate stream** merged via `tf.data.Dataset.zip()` and concatenated on the batch dimension. Distance-only samples carry `ignore_bg=1` to suppress class loss on background. The distance stream is **training-only** (no validation merge path).
 
@@ -184,6 +187,9 @@ Run with `/test` or `pytest tests/unit tests/smoke -v`.
 - **Polygon angle is a sub-bin offset**: the `poly_angle` channel is the offset within a bin (`(vertex_angle − bin_start)/angle_step ∈ [0,1)`), **not** a one-hot of the dominant bin. Decode the vertex angle as `(i + sigmoid(pred))·angle_step`; this is consumed in `detection_generator` / `polygon_metrics` / `viz_utils`. (See `losses/polygon_loss.py` for the masked-mean conventions.)
 - **Geometry lives in the mosaic stage**: `random_perspective` (rotation/scale/shear/translate, clip-to-edge) runs in `mosaic.py` for both the 4-image mosaic and single images; the parser does not apply a separate affine.
 - **Mosaic is 4-in/4-out**: each `padded_batch(4)` group emits 4 samples (one per decoded image) — one group coin flip; mosaic branch builds 4 mosaics of the same 4 images via rotated quadrant permutations (independent random draws), single branch warps each image. No decoded image is discarded; per-sample mosaic probability is exactly `mosaic_frequency`.
+- **Mosaic image path is composed-affine**: `_mosaic` folds each quadrant's scale+placement affine `A_i` into the global perspective matrix (`M @ A_i`) and warps each source once directly to the output; quadrant ownership comes from mapping the output grid through `M⁻¹` against the split point. No per-image `tf.image.resize`, no 2× canvas. Random draws and the annotation transform are identical to the canvas formulation (`make_perspective_matrix` / `apply_perspective_image` / `transform_boxes_polygons` in `augmentations.py`).
+- **Parsers emit uint8**: color aug (normalize/HSV/albumentations) happens per-batch on GPU in `train_step` via `data_pipeline/batch_color_aug.py` (exact per-image randomness; equivalence-tested). `validation_step` just casts `/255`. TensorBoard `train/augmentations` images are therefore pre-color-aug (geometry + labels only).
+- **Copy-paste runs on the pre-resized 672² background**: `CopyAndPasteModule` scales the object by `(current/original)` per axis (original dims from the `height`/`width` fields), so the relative-size distribution is exactly the full-resolution one. Without those fields the correction is 1 (backward compatible).
 - **Polygon binning is a segment formulation**: `_preprocess_polygons_v2` uses `unsorted_segment_max` + first-winner `unsorted_segment_min` instead of a `[N, P, 24]` one-hot — exactly output-equivalent including argmax-first tie behavior (tests assert equality).
 - **Runtime defaults (poly_dist YAML)**: `one_device` on 1 GPU, `mixed_bfloat16` (heads pinned float32 in `models/head.py`, no loss scaling needed), thread-pool caps for cgroup-capped hosts (`runtime.inter_op_threads`/`intra_op_threads`, `train_data.private_threadpool_size`). The training stream sets `tf.data` `deterministic=False` (sample order is not seed-reproducible; augmentation randomness unaffected).
 - **Polygon sub-losses are logged separately**: TensorBoard tags `train/poly_angle_loss`, `train/poly_dist_loss`, and `train/poly_conf_loss` allow diagnosing which polygon component is not converging.

@@ -233,7 +233,10 @@ task:
 
 trainer:
   train_epochs: 300
-  train_total_examples: 305780
+  # VERIFIED against the actual TFDS builders (2026-06-10):
+  # cleaner_polygon2026 268,384 + field_misrecog2026 416 + station_misrecog 2,366.
+  # (Was 305,780 — stale; it inflated steps/epoch to 2388 vs the true 2118.)
+  train_total_examples: 271166
   validation_total_examples: 3903
   # steps_per_loop, train_steps, validation_steps auto-computed from the above
   best_checkpoint_eval_metric: F1score50
@@ -248,7 +251,9 @@ trainer:
       cosine:
         name: CosineDecay
         initial_learning_rate: 0.01
-        decay_steps: 716400
+        # = steps_per_loop (2118 = 271,166 // 128) × train_epochs (300), so the
+        # cosine reaches its alpha floor exactly at the end of training.
+        decay_steps: 635400
         alpha: 0.01
     optimizer:
       type: sgd_torch
@@ -258,7 +263,7 @@ trainer:
         momentum_start: 0.8
         nesterov: true
         weight_decay: 0.0005
-        warmup_steps: 7164
+        warmup_steps: 6354   # 3 epochs × 2118 steps (was 7164 = 3 × stale 2388)
         weight_keys: [kernel, weight]
         bias_keys: [bias, beta]
         clipnorm: null
@@ -270,7 +275,7 @@ trainer:
     linear:
       name: linear
       warmup_learning_rate: 0.0
-      warmup_steps: 7164
+      warmup_steps: 6354   # 3 epochs × 2118 steps (was 7164 = 3 × stale 2388)
 
 runtime:
   # Single H100: one_device avoids MirroredStrategy variable wrapping overhead.

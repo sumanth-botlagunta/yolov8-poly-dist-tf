@@ -5,11 +5,17 @@ Training augmentation pipeline order:
     2. Random horizontal flip (with polygon transformation)
     3. Jitter and scale (affine transformation)
     4. Clip boxes and polygons to image bounds
-    5. Normalize image to [0, 1]
-    6. Apply HSV augmentation (hue=0.015, sat=0.7, bright=0.4)
-    7. Apply Albumentations colour transforms (frequency=albumentations_frequency)
-    8. Preprocess polygons to PolyYOLO format
-    9. Build labels dictionary
+    5. Preprocess polygons to PolyYOLO format
+    6. Build labels dictionary
+
+Colour augmentation (normalize /255 → HSV jitter → albumentations) is NO LONGER
+done here. The parser now emits a uint8 image so the whole pipeline carries
+uint8 (4× less host→device memory traffic); the colour pipeline runs once per
+batch on the accelerator inside ``train.task.train_step`` via
+``data_pipeline.batch_color_aug.batch_color_augment`` (eval normalizes /255 in
+``validation_step``). This moves ~20 ms·core/img off the CPU-capped tf.data
+workers onto the otherwise-idle GPU, with the identical per-image randomness
+distribution.
 
 Output labels schema:
     source_id: string [batch]
@@ -32,10 +38,8 @@ from typing import Dict, List, Optional, Tuple
 import tensorflow as tf
 
 from data_pipeline.augmentations import (
-    apply_albumentations,
     clip_boxes,
     clip_polygon_coords,
-    hsv_augment,
     random_horizontal_flip,
 )
 from data_pipeline.parser import Parser
@@ -159,24 +163,14 @@ class V8ParserExtended(Parser):
         # Clip polygon coords to [0, 1]
         polygons = clip_polygon_coords(polygons)
 
-        # 5. Normalize image to [0, 1]
-        image = tf.cast(image, tf.float32) / 255.0
-
-        # 6. HSV augmentation
-        image = hsv_augment(
-            image,
-            hue=self._aug_rand_hue,
-            sat=self._aug_rand_saturation,
-            val=self._aug_rand_brightness,
-        )
-
-        # 7. Albumentations colour transforms
-        if self._albumentations_frequency > 0.0:
-            image = apply_albumentations(image, freq=self._albumentations_frequency)
+        # Colour augmentation (normalize /255 → HSV → albumentations) is now done
+        # once per BATCH on the accelerator in train.task.train_step (see
+        # data_pipeline.batch_color_aug). The image stays uint8 through batching
+        # for 4× less memory traffic.
 
         n_gt = tf.shape(boxes)[0]
 
-        # 8. Preprocess polygons → PolyYOLO radial format
+        # 5. Preprocess polygons → PolyYOLO radial format
         if self._with_polygons:
             poly_labels = self._preprocess_polygons_v2(
                 boxes, polygons, self._angle_step
@@ -184,7 +178,7 @@ class V8ParserExtended(Parser):
         else:
             poly_labels = tf.zeros([n_gt, self._poly_depth], dtype=tf.float32)
 
-        # 9. Build labels dict
+        # 6. Build labels dict
         log_dist = tf.fill([n_gt], self._invalid_sentinel)  # no distance in det stream
         boxes, classes, poly_labels, log_dist = self._pad_labels(
             boxes, classes, poly_labels, log_dist, n_gt
@@ -215,12 +209,17 @@ class V8ParserExtended(Parser):
         # Clip polygons to output bounds (after resize)
         polygons = clip_polygon_coords(polygons)
 
-        image = tf.cast(image, tf.float32) / 255.0
-
-        # Gray border: replace letterbox-padding pixels (value ~0 from resize) with 0.5
+        # Image stays uint8; normalization /255 happens once per batch in
+        # train.task.validation_step. Gray border (replacing near-black
+        # letterbox-padding pixels with mid-gray) is applied here on uint8:
+        # mask = all channels < 8 (DN) → fill 128 (== 0.5 after /255).
         if self._eval_gray_border:
-            gray_mask = tf.reduce_all(image < (8.0 / 255.0), axis=-1, keepdims=True)
-            image = tf.where(gray_mask, tf.fill(tf.shape(image), 0.5), image)
+            gray_mask = tf.reduce_all(image < 8, axis=-1, keepdims=True)
+            image = tf.where(
+                gray_mask,
+                tf.fill(tf.shape(image), tf.constant(128, dtype=tf.uint8)),
+                image,
+            )
 
         n_gt = tf.shape(boxes)[0]
 
@@ -401,15 +400,6 @@ class V8ParserExtended(Parser):
     ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         """Flip image and transform boxes/polygons accordingly."""
         return random_horizontal_flip(image, boxes, polygons, self._max_vertices)
-
-    def _apply_hsv_augmentation(self, image: tf.Tensor) -> tf.Tensor:
-        """Apply random HSV jitter to a float32 [H, W, 3] image."""
-        return hsv_augment(
-            image,
-            hue=self._aug_rand_hue,
-            sat=self._aug_rand_saturation,
-            val=self._aug_rand_brightness,
-        )
 
     def _letterbox_resize(
         self, image: tf.Tensor, boxes: tf.Tensor, polygons: tf.Tensor
