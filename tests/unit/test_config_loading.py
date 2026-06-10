@@ -28,10 +28,21 @@ class TestConfigLoading(unittest.TestCase):
 
     def test_derived_fields_filled(self):
         cfg = load_config(os.path.join(_EXP_DIR, "yolov8_poly_dist.yaml"))
-        # train_total_examples=305780, batch=128 → steps_per_loop=2388; ×300 epochs.
-        self.assertEqual(cfg.trainer.steps_per_loop, 305780 // 128)
+        # steps_per_loop derives from whatever the YAML declares (271,166 verified
+        # against the actual TFDS builders 2026-06-10; batch 128 → 2118).
+        self.assertEqual(
+            cfg.trainer.steps_per_loop,
+            cfg.trainer.train_total_examples // cfg.task.train_data.global_batch_size,
+        )
+        self.assertEqual(cfg.trainer.steps_per_loop, 2118)
         self.assertEqual(
             cfg.trainer.train_steps, cfg.trainer.steps_per_loop * cfg.trainer.train_epochs
+        )
+        # The cosine schedule must span exactly the training run (run_train warns
+        # otherwise — this pins the shipped YAML to consistency).
+        self.assertEqual(
+            cfg.trainer.optimizer_config.learning_rate.decay_steps,
+            cfg.trainer.train_steps,
         )
 
     def test_base_include_overrides_and_inherits(self):
