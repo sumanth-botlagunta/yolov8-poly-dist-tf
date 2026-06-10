@@ -296,13 +296,20 @@ class Mosaic:
         boxes: tf.Tensor,
         polygons: tf.Tensor,
     ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
-        """random_perspective with this module's configured params → output size."""
+        """random_perspective with this module's configured params → output size.
+
+        The warp scale gain is drawn from the EXPLICIT [aug_scale_min,
+        aug_scale_max] config bounds. (The earlier symmetric-magnitude form
+        widened the configured [0.4, 1.9] to [0.1, 1.9], occasionally shrinking
+        content to ~1% area — the "mostly-gray frame" bug.)
+        """
         return random_perspective(
             image, boxes, polygons,
             target_h=self._H, target_w=self._W,
             degrees=self._degrees,
             translate=self._translate,
-            scale=max(self._scale_max - 1.0, 1.0 - self._scale_min),
+            scale_min=self._scale_min,
+            scale_max=self._scale_max,
             shear=self._shear,
             perspective=self._perspective,
             area_thresh=self._area_thresh,
@@ -398,13 +405,15 @@ class Mosaic:
         examples = [one, two, three, four]
         warped, A_list, boxes_list, polys_list = [], [], [], []
 
-        # Draw the global canvas→output matrix ONCE (same params as self._warp).
+        # Draw the global canvas→output matrix ONCE (same params as self._warp;
+        # scale gain from the explicit [aug_scale_min, aug_scale_max] bounds).
         M = make_perspective_matrix(
             h_in=H2, w_in=W2,
             target_h=H, target_w=W,
             degrees=self._degrees,
             translate=self._translate,
-            scale=max(self._scale_max - 1.0, 1.0 - self._scale_min),
+            scale_min=self._scale_min,
+            scale_max=self._scale_max,
             shear=self._shear,
             perspective=self._perspective,
         )
