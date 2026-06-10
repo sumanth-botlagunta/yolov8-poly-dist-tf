@@ -18,6 +18,7 @@ import signal
 import time
 from typing import Optional
 
+import numpy as np
 import tensorflow as tf
 import yaml
 
@@ -512,7 +513,10 @@ class YoloV8Trainer:
             logs       = self._task.aggregate_logs(logs, step_out)
 
             if n_collected < n_summary:
-                imgs_np = images.numpy()   # [B, H, W, 3]
+                imgs_np = images.numpy()   # [B, H, W, 3] uint8 from the eval parser
+                # Renderers expect float [0, 1]; eval parser emits uint8 → /255.
+                if imgs_np.dtype == np.uint8:
+                    imgs_np = imgs_np.astype('float32') / 255.0
                 preds   = step_out['predictions']
                 # Convert prediction + GT tensors to numpy once per batch
                 preds_np = {k: (v.numpy() if hasattr(v, 'numpy') else v)
@@ -581,6 +585,12 @@ class YoloV8Trainer:
         visual check that mosaic/affine/flip kept the labels aligned with the
         pixels. Falls back to raw frames if labels are absent or opencv is
         unavailable.
+
+        NOTE: these are PRE-colour-aug frames (geometry + labels only). Colour
+        augmentation (HSV/albumentations) now happens on the accelerator inside
+        the compiled train_step, so the images here are the parser's uint8
+        output before normalization/colour jitter. They are scaled to float
+        [0, 1] for the renderers (which expect [0, 1]).
         """
         try:
             from train.viz_utils import render_gt_images
@@ -591,7 +601,10 @@ class YoloV8Trainer:
             images  = inputs[0] if isinstance(inputs, (tuple, list)) else inputs
             labels  = (inputs[1] if isinstance(inputs, (tuple, list)) and len(inputs) > 1
                        else None)
-            imgs_np = images.numpy()   # [B, H, W, 3] float32 in [0,1]
+            imgs_np = images.numpy()   # [B, H, W, 3] uint8 (or float [0,1] in tests)
+            # Renderers expect float [0, 1]; uint8 parser output → /255.
+            if imgs_np.dtype == np.uint8:
+                imgs_np = imgs_np.astype('float32') / 255.0
             n       = min(imgs_np.shape[0], n_cfg)
 
             canvas = None

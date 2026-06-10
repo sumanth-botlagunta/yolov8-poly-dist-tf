@@ -163,54 +163,35 @@ def _transform_points_px(xy_px: tf.Tensor, M: tf.Tensor) -> tf.Tensor:
     return tf.reshape(out_xy, tf.shape(xy_px))
 
 
-def random_perspective(
-    image: tf.Tensor,
-    boxes: tf.Tensor,
-    polygons: tf.Tensor,
-    target_h: int,
-    target_w: int,
+def make_perspective_matrix(
+    h_in,
+    w_in,
+    target_h,
+    target_w,
     degrees: float = 10.0,
     translate: float = 0.1,
     scale: float = 0.5,
     shear: float = 2.0,
     perspective: float = 0.0,
-    area_thresh: float = 0.1,
-    min_side: float = 0.005,
-) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
-    """Full-affine geometric augmentation (Ultralytics random_perspective).
+) -> tf.Tensor:
+    """Build the random 3x3 (INPUT-px → OUTPUT-px) perspective matrix.
 
-    Composes center → perspective → rotation·scale → shear → translate and warps
-    the input to a (target_h, target_w) output (gray 114 fill on voids). When the
-    input is larger than the target (e.g. a 2× mosaic canvas) this center-crops to
-    the target while applying the affine; when input == target it warps in place.
-
-    Boxes are transformed by their 4 corners then re-fit to an axis-aligned box and
-    clipped to the edge (kept by visible-area fraction + min side). Polygon vertices
-    are transformed and clipped to the edge (remapped onto the border, per the
-    project's clip-to-edge convention); originally-padded (-1) vertices stay -1.
+    Identical random matrix construction to the legacy ``random_perspective``
+    inline block: center on (w_in/2, h_in/2) → perspective → rotation·scale →
+    shear → translate-to-output-center. Same draw order (perspective px/py,
+    rotation angle, scale gain, shear x/y, translate x/y) so seeded streams shift
+    minimally.
 
     Args:
-        image:    uint8 [H, W, 3].
-        boxes:    float32 [N, 4] yxyx normalized to the INPUT size.
-        polygons: float32 [N, max_vertices] flat xy pairs (normalized to INPUT), -1 padded.
-        target_h, target_w: output size.
-        degrees:  max rotation magnitude (degrees, ±).
-        translate: max translation as a fraction of the output size (±).
-        scale:    scale-gain magnitude; scale ∈ [1-scale, 1+scale].
-        shear:    max shear magnitude (degrees, ±).
-        perspective: max perspective coefficient (±); 0 disables.
-        area_thresh: min visible-area fraction (after-clip / before-clip) to keep a box.
-        min_side: min normalized side length to keep a box.
+        h_in, w_in: INPUT image dims (scalar tensors or python ints).
+        target_h, target_w: OUTPUT size.
+        degrees / translate / scale / shear / perspective: augmentation params.
 
     Returns:
-        (image_out uint8 [target_h, target_w, 3], boxes_out [N,4] normalized to OUTPUT,
-         keep_mask [N] bool, polygons_out [N, max_vertices] normalized to OUTPUT).
+        float32 [3, 3] input→output affine/perspective matrix M.
     """
-    image_f = tf.cast(image, tf.float32)
-    h_in = tf.cast(tf.shape(image)[0], tf.float32)
-    w_in = tf.cast(tf.shape(image)[1], tf.float32)
-    th_i = tf.cast(target_h, tf.int32)
-    tw_i = tf.cast(target_w, tf.int32)
+    h_in = tf.cast(h_in, tf.float32)
+    w_in = tf.cast(w_in, tf.float32)
     th_f = tf.cast(target_h, tf.float32)
     tw_f = tf.cast(target_w, tf.float32)
     deg2rad = math.pi / 180.0
@@ -252,7 +233,23 @@ def random_perspective(
               zero, one, ty,
               zero, zero, one])
 
-    M = T @ Sh @ R @ P @ C   # input → output
+    return T @ Sh @ R @ P @ C   # input → output
+
+
+def apply_perspective_image(
+    image: tf.Tensor,
+    M: tf.Tensor,
+    target_h: int,
+    target_w: int,
+) -> tf.Tensor:
+    """Warp ``image`` by the input→output matrix ``M`` to (target_h, target_w).
+
+    Uses ImageProjectiveTransformV3 with the normalized inverse map, gray-114
+    CONSTANT fill, BILINEAR interpolation. Returns uint8 [target_h, target_w, 3].
+    """
+    image_f = tf.cast(image, tf.float32)
+    th_i = tf.cast(target_h, tf.int32)
+    tw_i = tf.cast(target_w, tf.int32)
 
     # Image warp uses the inverse (output → input) map, normalized so M_inv[2,2]=1.
     M_inv = tf.linalg.inv(M)
@@ -273,6 +270,34 @@ def random_perspective(
     )
     image_out = tf.cast(tf.squeeze(image_out, 0), tf.uint8)
     image_out.set_shape([target_h, target_w, 3])
+    return image_out
+
+
+def transform_boxes_polygons(
+    boxes: tf.Tensor,
+    polygons: tf.Tensor,
+    M: tf.Tensor,
+    h_in,
+    w_in,
+    target_h: int,
+    target_w: int,
+    area_thresh: float = 0.1,
+    min_side: float = 0.005,
+) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Transform boxes/polygons (INPUT-normalized) by ``M`` to OUTPUT-normalized.
+
+    Boxes: transform 4 corners, re-fit AABB, clip to edge, keep by visible-area
+    fraction + min side. Polygons: transform vertices, clip to [0,1], keep -1
+    padding. Identical math to the legacy ``random_perspective`` block.
+
+    Returns:
+        (boxes_clip [N,4] normalized to OUTPUT, keep_mask [N] bool,
+         polygons_out [N, max_vertices] normalized to OUTPUT).
+    """
+    h_in = tf.cast(h_in, tf.float32)
+    w_in = tf.cast(w_in, tf.float32)
+    th_f = tf.cast(target_h, tf.float32)
+    tw_f = tf.cast(target_w, tf.float32)
 
     # ---- Boxes: transform 4 corners, re-fit AABB, clip to edge ----
     ymin, xmin, ymax, xmax = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
@@ -311,6 +336,71 @@ def random_perspective(
     y_out = tf.where(valid, y_out, neg1)
     polygons_out = tf.reshape(tf.stack([x_out, y_out], axis=-1), [N, max_v])
 
+    return boxes_clip, keep, polygons_out
+
+
+def random_perspective(
+    image: tf.Tensor,
+    boxes: tf.Tensor,
+    polygons: tf.Tensor,
+    target_h: int,
+    target_w: int,
+    degrees: float = 10.0,
+    translate: float = 0.1,
+    scale: float = 0.5,
+    shear: float = 2.0,
+    perspective: float = 0.0,
+    area_thresh: float = 0.1,
+    min_side: float = 0.005,
+) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Full-affine geometric augmentation (Ultralytics random_perspective).
+
+    Composes center → perspective → rotation·scale → shear → translate and warps
+    the input to a (target_h, target_w) output (gray 114 fill on voids). When the
+    input is larger than the target (e.g. a 2× mosaic canvas) this center-crops to
+    the target while applying the affine; when input == target it warps in place.
+
+    Boxes are transformed by their 4 corners then re-fit to an axis-aligned box and
+    clipped to the edge (kept by visible-area fraction + min side). Polygon vertices
+    are transformed and clipped to the edge (remapped onto the border, per the
+    project's clip-to-edge convention); originally-padded (-1) vertices stay -1.
+
+    Thin wrapper over ``make_perspective_matrix`` / ``apply_perspective_image`` /
+    ``transform_boxes_polygons``; behavior (and random draw order) is identical to
+    the legacy inline implementation.
+
+    Args:
+        image:    uint8 [H, W, 3].
+        boxes:    float32 [N, 4] yxyx normalized to the INPUT size.
+        polygons: float32 [N, max_vertices] flat xy pairs (normalized to INPUT), -1 padded.
+        target_h, target_w: output size.
+        degrees:  max rotation magnitude (degrees, ±).
+        translate: max translation as a fraction of the output size (±).
+        scale:    scale-gain magnitude; scale ∈ [1-scale, 1+scale].
+        shear:    max shear magnitude (degrees, ±).
+        perspective: max perspective coefficient (±); 0 disables.
+        area_thresh: min visible-area fraction (after-clip / before-clip) to keep a box.
+        min_side: min normalized side length to keep a box.
+
+    Returns:
+        (image_out uint8 [target_h, target_w, 3], boxes_out [N,4] normalized to OUTPUT,
+         keep_mask [N] bool, polygons_out [N, max_vertices] normalized to OUTPUT).
+    """
+    h_in = tf.shape(image)[0]
+    w_in = tf.shape(image)[1]
+
+    M = make_perspective_matrix(
+        h_in=h_in, w_in=w_in,
+        target_h=target_h, target_w=target_w,
+        degrees=degrees, translate=translate, scale=scale,
+        shear=shear, perspective=perspective,
+    )
+    image_out = apply_perspective_image(image, M, target_h, target_w)
+    boxes_clip, keep, polygons_out = transform_boxes_polygons(
+        boxes, polygons, M, h_in=h_in, w_in=w_in,
+        target_h=target_h, target_w=target_w,
+        area_thresh=area_thresh, min_side=min_side,
+    )
     return image_out, boxes_clip, keep, polygons_out
 
 

@@ -90,6 +90,18 @@ def _validate_config(config, output_dir: str) -> None:
             "runs exactly steps_per_loop steps per epoch — without it epochs have "
             "no defined length."
         )
+    # decay_steps is an EXPLICIT YAML value (not derived); if it drifts from
+    # train_steps the cosine schedule ends early or never anneals. Warn loudly.
+    decay = trainer.optimizer_config.learning_rate.decay_steps
+    if trainer.train_steps > 0 and decay != trainer.train_steps:
+        logging.warning(
+            "LR decay_steps (%d) != train_steps (%d = steps_per_loop %d × epochs %d). "
+            "The cosine schedule will %s. Set decay_steps to train_steps in the YAML "
+            "unless this is intentional.",
+            decay, trainer.train_steps, trainer.steps_per_loop, trainer.train_epochs,
+            "reach its floor before training ends" if decay < trainer.train_steps
+            else "never reach its floor",
+        )
 
     # --- dataset directories ---
     for label, data_cfg in [

@@ -64,6 +64,45 @@ class TestCopyAndPasteModule(unittest.TestCase):
         self.assertEqual(int(out["groundtruth_boxes"].shape[0]), 2)
         np.testing.assert_array_equal(out["image"].numpy(), bg["image"].numpy())
 
+    def test_resolution_correction_preserves_relative_size(self):
+        """Compositing on a pre-resized background must yield the same RELATIVE
+        object size as compositing on the original-resolution background.
+
+        The pipeline pre-resizes backgrounds to the model input size before
+        copy-paste; _copy_and_paste scales the object by (current/original) per
+        axis using the bg's 'height'/'width' fields. With a fixed resize ratio
+        (min==max==1.0) the appended box's normalized height/width must match
+        the unresized case to within 1px rounding.
+        """
+        mod = CopyAndPasteModule(prob=1.0, min_resize_ratio=1.0, max_resize_ratio=1.0)
+        fn = mod.process_fn(is_training=True)
+
+        # Case A: original 200×400 background (no height/width fields → corr=1).
+        out_a = fn(_bg(h=200, w=400), _obj(h=40, w=40))
+        box_a = out_a["groundtruth_boxes"][-1].numpy()
+        h_a, w_a = box_a[2] - box_a[0], box_a[3] - box_a[1]
+        self.assertAlmostEqual(h_a, 40 / 200, places=5)
+        self.assertAlmostEqual(w_a, 40 / 400, places=5)
+
+        # Case B: same background pre-resized to 100×100, original dims recorded.
+        bg_b = _bg(h=100, w=100)
+        bg_b["height"] = tf.constant(200, tf.int32)
+        bg_b["width"] = tf.constant(400, tf.int32)
+        out_b = fn(bg_b, _obj(h=40, w=40))
+        box_b = out_b["groundtruth_boxes"][-1].numpy()
+        h_b, w_b = box_b[2] - box_b[0], box_b[3] - box_b[1]
+        # corr = (100/200, 100/400) → pasted 20×10 px on 100×100 → same fractions.
+        self.assertAlmostEqual(h_b, h_a, delta=1.0 / 100)
+        self.assertAlmostEqual(w_b, w_a, delta=1.0 / 100)
+
+    def test_no_height_fields_is_backward_compatible(self):
+        """Without 'height'/'width' fields the correction must be exactly 1."""
+        mod = CopyAndPasteModule(prob=1.0, min_resize_ratio=1.0, max_resize_ratio=1.0)
+        out = mod.process_fn(is_training=True)(_bg(h=100, w=100), _obj(h=40, w=40))
+        box = out["groundtruth_boxes"][-1].numpy()
+        self.assertAlmostEqual(box[2] - box[0], 0.4, places=5)
+        self.assertAlmostEqual(box[3] - box[1], 0.4, places=5)
+
     def test_graph_mode_map_traces(self):
         """Regression: copy-paste must trace under Dataset.map(AUTOTUNE).
 

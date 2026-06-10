@@ -6,6 +6,16 @@ Produces the same label schema as V8ParserExtended but:
     - Does not apply Copy-Paste or Mosaic augmentation.
     - with_polygons defaults to False (distance dataset has no polygon labels).
 
+Colour augmentation (HSV jitter + normalize /255) is NO LONGER done here. The
+parser emits a uint8 image so the merged batch carries uint8; the per-batch
+colour pipeline runs on the accelerator in ``train.task.train_step`` via
+``data_pipeline.batch_color_aug.batch_color_augment``. That step applies HSV to
+ALL rows — the distance stream's HSV params (aug_rand_hue/saturation/brightness)
+are configured equal to the detection stream's from the same YAML, so this is
+the same HSV distribution this parser applied before — and applies
+albumentations only to ``ignore_bg == 0`` rows, so the distance stream still
+receives NO albumentations (matching today's per-stream behaviour).
+
 Classes:
     V8DistanceParser: Lightweight parser for the distance stream.
 """
@@ -77,10 +87,8 @@ class V8DistanceParser(Parser):
         if self._random_flip:
             image, boxes = self._maybe_flip(image, boxes)
 
-        image = self._augment_color(image)
-
-        # Normalize image.
-        image = tf.cast(image, tf.float32) / 255.0
+        # Colour augmentation (HSV + normalize /255) is now done once per batch
+        # on the accelerator in train.task.train_step. Keep the image uint8.
 
         # Build label tensors.
         n_gt = tf.shape(boxes)[0]
@@ -108,7 +116,8 @@ class V8DistanceParser(Parser):
         """Parse an evaluation distance sample (letterbox resize, no augmentation)."""
         image, boxes, classes, is_crowd, dists = self._extract_fields(data)
         image, boxes = self._letterbox_resize(image, boxes)
-        image = tf.cast(image, tf.float32) / 255.0
+        # Image stays uint8; normalization /255 happens once per batch in
+        # train.task.validation_step.
 
         n_gt = tf.shape(boxes)[0]
         log_dists = self._encode_log_distance(dists)
@@ -225,19 +234,6 @@ class V8DistanceParser(Parser):
         xmax = tf.where(do_flip, 1.0 - boxes[:, 1], boxes[:, 3])
         boxes = tf.stack([boxes[:, 0], xmin, boxes[:, 2], xmax], axis=1)
         return image, boxes
-
-    def _augment_color(self, image: tf.Tensor) -> tf.Tensor:
-        image = tf.cast(image, tf.float32)
-        if self._aug_rand_hue > 0:
-            image = tf.image.random_hue(image / 255.0, self._aug_rand_hue) * 255.0
-        if self._aug_rand_saturation > 0:
-            lower = max(0.0, 1.0 - self._aug_rand_saturation)
-            upper = 1.0 + self._aug_rand_saturation
-            image = tf.image.random_saturation(image / 255.0, lower, upper) * 255.0
-        if self._aug_rand_brightness > 0:
-            image = tf.image.random_brightness(image / 255.0, self._aug_rand_brightness) * 255.0
-        image = tf.clip_by_value(image, 0.0, 255.0)
-        return tf.cast(image, tf.uint8)
 
     def _pad_labels(
         self,

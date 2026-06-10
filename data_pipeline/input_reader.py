@@ -201,18 +201,15 @@ class InputReader:
         if self._decoder is not None:
             ds = ds.map(self._decoder.decode, num_parallel_calls=_AUTOTUNE)
 
-        # Copy-Paste: zip with CNP dataset BEFORE mosaic.
-        if self._copy_paste_module is not None and self._cnp_tfds_name:
-            cnp_ds = self._load_cnp_dataset()
-            ds = tf.data.Dataset.zip((ds, cnp_ds))
-            copy_paste_fn = self._copy_paste_module.process_fn(is_training=True)
-            ds = ds.map(copy_paste_fn, num_parallel_calls=_AUTOTUNE)
-
-        # Mosaic: batch(4) → combine → unbatch so downstream sees single examples.
-        # Pre-resize to a fixed shape before batch(4) because raw decoded images
-        # have variable spatial dimensions and cannot be stacked otherwise.
-        # The mosaic fn then assembles a 2× canvas from these and applies
-        # random_perspective; non-mosaic samples take the single-image branch.
+        # Pre-resize to the fixed output shape BEFORE copy-paste so the composite
+        # runs on a 672² image instead of the full-resolution original (the
+        # composite cost scales with background pixels — measured ~18 ms·core per
+        # image at full res). CopyAndPasteModule reads the original dims from the
+        # 'height'/'width' fields (preserved by this map) and scales the pasted
+        # object by (new/orig) per axis, so the object's RELATIVE size and
+        # placement distribution are exactly what compositing at full resolution
+        # then resizing would have produced. The resize is also required before
+        # padded_batch(4) anyway (variable spatial dims cannot be stacked).
         if self._mosaic_module is not None:
             _H, _W = self._mosaic_module._H, self._mosaic_module._W
 
@@ -223,10 +220,20 @@ class InputReader:
                 )
                 return {**ex, 'image': img}
 
+            ds = ds.map(_pre_resize_for_mosaic, num_parallel_calls=_AUTOTUNE)
+
+        # Copy-Paste: zip with CNP dataset BEFORE mosaic (on pre-resized images).
+        if self._copy_paste_module is not None and self._cnp_tfds_name:
+            cnp_ds = self._load_cnp_dataset()
+            ds = tf.data.Dataset.zip((ds, cnp_ds))
+            copy_paste_fn = self._copy_paste_module.process_fn(is_training=True)
+            ds = ds.map(copy_paste_fn, num_parallel_calls=_AUTOTUNE)
+
+        # Mosaic: batch(4) → combine (4 in → 4 out) → unbatch.
+        if self._mosaic_module is not None:
             mosaic_fn = self._mosaic_module.mosaic_fn(is_training=True)
             ds = (
                 ds
-                .map(_pre_resize_for_mosaic, num_parallel_calls=_AUTOTUNE)
                 .padded_batch(4, drop_remainder=True)
                 .map(mosaic_fn, num_parallel_calls=_AUTOTUNE)
                 .unbatch()
