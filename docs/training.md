@@ -1,7 +1,7 @@
 # Training
 
 Entry point: `scripts/run_train.py`. Configs are dataclasses (`configs/model_config.py`) loaded
-from YAML via `dacite` (`configs/yaml_loader.py`). Use the `/train` skill or:
+from YAML by the hand-rolled mapper in `configs/yaml_loader.py` (not dacite). Use the `/train` skill or:
 
 ```bash
 python scripts/run_train.py \
@@ -134,7 +134,7 @@ without HSV jitter or Albumentations applied.
 The three polygon loss components are logged separately:
 - `train/poly_angle_loss` — sub-bin angle-offset BCE (mean over the **valid** vertices per anchor)
 - `train/poly_dist_loss`  — radial distance L2 `(softplus(pred) − target)²` (mean over valid vertices)
-- `train/poly_conf_loss`  — vertex-validity BCE (mean over the **valid** vertices, masked)
+- `train/poly_conf_loss`  — vertex-validity BCE (mean over **ALL 24 bins**; empty bins get the negative signal — 2026-06-11)
 
 These are useful for diagnosing which polygon component is not converging.
 
