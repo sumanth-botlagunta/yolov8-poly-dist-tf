@@ -117,8 +117,16 @@ class PolygonDecoder:
         image = tf.cast(image, tf.uint8)
 
         shape = tf.shape(image)
-        height = tf.cast(shape[0], tf.int32)
-        width = tf.cast(shape[1], tf.int32)
+        # Prefer explicitly-stored ORIGINAL dims when present (written by
+        # tools/reencode_tfds_672.py for pre-resized dataset variants): the
+        # copy-paste resolution correction needs the original capture size,
+        # which tf.shape() can no longer provide once images are stored small.
+        try:
+            height = tf.cast(data['orig_height'], tf.int32)
+            width = tf.cast(data['orig_width'], tf.int32)
+        except KeyError:
+            height = tf.cast(shape[0], tf.int32)
+            width = tf.cast(shape[1], tf.int32)
 
         # source_id — 'image/id' is a literal flat key in TFDS (slash in key name)
         source_id = tf.strings.as_string(tf.cast(data['image/id'], tf.int64))
@@ -198,10 +206,12 @@ class ServingBotDetDecoder(PolygonDecoder):
     def __init__(
         self,
         num_classes: int = 39,
+        resample_points: int = 0,
     ):
         super().__init__(
             max_vertices=10938,
             num_classes=num_classes,
+            resample_points=resample_points,
         )
 
         from configs.class_map import SERVINGBOT_CLASS_REMAP
