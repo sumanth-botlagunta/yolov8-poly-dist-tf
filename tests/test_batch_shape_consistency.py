@@ -245,6 +245,20 @@ class TestParserOutputShape(unittest.TestCase):
                 f"Distance parser gave {image.shape} for ({h},{w}) input",
             )
 
+    def test_parsers_emit_uint8(self):
+        """All parsers emit uint8 images now — colour aug + /255 moved to the GPU step."""
+        v8 = _make_v8_parser()
+        train_img, _ = v8.parse_fn(is_training=True)(_make_raw_example(640, 480))
+        eval_img, _ = v8.parse_fn(is_training=False)(_make_raw_example(640, 480))
+        self.assertEqual(train_img.dtype, tf.uint8)
+        self.assertEqual(eval_img.dtype, tf.uint8)
+
+        dist = _make_distance_parser()
+        ex = _make_raw_example(640, 480)
+        ex['groundtruth_dists'] = tf.constant([1.5, 2.0])
+        dist_img, _ = dist.parse_fn(is_training=True)(ex)
+        self.assertEqual(dist_img.dtype, tf.uint8)
+
 
 class TestStaticShapeKnown(unittest.TestCase):
     """Parser output must carry static shape [H, W, 3] — no None spatial dims.
@@ -263,7 +277,12 @@ class TestStaticShapeKnown(unittest.TestCase):
         )
 
     def test_train_parser_static_shape_with_albumentations(self):
-        """tf.py_function inside apply_albumentations must not erase H/W dims."""
+        """Static shape stays [H, W, 3] even with albumentations_frequency set.
+
+        Albumentations now runs per-batch on the accelerator (not in the parser),
+        but the parser config still accepts the frequency; the parser output must
+        keep fully-known spatial dims regardless.
+        """
         parser = _make_v8_parser(albumentations_frequency=1.0)
         image, _ = parser.parse_fn(is_training=True)(_make_raw_example(640, 480))
         self.assertEqual(

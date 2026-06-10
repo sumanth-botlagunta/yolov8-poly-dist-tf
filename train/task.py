@@ -163,6 +163,24 @@ class YoloV8Task:
             self._loss_fn = self.build_losses()
 
         images, labels = inputs
+
+        # Per-batch colour augmentation on the accelerator (replaces the parser-
+        # side /255 + HSV + albumentations). The parsers emit uint8 so the
+        # pipeline carries 4× less memory; this runs HSV on every row and
+        # albumentations only on detection rows (ignore_bg == 0). When images
+        # already arrive as float (some tests), they're assumed to be in [0, 1]
+        # and the /255 is skipped by batch_color_augment.
+        from data_pipeline.batch_color_aug import batch_color_augment
+        p = self._config.task.train_data.parser
+        images = batch_color_augment(
+            images,
+            hue=p.aug_rand_hue,
+            sat=p.aug_rand_saturation,
+            val=p.aug_rand_brightness,
+            albu_freq=p.albumentations_frequency,
+            albu_row_mask=tf.equal(labels['ignore_bg'], 0),
+        )
+
         with tf.GradientTape() as tape:
             feats = model(images, training=True)
             total, box, dfl, cls, dist, poly, poly_a, poly_d, poly_c = self._loss_fn(feats, labels)
@@ -200,6 +218,10 @@ class YoloV8Task:
         Runs the model in deploy=True mode to obtain decoded detections.
         """
         images, labels = inputs
+        # Parsers now emit uint8; normalize to [0, 1] here. Keep float passthrough
+        # for backward compat (some tests feed already-normalized float images).
+        if images.dtype == tf.uint8:
+            images = tf.cast(images, tf.float32) / 255.0
         original_deploy = model.deploy
         model.deploy = True
         try:

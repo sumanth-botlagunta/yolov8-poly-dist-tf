@@ -83,11 +83,26 @@ class CopyAndPasteModule:
         alpha    = obj_rgba[:, :, 3:4] / 255.0              # [H_o, W_o, 1]
 
         # Resize object by a ratio applied directly to its own dimensions.
+        #
+        # Resolution correction: the background may already have been resized
+        # (the pipeline pre-resizes to the model input size BEFORE copy-paste so
+        # the composite runs on 672² pixels, not full resolution). The object's
+        # target size is defined relative to the ORIGINAL background dims — so
+        # scale it by (current/original) per axis. This commutes exactly with
+        # the background resize: compositing here then is pixel-equivalent in
+        # geometry to compositing at full resolution and resizing afterwards.
+        # When the background is unresized, height/width == current dims and
+        # the correction is 1 (fully backward compatible).
+        orig_h_f = tf.cast(bg_data.get('height', H), tf.float32)
+        orig_w_f = tf.cast(bg_data.get('width', W), tf.float32)
+        corr_h = H_f / tf.maximum(orig_h_f, 1.0)
+        corr_w = W_f / tf.maximum(orig_w_f, 1.0)
+
         resize_ratio = tf.random.uniform([], self._min_resize_ratio, self._max_resize_ratio)
         obj_h_f = tf.cast(tf.shape(obj_rgb)[0], tf.float32)
         obj_w_f = tf.cast(tf.shape(obj_rgb)[1], tf.float32)
-        new_h = tf.maximum(tf.cast(tf.round(obj_h_f * resize_ratio), tf.int32), 1)
-        new_w = tf.maximum(tf.cast(tf.round(obj_w_f * resize_ratio), tf.int32), 1)
+        new_h = tf.maximum(tf.cast(tf.round(obj_h_f * resize_ratio * corr_h), tf.int32), 1)
+        new_w = tf.maximum(tf.cast(tf.round(obj_w_f * resize_ratio * corr_w), tf.int32), 1)
 
         # Resize obj and alpha
         obj_rgb_r = tf.image.resize(obj_rgb, [new_h, new_w], method='bilinear')

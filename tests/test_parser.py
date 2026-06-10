@@ -1,7 +1,9 @@
 """Tests for V8ParserExtended and V8DistanceParser output formats.
 
 Validates:
-    - Parsed image is float32 normalized to [0, 1] at the configured output size.
+    - Parsed image is uint8 in [0, 255] at the configured output size (colour
+      augmentation + normalization now run per-batch on the accelerator, not in
+      the parser).
     - labels['bbox'] is padded to [max_num_instances, 4]; polygons to [*, 72].
     - labels['n_gt'] matches the number of valid ground-truth boxes.
     - Distance parser sets ignore_bg=1 and log-encodes distances (invalid → -10.0).
@@ -48,10 +50,10 @@ class TestV8ParserExtended(unittest.TestCase):
 
     def test_image_range(self):
         img = self.image.numpy()
-        self.assertEqual(self.image.dtype, tf.float32)
+        self.assertEqual(self.image.dtype, tf.uint8)
         self.assertEqual(img.shape, (64, 64, 3))
-        self.assertGreaterEqual(img.min(), 0.0)
-        self.assertLessEqual(img.max(), 1.0)
+        self.assertGreaterEqual(int(img.min()), 0)
+        self.assertLessEqual(int(img.max()), 255)
 
     def test_label_shapes(self):
         self.assertEqual(tuple(self.labels["bbox"].shape), (300, 4))
