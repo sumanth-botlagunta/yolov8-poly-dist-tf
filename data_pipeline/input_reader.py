@@ -214,10 +214,26 @@ class InputReader:
             _H, _W = self._mosaic_module._H, self._mosaic_module._W
 
             def _pre_resize_for_mosaic(ex, H=_H, W=_W):
-                img = tf.cast(
-                    tf.image.resize(tf.cast(ex['image'], tf.float32), [H, W], method='bilinear'),
-                    tf.uint8,
+                # Skip the (expensive, full-image float32) resize when the image
+                # is already exactly the target size — true for every record of
+                # a pre-resized dataset variant (tools/reencode_tfds_672.py) and
+                # the occasional natively-sized capture. Runtime tf.cond because
+                # decoded shapes are dynamic; the identity branch is ~free.
+                img_in = ex['image']
+                shp = tf.shape(img_in)
+
+                def _resize():
+                    return tf.cast(
+                        tf.image.resize(tf.cast(img_in, tf.float32), [H, W], method='bilinear'),
+                        tf.uint8,
+                    )
+
+                img = tf.cond(
+                    tf.logical_and(tf.equal(shp[0], H), tf.equal(shp[1], W)),
+                    lambda: img_in,
+                    _resize,
                 )
+                img.set_shape([H, W, 3])
                 return {**ex, 'image': img}
 
             ds = ds.map(_pre_resize_for_mosaic, num_parallel_calls=_AUTOTUNE)
@@ -492,7 +508,10 @@ def build_input_reader_from_config(
         from data_pipeline.distance_parser import V8DistanceParser
         from data_pipeline.tfds_decoders import ServingBotDetDecoder
         dist_cfg = data_cfg.distance_data
-        dist_decoder = ServingBotDetDecoder(num_classes=num_classes)
+        dist_decoder = ServingBotDetDecoder(
+            num_classes=num_classes,
+            resample_points=dist_cfg.parser.resample_points,
+        )
         dist_parser = V8DistanceParser(
             output_size=output_size,
             max_num_instances=dist_cfg.parser.max_num_instances,

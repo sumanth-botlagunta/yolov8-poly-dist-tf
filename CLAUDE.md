@@ -91,9 +91,12 @@ polygon loss.
   (masked by the conf channel), normalized by `num_objs`. Decode: `vertex_angle = (i + sigmoid(pred))·angle_step`.
 - Polygon **dist** uses L2+softplus: `(target − softplus(pred))²`, averaged over the **valid
   vertices only** (masked by the conf channel), normalized by `num_objs`.
-- Polygon **conf** uses BCE on per-bin validity, averaged over the **valid vertices only**
-  (masked by the conf channel, like angle/dist), normalized by `num_objs`. (Masking means the
-  conf head is not trained to output low confidence on empty bins.)
+- Polygon **conf** uses BCE on per-bin validity, averaged over **ALL 24 bins** (occupied → 1,
+  empty → 0), normalized by `num_objs`. Conf is the decode gate and must see negatives —
+  the earlier masked form (2026-06, valid-bins-only) gave empty bins zero gradient ever, so
+  their conf drifted above the 0.4 decode/viz threshold while their dist stayed untrained →
+  the star/spiky polygon artifacts seen in val overlays. Changed 2026-06-11; the masked form
+  is preserved in `polygon_conf_loss`'s docstring as a one-line swap.
 - All three polygon sub-losses (`poly_angle_loss`, `poly_dist_loss`, `poly_conf_loss`) are
   logged separately to TensorBoard; the combined `poly_loss` is their gain-weighted sum
   multiplied by `poly_gain`.
@@ -147,7 +150,9 @@ configs/
 scripts/
   run_train.py         # entry point (config load, validation, strategy, runtime flags)
 tools/
-  benchmark_pipeline.py checkpoint_migration.py compare_checkpoints.py
+  benchmark_pipeline.py diagnose_pipeline.py cloud_diagnose.sh
+  reencode_tfds_672.py  # one-time 672² pre-resized dataset variants (+orig_height/width)
+  checkpoint_migration.py compare_checkpoints.py
   eval.py export_saved_model.py trace_shapes.py continuous_eval.py
 tests/                 # unit/ integration/ smoke/ + component tests
 ```
