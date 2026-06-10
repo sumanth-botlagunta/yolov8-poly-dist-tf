@@ -110,6 +110,9 @@ task:
     global_batch_size: 128
     is_training: true
     shuffle_buffer_size: 1500
+    # tf.data worker threads for the training pipeline (0 = all visible cores;
+    # set to the real core quota on cgroup-capped machines).
+    private_threadpool_size: 13
     prob_copy_n_paste: 0.2
     seed: 1000
     drop_remainder: true
@@ -270,11 +273,18 @@ trainer:
       warmup_steps: 7164
 
 runtime:
-  distribution_strategy: mirrored
-  num_gpus: 2
-  mixed_precision_dtype: float32
+  # Single H100: one_device avoids MirroredStrategy variable wrapping overhead.
+  distribution_strategy: one_device
+  num_gpus: 1
+  # bfloat16 on H100 Tensor Cores; prediction heads stay float32 (pinned in
+  # models/head.py) and the loss runs in float32 — no loss scaling needed.
+  mixed_precision_dtype: bfloat16
   run_eagerly: false
   enable_xla: false
   num_cores_per_replica: 1
   num_packs: 1
   per_gpu_thread_count: 0
+  # Host CPU is cgroup-capped at ~13 cores while 128 are visible; cap TF's
+  # pools to the real quota (tune on the machine if the cap changes).
+  inter_op_threads: 4
+  intra_op_threads: 12

@@ -50,21 +50,140 @@ def _identity_mosaic(out=32, freq=0.0):
 
 class TestMosaic(unittest.TestCase):
     def test_output_size(self):
+        """mosaic_frequency=1.0 path produces 4 output images of [4, H, W, 3]."""
         m = Mosaic(output_size=[32, 32], mosaic_frequency=1.0, with_polygons=True)
         out = m.mosaic_fn(is_training=True)(_make_batch4())
-        self.assertEqual(tuple(out["image"].shape), (1, 32, 32, 3))
+        self.assertEqual(tuple(out["image"].shape), (4, 32, 32, 3))
 
     def test_boxes_in_unit_range(self):
+        """mosaic_frequency=1.0 path keeps all (padded + real) boxes within [0,1]."""
         m = Mosaic(output_size=[32, 32], mosaic_frequency=1.0, with_polygons=True)
         out = m.mosaic_fn(is_training=True)(_make_batch4())
+        self.assertEqual(out["groundtruth_boxes"].shape[0], 4)
         boxes = out["groundtruth_boxes"].numpy()
         self.assertTrue((boxes >= -1e-4).all() and (boxes <= 1.0 + 1e-4).all())
 
     def test_identity_single_reproduces_input(self):
-        """freq=0 + identity affine → single branch returns the input unchanged."""
+        """freq=0 + identity affine → each of the 4 outputs reproduces its input.
+
+        Every decoded image must yield exactly one emitted sample (4-in/4-out),
+        and with an identity warp the single branch is a passthrough.
+        """
         batch = _make_batch4(h=32, w=32)
         out = _identity_mosaic(out=32, freq=0.0).mosaic_fn(is_training=True)(batch)
-        np.testing.assert_array_equal(out["image"][0].numpy(), batch["image"][0].numpy())
+        self.assertEqual(tuple(out["image"].shape), (4, 32, 32, 3))
+        for i in range(4):
+            np.testing.assert_array_equal(
+                out["image"][i].numpy(), batch["image"][i].numpy()
+            )
+
+    def test_branches_have_identical_structure(self):
+        """Both tf.cond branches must emit dicts with identical keys/dtypes/ranks."""
+        batch = _make_batch4(h=32, w=32)
+        m_mosaic = Mosaic(output_size=[32, 32], mosaic_frequency=1.0, with_polygons=True)
+        m_single = Mosaic(output_size=[32, 32], mosaic_frequency=0.0, with_polygons=True)
+        out_m = m_mosaic.mosaic_fn(is_training=True)(batch)
+        out_s = m_single.mosaic_fn(is_training=True)(batch)
+
+        self.assertEqual(set(out_m.keys()), set(out_s.keys()))
+        for k in out_m:
+            self.assertEqual(out_m[k].dtype, out_s[k].dtype, f"dtype mismatch {k}")
+            self.assertEqual(
+                len(out_m[k].shape), len(out_s[k].shape), f"rank mismatch {k}"
+            )
+            # Leading (sample) dim is always 4.
+            self.assertEqual(int(out_m[k].shape[0]), 4)
+            self.assertEqual(int(out_s[k].shape[0]), 4)
+
+    def test_padded_rows_are_zero_boxes_and_neg1_polys(self):
+        """freq=0 + identity affine: valid (non-zero-box) anns match the 4 inputs;
+        padded rows are zero boxes / -1 polygons.
+
+        The incoming batch already has a uniform instance dim (it comes from
+        padded_batch upstream); here sample 0 carries a real second box while
+        samples 1-3 carry a padded (zero-box / -1-poly) second row. The single
+        branch's clip_boxes(min_side=0.005) drops the zero box, so it stays a pad
+        row on output. (This pins both the upstream pad-row contract and the
+        _stack_results re-pad behaviour.)
+        """
+        b0 = [[0.25, 0.25, 0.75, 0.75], [0.10, 0.10, 0.40, 0.40]]
+        bpad = [[0.25, 0.25, 0.75, 0.75], [0.0, 0.0, 0.0, 0.0]]
+        p0 = [[0.3, 0.3, 0.6, 0.6, -1.0, -1.0, -1.0, -1.0],
+              [0.2, 0.2, 0.35, 0.35, -1.0, -1.0, -1.0, -1.0]]
+        ppad = [[0.3, 0.3, 0.6, 0.6, -1.0, -1.0, -1.0, -1.0],
+                [-1.0] * 8]
+        boxes = tf.constant([b0, bpad, bpad, bpad], tf.float32)      # [4, 2, 4]
+        polys = tf.constant([p0, ppad, ppad, ppad], tf.float32)      # [4, 2, 8]
+        batch = {
+            "image":  tf.fill([4, 32, 32, 3], tf.constant(100, tf.uint8)),
+            "height": tf.constant([32] * 4, tf.int32),
+            "width":  tf.constant([32] * 4, tf.int32),
+            "groundtruth_boxes":    boxes,
+            "groundtruth_classes":  tf.zeros([4, 2], tf.int64),
+            "groundtruth_is_crowd": tf.zeros([4, 2], tf.bool),
+            "groundtruth_area":     tf.ones([4, 2], tf.float32),
+            "groundtruth_dontcare": tf.zeros([4, 2], tf.int64),
+            "groundtruth_dists":    tf.fill([4, 2], tf.constant(-1.0)),
+            "groundtruth_polygons": polys,
+            "source_id":            tf.constant(["a", "b", "c", "d"]),
+        }
+
+        out = _identity_mosaic(out=32, freq=0.0).mosaic_fn(is_training=True)(batch)
+        boxes = out["groundtruth_boxes"].numpy()
+        polys = out["groundtruth_polygons"].numpy()
+        self.assertEqual(boxes.shape[0], 4)
+        self.assertEqual(boxes.shape[1], 2)   # padded up to group-max N=2
+
+        # Sample 0: both boxes valid (non-zero). Samples 1-3: row 1 is a pad row.
+        for i in range(4):
+            n_valid = 2 if i == 0 else 1
+            for j in range(2):
+                if j < n_valid:
+                    self.assertTrue((boxes[i, j] != 0.0).any(),
+                                    f"sample {i} row {j} should be a real box")
+                else:
+                    np.testing.assert_array_equal(boxes[i, j], [0.0, 0.0, 0.0, 0.0])
+                    np.testing.assert_array_equal(polys[i, j], [-1.0] * 8)
+
+    def test_eval_path_four_out(self):
+        """is_training=False also emits 4 outputs (consistency)."""
+        batch = _make_batch4(h=32, w=32)
+        out = _identity_mosaic(out=32, freq=0.0).mosaic_fn(is_training=False)(batch)
+        self.assertEqual(tuple(out["image"].shape), (4, 32, 32, 3))
+
+
+class TestMosaicUnbatchIntegration(unittest.TestCase):
+    def test_padded_batch_map_unbatch_yields_four(self):
+        """from_tensor_slices(4) → padded_batch(4) → map(mosaic_fn) → unbatch → 4 elems."""
+        h = w = 32
+        examples = {
+            "image":  tf.fill([4, h, w, 3], tf.constant(100, tf.uint8)),
+            "height": tf.constant([h] * 4, tf.int32),
+            "width":  tf.constant([w] * 4, tf.int32),
+            "groundtruth_boxes":    tf.tile([[[0.25, 0.25, 0.75, 0.75]]], [4, 1, 1]),
+            "groundtruth_classes":  tf.zeros([4, 1], tf.int64),
+            "groundtruth_is_crowd": tf.zeros([4, 1], tf.bool),
+            "groundtruth_area":     tf.ones([4, 1], tf.float32),
+            "groundtruth_dontcare": tf.zeros([4, 1], tf.int64),
+            "groundtruth_dists":    tf.fill([4, 1], tf.constant(-1.0)),
+            "groundtruth_polygons": tf.tile(
+                [[[0.3, 0.3, 0.6, 0.6, -1.0, -1.0, -1.0, -1.0]]], [4, 1, 1]),
+            "source_id":            tf.constant(["a", "b", "c", "d"]),
+        }
+        m = _identity_mosaic(out=32, freq=0.0)
+        ds = (tf.data.Dataset.from_tensor_slices(examples)
+              .padded_batch(4, drop_remainder=True)
+              .map(m.mosaic_fn(is_training=True))
+              .unbatch())
+
+        # Static element spec keeps image [H, W, 3].
+        self.assertEqual(ds.element_spec["image"].shape.as_list(), [h, w, 3])
+
+        count = 0
+        for el in ds:
+            self.assertEqual(tuple(el["image"].shape), (h, w, 3))
+            count += 1
+        self.assertEqual(count, 4)
 
 
 class TestPlaceInCell(unittest.TestCase):

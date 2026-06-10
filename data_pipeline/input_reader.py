@@ -6,12 +6,25 @@ Handles two parallel data streams:
      and concatenated onto the detection batch (ignore_bg=1 on those rows).
 
 Pipeline order for training:
-    tfds.load(names) → sample_from_datasets(weights)
+    tfds.load(names, SkipDecoding) → repeat each source → sample_from_datasets(weights)
+    → shuffle (encoded records) → decode
     → zip(cnp_dataset) → copy_paste(prob)
-    → batch(4) → mosaic → unbatch
+    → batch(4) → mosaic (4 in → 4 out) → unbatch → shuffle(small)
     → parser.parse_fn(is_training=True)
     → batch(global_batch_size)
     → prefetch(AUTOTUNE)
+
+Training-stream invariants:
+  - Each SOURCE dataset is repeated before sample_from_datasets so the [95,2,3]
+    sampling weights stay stationary forever (repeating the merged stream would
+    replay the tail-skew that appears as small sources exhaust). The training
+    stream is therefore infinite; the trainer runs a fixed steps_per_loop steps
+    per epoch (one nominal pass = train_total_examples / batch).
+  - Images stay ENCODED (SkipDecoding) through shuffle, so the shuffle buffer
+    holds KBs of JPEG bytes per element instead of MBs of decoded pixels; the
+    decoders' tf.string branch decodes inside the parallel decode map.
+  - Mosaic emits 4 samples per 4-group (no decoded image is discarded); a small
+    post-unbatch shuffle breaks up the 4-sample correlation clusters.
 
 Distance stream (when distance_reader is provided):
     servingbot_polygon → dist_parser → batch(16) → prefetch
@@ -97,6 +110,7 @@ class InputReader:
         shuffle_buffer_size: int = 1500,
         drop_remainder: bool = True,
         tfds_download: bool = True,
+        private_threadpool_size: int = 0,
     ):
         self._tfds_names = tfds_names
         self._tfds_split = tfds_split
@@ -116,6 +130,7 @@ class InputReader:
         self._shuffle_buffer_size = shuffle_buffer_size
         self._drop_remainder = drop_remainder
         self._tfds_download = tfds_download
+        self._private_threadpool_size = private_threadpool_size
 
     # ------------------------------------------------------------------
     # Public API
@@ -135,20 +150,43 @@ class InputReader:
         else:
             det_ds = self._build_eval_dataset(batch_size)
 
+        ds = det_ds
         if self._is_training and self._distance_reader is not None:
             dist_batch_size = self._distance_reader._per_replica_batch_size(ctx)
             dist_ds = self._distance_reader._build_distance_dataset(dist_batch_size)
-            return self._merge_streams(det_ds, dist_ds)
+            ds = self._merge_streams(det_ds, dist_ds)
 
-        return det_ds
+        if self._is_training:
+            # Performance options for the whole input graph (options set on the
+            # terminal dataset propagate upstream at finalization, including the
+            # zipped distance stream). deterministic=False removes head-of-line
+            # blocking in the parallel maps (forfeits seeded sample order — the
+            # per-op augmentation randomness is unaffected). The private
+            # threadpool caps tf.data's worker count on machines whose visible
+            # core count exceeds the actual CPU quota (cgroup caps).
+            options = tf.data.Options()
+            options.deterministic = False
+            if self._private_threadpool_size > 0:
+                options.threading.private_threadpool_size = self._private_threadpool_size
+            ds = ds.with_options(options)
+
+        return ds
 
     # ------------------------------------------------------------------
     # Stream builders
     # ------------------------------------------------------------------
 
     def _build_detection_dataset(self, batch_size: int) -> tf.data.Dataset:
-        """Build the weighted-sampled detection stream."""
+        """Build the weighted-sampled detection stream (infinite via repeat)."""
         raw_datasets = self._load_tfds_datasets()
+
+        # Repeat each SOURCE before sampling so the sampling weights stay
+        # stationary: sample_from_datasets keeps drawing from the remaining
+        # sources as smaller ones exhaust, so repeating the merged stream would
+        # replay a tail skewed toward the largest source every cycle. The
+        # resulting stream is infinite; epoch length is enforced by the trainer
+        # (steps_per_loop), not by data exhaustion.
+        raw_datasets = [d.repeat() for d in raw_datasets]
 
         if len(raw_datasets) == 1:
             ds = raw_datasets[0]
@@ -192,6 +230,11 @@ class InputReader:
                 .padded_batch(4, drop_remainder=True)
                 .map(mosaic_fn, num_parallel_calls=_AUTOTUNE)
                 .unbatch()
+                # mosaic_fn emits 4 samples per 4-group (the 4 mosaics share
+                # source images, and the group coin flip makes mosaic/non-mosaic
+                # arrive in runs of 4) — a small shuffle breaks those clusters up
+                # before batching. ~128 × 1.4 MB decoded samples ≈ 180 MB buffer.
+                .shuffle(128, seed=self._seed, reshuffle_each_iteration=True)
             )
 
         if self._parser is not None:
@@ -288,6 +331,10 @@ class InputReader:
                     data_dir=self._tfds_data_dir,
                     as_supervised=False,
                     download=self._tfds_download,
+                    # Keep images as encoded bytes through shuffle; the decoders'
+                    # tf.string branch decodes inside the parallel decode map.
+                    # (A shuffle buffer of decoded images costs MBs per element.)
+                    decoders={'image': tfds.decode.SkipDecoding()},
                 )
                 datasets.append(ds)
                 log.info("Loaded TFDS: %s [%s]", name, split)
@@ -307,6 +354,9 @@ class InputReader:
             data_dir=self._tfds_data_dir,
             as_supervised=False,
             download=self._tfds_download,
+            # Encoded bytes through shuffle (RGBA PNG crops); CopyPasteDecoder's
+            # tf.string branch decodes with channels=4 in the parallel map.
+            decoders={'image': tfds.decode.SkipDecoding()},
         )
         ds = ds.shuffle(500, seed=self._seed, reshuffle_each_iteration=True).repeat()
         if self._cnp_decoder is not None:
@@ -481,4 +531,5 @@ def build_input_reader_from_config(
         shuffle_buffer_size=data_cfg.shuffle_buffer_size,
         drop_remainder=data_cfg.drop_remainder,
         tfds_download=True,
+        private_threadpool_size=getattr(data_cfg, 'private_threadpool_size', 0),
     )
