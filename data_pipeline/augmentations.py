@@ -173,6 +173,8 @@ def make_perspective_matrix(
     scale: float = 0.5,
     shear: float = 2.0,
     perspective: float = 0.0,
+    scale_min: Optional[float] = None,
+    scale_max: Optional[float] = None,
 ) -> tf.Tensor:
     """Build the random 3x3 (INPUT-px → OUTPUT-px) perspective matrix.
 
@@ -186,6 +188,12 @@ def make_perspective_matrix(
         h_in, w_in: INPUT image dims (scalar tensors or python ints).
         target_h, target_w: OUTPUT size.
         degrees / translate / scale / shear / perspective: augmentation params.
+        scale_min / scale_max: EXPLICIT scale-gain bounds; when both are given
+            the gain is drawn from [scale_min, scale_max] and ``scale`` is
+            ignored. Use these for asymmetric config bounds like [0.4, 1.9] —
+            the symmetric ``scale`` magnitude form would widen them to
+            [1−max(0.9, 0.6), 1.9] = [0.1, 1.9], shrinking some images to 1%
+            area (mostly-gray frames).
 
     Returns:
         float32 [3, 3] input→output affine/perspective matrix M.
@@ -214,7 +222,10 @@ def make_perspective_matrix(
               px,  py,  one])
     # Rotation + scale (combined).
     ang = tf.random.uniform([], -degrees, degrees) * deg2rad
-    sgn = tf.random.uniform([], 1.0 - scale, 1.0 + scale)
+    if scale_min is not None and scale_max is not None:
+        sgn = tf.random.uniform([], scale_min, scale_max)
+    else:
+        sgn = tf.random.uniform([], 1.0 - scale, 1.0 + scale)
     ca = tf.cos(ang) * sgn
     sa = tf.sin(ang) * sgn
     R = _mat([ca, -sa, zero,
@@ -352,6 +363,8 @@ def random_perspective(
     perspective: float = 0.0,
     area_thresh: float = 0.1,
     min_side: float = 0.005,
+    scale_min: Optional[float] = None,
+    scale_max: Optional[float] = None,
 ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
     """Full-affine geometric augmentation (Ultralytics random_perspective).
 
@@ -381,6 +394,8 @@ def random_perspective(
         perspective: max perspective coefficient (±); 0 disables.
         area_thresh: min visible-area fraction (after-clip / before-clip) to keep a box.
         min_side: min normalized side length to keep a box.
+        scale_min / scale_max: explicit scale-gain bounds (override ``scale``);
+            see ``make_perspective_matrix``.
 
     Returns:
         (image_out uint8 [target_h, target_w, 3], boxes_out [N,4] normalized to OUTPUT,
@@ -394,6 +409,7 @@ def random_perspective(
         target_h=target_h, target_w=target_w,
         degrees=degrees, translate=translate, scale=scale,
         shear=shear, perspective=perspective,
+        scale_min=scale_min, scale_max=scale_max,
     )
     image_out = apply_perspective_image(image, M, target_h, target_w)
     boxes_clip, keep, polygons_out = transform_boxes_polygons(

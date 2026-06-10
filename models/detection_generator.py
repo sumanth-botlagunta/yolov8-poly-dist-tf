@@ -321,6 +321,12 @@ class YoloV8Layer:
         # Stack polygon channels: (conf, dist, angle) — all activated
         poly_out = tf.stack([out_pc, out_pd, out_pa], axis=-1)   # [B, max_boxes, 24, 3]
 
+        # Clip final boxes to the image: the DFL decode can place edges beyond
+        # the borders (cx − l < 0 etc.), which draws boxes outside the frame in
+        # overlays and slightly penalizes IoU against edge-clipped GT in eval.
+        # Clipping after NMS (here) leaves suppression behavior unchanged.
+        out_boxes = tf.clip_by_value(out_boxes, 0.0, 1.0)
+
         return {
             "bbox":           out_boxes,        # [B, max_boxes, 4] yxyx normalized
             "classes":        out_classes,       # [B, max_boxes]
