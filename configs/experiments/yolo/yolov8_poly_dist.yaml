@@ -223,7 +223,9 @@ task:
       aug_scale_max: 1.0
       aug_rand_angle: 0.0
       aug_rand_perspective: 0.0
-      random_flip: true
+      # Evaluation is deterministic — the eval parse path never flips. This is
+      # false to match reality; the eval parser would ignore `true` silently.
+      random_flip: false
       letter_box: true
       resize_with_random_method: false
       skip_crowd_during_training: true
