@@ -100,18 +100,18 @@ def random_horizontal_flip(
     image: tf.Tensor,
     boxes: tf.Tensor,
     polygons: tf.Tensor,
-    max_vertices: int,
 ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     """Flip image left-right with 50% probability.
 
     Boxes (yxyx normalized): xmin ↔ 1 − xmax.
     Polygons (flat xy pairs, -1 padded): x ↔ 1 − x for valid vertices.
+    The polygon width is read from the tensor itself, so any vertex count
+    (raw stored width or decode-time resampled) works unchanged.
 
     Args:
         image:    uint8 or float32 [H, W, 3].
         boxes:    float32 [N, 4] yxyx normalized.
         polygons: float32 [N, max_vertices] flat xy pairs, -1 padded.
-        max_vertices: static column count of *polygons*.
 
     Returns:
         (image, boxes, polygons) – possibly flipped.

@@ -118,6 +118,25 @@ class TestLetterboxPolygonTransform(unittest.TestCase):
         self.assertGreater(ob[0], 0.0)
 
 
+class TestEvalParseWithoutDontcare(unittest.TestCase):
+    """Eval parse must survive a decoder that omits groundtruth_dontcare.
+
+    Regression guard: the fallback used to be zeros_like(classes), but by that
+    point `classes` was already padded to max_num_instances — _pad_bool would
+    then pad the pre-padded default a second time and crash on the reshape.
+    The default must be built from an UNPADDED per-object tensor.
+    """
+
+    def test_missing_dontcare_defaults_to_all_false(self):
+        data = _det_data(n=2)            # has no groundtruth_dontcare key
+        image, labels = _det_parser()._parse_eval_data(data)
+        self.assertEqual(tuple(labels["is_dontcare"].shape), (300,))
+        self.assertFalse(bool(labels["is_dontcare"].numpy().any()))
+        # Sanity: the rest of the parse is intact.
+        self.assertEqual(int(labels["n_gt"]), 2)
+        self.assertEqual(image.dtype, tf.uint8)
+
+
 def _dist_data(dists, h=80, w=80):
     n = len(dists)
     return {

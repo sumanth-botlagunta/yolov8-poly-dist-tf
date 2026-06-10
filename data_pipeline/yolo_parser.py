@@ -137,9 +137,7 @@ class V8ParserExtended(Parser):
 
         # 2. Random horizontal flip
         if self._random_flip:
-            image, boxes, polygons = random_horizontal_flip(
-                image, boxes, polygons, self._max_vertices
-            )
+            image, boxes, polygons = random_horizontal_flip(image, boxes, polygons)
 
         # 3. Geometric augmentation (rotation/scale/shear/translate) is now done
         #    upstream in the mosaic stage's random_perspective — for BOTH the mosaic
@@ -246,8 +244,13 @@ class V8ParserExtended(Parser):
 
         is_crowd_out = _pad_bool(is_crowd)
 
+        # Default from the UNPADDED per-object tensor (is_crowd is still raw
+        # [N] here; `classes` was already padded to max_num_instances above, so
+        # a zeros_like(classes) default would be pre-padded and _pad_bool would
+        # pad it a second time → [N+pad] reshape-to-[N] crash the first time a
+        # decoder omits groundtruth_dontcare).
         dontcare_raw = tf.cast(
-            data.get('groundtruth_dontcare', tf.zeros_like(classes, dtype=tf.int64)),
+            data.get('groundtruth_dontcare', tf.zeros_like(is_crowd, dtype=tf.int64)),
             tf.bool,
         )
         is_dontcare_out = _pad_bool(dontcare_raw)
@@ -399,7 +402,7 @@ class V8ParserExtended(Parser):
         polygons: tf.Tensor,
     ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         """Flip image and transform boxes/polygons accordingly."""
-        return random_horizontal_flip(image, boxes, polygons, self._max_vertices)
+        return random_horizontal_flip(image, boxes, polygons)
 
     def _letterbox_resize(
         self, image: tf.Tensor, boxes: tf.Tensor, polygons: tf.Tensor
