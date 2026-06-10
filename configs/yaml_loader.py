@@ -371,7 +371,7 @@ def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
         angle_step=p.get("angle_step", 15),
         max_num_instances=p.get("max_num_instances", 300),
         max_vertices=p.get("max_vertices", 10938),
-        resample_points=p.get("resample_points", 64),
+        resample_points=p.get("resample_points", 0),
         aug_rand_hue=p.get("aug_rand_hue", 0.015),
         aug_rand_saturation=p.get("aug_rand_saturation", 0.7),
         aug_rand_brightness=p.get("aug_rand_brightness", 0.4),
