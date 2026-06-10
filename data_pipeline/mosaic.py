@@ -47,11 +47,10 @@ from typing import Callable, Dict, List, Tuple
 import tensorflow as tf
 
 from data_pipeline.augmentations import (
-    apply_perspective_images_batched,
+    apply_perspective_image,
     make_perspective_matrix,
     random_perspective,
     transform_boxes_polygons,
-    _transform_points_px,
 )
 
 
@@ -71,12 +70,6 @@ def _place_in_cell(
     R's top-left corner is positioned at (top_y, top_x) within the cell (may be
     negative → R is cropped); regions of the cell not covered by R stay 114.
     Pure crop + pad so it runs in graph mode.
-
-    NOTE: No longer used by ``_mosaic`` (which now composes the per-image
-    placement affine directly into the global perspective matrix and warps each
-    source image in one pass, eliminating the intermediate resize + 2× canvas).
-    Retained because ``tests/test_mosaic.py`` exercises its crop/pad semantics
-    directly; the same placement math now lives in the per-quadrant affine ``A_i``.
     """
     nh = tf.shape(R)[0]
     nw = tf.shape(R)[1]
@@ -368,30 +361,26 @@ class Mosaic:
     ) -> Dict[str, tf.Tensor]:
         """Mosaic-warp 4 images to the output in a single resample per source.
 
-        Geometrically identical to the legacy "assemble 2× canvas (per-image
-        resize + place/crop) then one ``random_perspective``" path, but with the
-        intermediate resizes and canvas eliminated: the per-image scale+placement
-        affine ``A_i`` (source-px → 2× canvas-px) is composed with the global
-        perspective matrix ``M`` (canvas-px → output-px), and each source image is
-        warped DIRECTLY to the output via one ``apply_perspective_image`` call.
-        Per-quadrant masks (computed by mapping the output grid back to canvas
-        coords through ``M``) select which warped image owns each output pixel,
-        exactly reproducing the old hard cell-boundary crop. The annotation path is
-        bit-identical: same per-image canvas mapping then the same single ``M``.
+        Image path: assemble the 2× canvas (per-image ``tf.image.resize`` at the
+        drawn scale, ``_place_in_cell`` crop/pad, concat) and apply ONE
+        ``apply_perspective_image`` warp canvas→output.
 
-        Quadrant → example: TL=one, TR=two, BL=three, BR=four.
+        Why canvas and not composed-affine: a composed variant (per-quadrant
+        affine folded into ``M``, warping each source full-frame to the output)
+        was tried and measured ~95 ms·core per emitted image on the production
+        CPU — ``ImageProjectiveTransformV3`` is several times slower per output
+        pixel than ``tf.image.resize`` there, and the composed form pays 4 full
+        warps per mosaic vs 4 cheap resizes + 1 warp here. Geometry and the
+        label path are identical in both forms (labels go through
+        ``_scale_box_poly_to_canvas`` → ``transform_boxes_polygons`` with the
+        same single ``M``); only the image resampling chain differs.
 
-        All random draws and integer rounding are kept identical to the legacy
-        version (split center; per-image scale → nh/nw; per-quadrant top/off; the
-        global ``M``), so the augmentation distribution is unchanged — only the
-        image resampling chain differs (one resample instead of resize→crop/pad→
-        warp).
+        Quadrant → example: TL=one, TR=two, BL=three, BR=four. The warp scale
+        gain is drawn from the explicit [aug_scale_min, aug_scale_max] bounds.
         """
         H, W = self._H, self._W
         H2 = tf.constant(2 * H, tf.int32)
         W2 = tf.constant(2 * W, tf.int32)
-        H2_f = tf.cast(H2, tf.float32)
-        W2_f = tf.cast(W2, tf.float32)
 
         # Random split point on the 2× canvas: [H(1-2c), H(1+2c)] clipped.
         c = self._center
@@ -399,8 +388,6 @@ class Mosaic:
         xc = tf.cast(tf.round(tf.random.uniform([], W * (1.0 - 2.0 * c), W * (1.0 + 2.0 * c))), tf.int32)
         yc = tf.clip_by_value(yc, 1, 2 * H - 1)
         xc = tf.clip_by_value(xc, 1, 2 * W - 1)
-        yc_f = tf.cast(yc, tf.float32)
-        xc_f = tf.cast(xc, tf.float32)
 
         examples = [one, two, three, four]
         boxes_list, polys_list = [], []
@@ -418,12 +405,12 @@ class Mosaic:
             perspective=self._perspective,
         )
 
-        # Per quadrant: draw the per-image scale, compute (nh, nw) and the cell
-        # placement (top_y/top_x + canvas off), build the source→canvas affine
-        # A_i, and compose M_i = M @ A_i. The 4 warps are issued as ONE batched
-        # ImageProjectiveTransformV3 call after the loop (identical math; a
-        # single dispatch parallelizes across quadrants inside the op).
-        M_list, src_list = [], []
+        # Per quadrant: draw the per-image scale, resize, and place into its
+        # cell (crop overflow / pad voids with gray 114) — then assemble the 2×
+        # canvas and apply ONE warp canvas→output. tf.image.resize is far
+        # cheaper per pixel than the warp op, so total resample cost is
+        # 4 small resizes + 1 output-sized warp per emitted mosaic.
+        cells = []
         for i, ex in enumerate(examples):
             img = ex['image']
             h_in = tf.shape(img)[0]
@@ -433,83 +420,41 @@ class Mosaic:
             scale = tf.random.uniform([], self._scale_min, self._scale_max)
             nh = tf.maximum(tf.cast(tf.round(h_in_f * scale), tf.int32), 1)
             nw = tf.maximum(tf.cast(tf.round(w_in_f * scale), tf.int32), 1)
-            nh_f = tf.cast(nh, tf.float32)
-            nw_f = tf.cast(nw, tf.float32)
+            R = tf.cast(
+                tf.image.resize(tf.cast(img, tf.float32), [nh, nw], method='bilinear'),
+                tf.uint8,
+            )
 
             if i == 0:    # TL
+                cell_h, cell_w = yc, xc
                 top_y, top_x = yc - nh, xc - nw
                 off_y, off_x = tf.constant(0, tf.int32), tf.constant(0, tf.int32)
             elif i == 1:  # TR
+                cell_h, cell_w = yc, W2 - xc
                 top_y, top_x = yc - nh, tf.constant(0, tf.int32)
                 off_y, off_x = tf.constant(0, tf.int32), xc
             elif i == 2:  # BL
+                cell_h, cell_w = H2 - yc, xc
                 top_y, top_x = tf.constant(0, tf.int32), xc - nw
                 off_y, off_x = yc, tf.constant(0, tf.int32)
             else:         # BR
+                cell_h, cell_w = H2 - yc, W2 - xc
                 top_y, top_x = tf.constant(0, tf.int32), tf.constant(0, tf.int32)
                 off_y, off_x = yc, xc
 
+            cells.append(_place_in_cell(R, cell_h, cell_w, top_y, top_x))
+
             padh = off_y + top_y
             padw = off_x + top_x
-            padh_f = tf.cast(padh, tf.float32)
-            padw_f = tf.cast(padw, tf.float32)
-
-            # Source-px → canvas-px affine: canvas = (x_src·nw/w_in + padw,
-            # y_src·nh/h_in + padh). (Same map _place_in_cell + canvas offset
-            # produced, since the resized image is x_src·nw/w_in in the scaled grid.)
-            A_i = tf.stack([
-                tf.stack([nw_f / w_in_f, tf.constant(0.0), padw_f]),
-                tf.stack([tf.constant(0.0), nh_f / h_in_f, padh_f]),
-                tf.stack([tf.constant(0.0), tf.constant(0.0), tf.constant(1.0)]),
-            ])
-            M_i = M @ A_i
-            M_list.append(M_i)
-            src_list.append(img)
-
             b_c, p_c = _scale_box_poly_to_canvas(ex, nh, nw, padh, padw, H2, W2)
             boxes_list.append(b_c)
             polys_list.append(p_c)
 
-        # Warp all 4 sources directly to the output in one batched call. 114
-        # fill covers both out-of-source AND out-of-canvas (matching the old
-        # 114 cell padding + warp fill). Sources share the pre-resized [H, W]
-        # shape, so they stack.
-        warped_all = apply_perspective_images_batched(
-            tf.stack(src_list, axis=0), tf.stack(M_list, axis=0), H, W,
-        )
-        warped = [warped_all[i] for i in range(4)]
-
-        # --- Per-quadrant selection on the OUTPUT grid ---
-        # Map each output pixel (x, y) (raw integer indices, no half-pixel offset,
-        # matching ImageProjectiveTransformV3 / _transform_points_px) back to its
-        # canvas coordinate via M⁻¹, then assign to a quadrant by the split point.
-        xs = tf.range(W, dtype=tf.float32)
-        ys = tf.range(H, dtype=tf.float32)
-        gx, gy = tf.meshgrid(xs, ys)                  # [H, W] each
-        grid = tf.stack([gx, gy], axis=-1)            # [H, W, 2] (x, y)
-        M_inv = tf.linalg.inv(M)
-        canvas_xy = _transform_points_px(grid, M_inv) # [H, W, 2] canvas (x, y)
-        cx = canvas_xy[..., 0]
-        cy = canvas_xy[..., 1]
-
-        in_canvas = (cx >= 0.0) & (cx < W2_f) & (cy >= 0.0) & (cy < H2_f)
-        left = cx < xc_f
-        top  = cy < yc_f
-        m_tl = top & left
-        m_tr = top & tf.logical_not(left)
-        m_bl = tf.logical_not(top) & left
-        m_br = tf.logical_not(top) & tf.logical_not(left)
-        masks = [m_tl, m_tr, m_bl, m_br]
-
-        gray = tf.fill([H, W, 3], tf.constant(114, tf.uint8))
-        image = gray
-        # Compose in TL,TR,BL,BR order; quadrants are disjoint so order is moot.
-        for mask_i, warped_i in zip(masks, warped):
-            sel = mask_i[..., tf.newaxis]             # [H, W, 1]
-            image = tf.where(sel, warped_i, image)
-        # Out-of-canvas output pixels → gray 114.
-        image = tf.where(in_canvas[..., tf.newaxis], image, gray)
-        image.set_shape([H, W, 3])
+        # Assemble the 2× canvas from the 4 quadrant cells and warp once.
+        top_row = tf.concat([cells[0], cells[1]], axis=1)   # [yc,    2W, 3]
+        bot_row = tf.concat([cells[2], cells[3]], axis=1)   # [2H-yc, 2W, 3]
+        canvas  = tf.concat([top_row, bot_row], axis=0)     # [2H,    2W, 3]
+        image = apply_perspective_image(canvas, M, H, W)
 
         boxes_all = tf.concat(boxes_list, axis=0)
         polys_all = tf.concat(polys_list, axis=0)
