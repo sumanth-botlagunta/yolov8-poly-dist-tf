@@ -5,16 +5,17 @@ Implements the three per-vertex loss components:
             averaged over the VALID vertices of each anchor.
     dist:   L2 regression on (target - softplus(pred))^2, averaged over the
             VALID vertices of each anchor.
-    conf:   binary cross-entropy on per-bin vertex validity, averaged over the
-            VALID vertices of each anchor (masked, like angle/dist).
+    conf:   binary cross-entropy on per-bin vertex validity, averaged over ALL
+            bins (occupied → 1, empty → 0) — conf is the decode gate and must
+            see negatives; see polygon_conf_loss for the 2026-06-11 rationale
+            and the preserved masked form.
 
 All three normalize by num_objs (total GT object count in the batch) and are
 computed only on foreground anchors.
 
 "Valid vertex" = a bin that received a ground-truth vertex; supplied as a
-per-bin mask (vertex_mask). All three losses average over the valid count, not
-over all 24 bins. (Masking conf means the head is not trained to reject empty
-bins — see polygon_conf_loss.)
+per-bin mask (vertex_mask). Angle/dist average over the valid count (their
+regression targets are undefined on empty bins); conf averages over all bins.
 
 Functions:
     polygon_angle_loss: sub-bin angular-offset BCE (masked to valid vertices).
@@ -104,28 +105,45 @@ def polygon_conf_loss(
     fg_mask: tf.Tensor,
     num_objs: tf.Tensor,
 ) -> tf.Tensor:
-    """BCE loss for per-vertex validity confidence, over the VALID vertices.
+    """BCE loss for per-vertex validity confidence, over ALL bins.
 
-    Averages BCE over the valid vertices of each anchor (masked by vertex_mask,
-    the same per-bin validity used by the angle/dist losses), sums over
-    foreground anchors, and normalizes by num_objs.
+    Averages BCE over all ``num_vertices`` bins of each anchor (occupied bins
+    get target 1, EMPTY bins get target 0), sums over foreground anchors, and
+    normalizes by num_objs. Unlike angle/dist (which stay masked — their
+    regression targets are undefined on empty bins), conf MUST see negatives:
+    it is the gate that tells decode/viz which bins to keep.
 
-    Note: because empty bins are masked out, this does not train the conf head to
-    output 0 on empty bins — it only reinforces conf on bins that hold a vertex.
+    Why all bins (2026-06-11): with the masked form, empty bins received zero
+    gradient ever, so their conf output drifted with the shared features (bias
+    init → sigmoid ≈ 0.5, above the 0.4 decode/viz threshold) while their dist
+    was equally untrained — producing the "star/spiky polygon" artifacts
+    observed in validation overlays (e.g. the doorway class). Training conf on
+    all 24 bins restores the negative signal so empty bins are pushed to 0.
+
+    The previous (masked, 2026-06 legacy-aligned) form is preserved here;
+    restore it by swapping the per_anchor line:
+
+        # MASKED FORM — mean over the valid vertices only (vertex_mask equals
+        # target_conf, so the masked BCE only ever saw positive targets and the
+        # conf head was never trained to reject empty bins):
+        # per_anchor = _masked_vertex_mean(bce, vertex_mask)
 
     Args:
         pd_conf:     float32 [batch, anchors, num_vertices]  logits
         target_conf: float32 [batch, anchors, num_vertices]  0 or 1
         vertex_mask: float32 [batch, anchors, num_vertices]  1.0 on valid bins
+            (unused by the all-bins form; kept so the signature matches and the
+            masked form above remains a one-line swap)
         fg_mask:     bool    [batch, anchors]
         num_objs:    float32 scalar  total valid GT object count in batch
 
     Returns:
         Scalar loss.
     """
+    del vertex_mask  # only the preserved masked form (docstring) uses it
     bce = tf.nn.sigmoid_cross_entropy_with_logits(
         labels=target_conf, logits=pd_conf
     )  # [B, A, V]
-    per_anchor = _masked_vertex_mean(bce, vertex_mask)   # [B, A] — mean over valid
+    per_anchor = tf.reduce_mean(bce, axis=-1)            # [B, A] — mean over ALL bins
     fg_float = tf.cast(fg_mask, tf.float32)              # [B, A]
     return tf.reduce_sum(per_anchor * fg_float) / num_objs

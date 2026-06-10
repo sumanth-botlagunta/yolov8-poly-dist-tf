@@ -101,6 +101,12 @@ task:
 
   train_data:
     tfds_name: "cleaner_polygon2026:2.0.0,field_misrecog2026:1.0.0,station_misrecog:1.1.0"
+    # If the input pipeline still can't feed the GPU (diagnose_pipeline.py shows
+    # decode/pre-resize dominating), build the pre-resized 672² variants ONCE:
+    #   python tools/reencode_tfds_672.py --data_dir <tfds dir> \
+    #     --datasets cleaner_polygon2026:2.0.0,field_misrecog2026:1.0.0,station_misrecog:1.1.0
+    # then swap to (training only; keep validation on the original):
+    # tfds_name: "cleaner_polygon2026_672:2.0.0,field_misrecog2026_672:1.0.0,station_misrecog_672:1.1.0"
     tfds_split: "train,train,train"
     tfds_sampling_weights: [95, 2, 3]
     tfds_data_dir: /home/user/tensorflow_datasets/
@@ -177,6 +183,10 @@ task:
         angle_step: 15
         max_num_instances: 300
         max_vertices: 10938
+        # Shrink servingbot's [N, 10940] polygon tensors at decode (the distance
+        # stream's letterbox transforms every vertex; same exactness guarantee
+        # as the detection stream's resample).
+        resample_points: 64
         aug_rand_hue: 0.015
         aug_rand_saturation: 0.7
         aug_rand_brightness: 0.4
