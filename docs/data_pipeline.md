@@ -103,12 +103,17 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
 - The loss/assigner convert to **`xyxy` pixels**.
 - Mosaic uses a **composed-affine** approach: a per-image placement affine `A_i`
   (source-px → virtual 2× canvas-px) is composed with the global perspective matrix `M`
-  (canvas-px → output-px, drawn once via `augmentations.make_perspective_matrix`); each
-  source image is warped directly to the output in one `apply_perspective_image` call
-  (no intermediate resize, no 2× canvas allocation). The label path maps labels through
+  (canvas-px → output-px, drawn once via `augmentations.make_perspective_matrix`); the 4
+  source images are warped directly to the output in ONE batched
+  `apply_perspective_images_batched` call (no intermediate resize, no 2× canvas
+  allocation, single op dispatch). The label path maps labels through
   `_scale_box_poly_to_canvas` → `transform_boxes_polygons(M)`, identical to the legacy
   canvas-then-warp label math. Quadrant masks are recovered by back-projecting the output
   grid through `M⁻¹` vs the split point; out-of-canvas pixels fill with gray 114.
+- The warp's scale gain is drawn from the **explicit** `[aug_scale_min, aug_scale_max]`
+  config bounds (`make_perspective_matrix(scale_min=, scale_max=)`). The earlier symmetric
+  magnitude form widened the configured `[0.4, 1.9]` to `[0.1, 1.9]`, occasionally shrinking
+  content to ~1% area — the "mostly-gray frame" bug, fixed 2026-06-11.
 
 ## Performance notes
 - Every `.map` uses `num_parallel_calls=AUTOTUNE`.
@@ -128,4 +133,16 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
 - Colour augmentation (`batch_color_aug.py`) runs inside `train_step`; the `train/data_wait_ms`
   TensorBoard scalar (written by `YoloV8Trainer`) separates data-wait time from compute time,
   making it easy to tell whether the bottleneck is in tf.data or on the GPU.
-- Use the `/benchmark` skill (`tools/benchmark_pipeline.py`) to measure throughput.
+- `parser.resample_points: 64` (both the detection and distance streams in
+  `yolov8_poly_dist.yaml`) resamples polygons to 64 vertices at decode, so every downstream
+  stage carries `[N, 128]` instead of the raw stored width (up to `[N, 10940]`). The 24-bin
+  radial target is exact for ≤64-vertex polygons (tests pin this).
+- If decode + pre-resize still dominate (see `tools/diagnose_pipeline.py` stage table),
+  build pre-resized dataset variants ONCE with `tools/reencode_tfds_672.py`: stores 672²
+  JPEG + `orig_height`/`orig_width` (which `PolygonDecoder` prefers, keeping the copy-paste
+  resolution correction exact). Detection sets only — servingbot must stay full-resolution
+  because the distance parser letterboxes (aspect-preserving), and copy_paste crops are RGBA.
+  The pre-resize map skips already-672² images via `tf.cond`.
+- Use the `/benchmark` skill (`tools/benchmark_pipeline.py`) for end-to-end throughput and
+  `tools/diagnose_pipeline.py` for stage-by-stage attribution (its stage order MUST mirror
+  `InputReader._build_detection_dataset` — keep them in sync).
