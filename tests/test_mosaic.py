@@ -434,5 +434,45 @@ class TestMosaicComposedWarp(unittest.TestCase):
         self.assertEqual(tuple(img2.shape), (H, W, 3))
 
 
+class TestWarpScaleBounds(unittest.TestCase):
+    """The warp scale gain must honor the EXPLICIT [aug_scale_min, aug_scale_max]
+    config bounds.
+
+    The old symmetric-magnitude form (`scale = max(max−1, 1−min)`) widened the
+    configured [0.4, 1.9] to [0.1, 1.9]: a 0.1× draw shrinks the content to 1%
+    area and produces a mostly-gray training frame. ~1 in 6 draws fell in the
+    undocumented [0.1, 0.4) regime.
+    """
+
+    def test_gain_stays_within_explicit_bounds(self):
+        from data_pipeline.augmentations import make_perspective_matrix
+        lo, hi = 0.4, 1.9
+        gains = []
+        for _ in range(300):
+            # With degrees=shear=perspective=translate=0, M[0,0] is exactly the
+            # drawn scale gain.
+            M = make_perspective_matrix(
+                h_in=64, w_in=64, target_h=64, target_w=64,
+                degrees=0.0, translate=0.0, shear=0.0, perspective=0.0,
+                scale_min=lo, scale_max=hi,
+            )
+            gains.append(float(M[0, 0]))
+        gains = np.array(gains)
+        self.assertGreaterEqual(gains.min(), lo)   # old impl: min ≈ 0.1 → fails
+        self.assertLessEqual(gains.max(), hi)
+        # The range is actually exercised (not stuck at one end).
+        self.assertLess(gains.min(), 0.7)
+        self.assertGreater(gains.max(), 1.5)
+
+    def test_magnitude_form_still_supported(self):
+        from data_pipeline.augmentations import make_perspective_matrix
+        M = make_perspective_matrix(
+            h_in=64, w_in=64, target_h=64, target_w=64,
+            degrees=0.0, translate=0.0, shear=0.0, perspective=0.0,
+            scale=0.0,   # magnitude 0 → gain exactly 1
+        )
+        self.assertAlmostEqual(float(M[0, 0]), 1.0, places=5)
+
+
 if __name__ == "__main__":
     unittest.main()
