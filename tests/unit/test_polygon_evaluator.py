@@ -181,5 +181,84 @@ class TestPolygonEvaluator(unittest.TestCase):
         self.assertAlmostEqual(ev.evaluate()['poly_recall50'], 1.0, places=5)
 
 
+class TestConfGating(unittest.TestCase):
+    """Pins the 2026-06-11 conf-gating fix: only bins whose conf passes the
+    gate are rasterized (pred >= conf_thresh, GT conf > 0.5).
+
+    Before the fix, empty GT bins (dist=0, conf=0) injected a vertex at the box
+    CENTER per empty bin, so a perfect prediction of a sparse polygon was
+    scored against a center-spiked star mask rather than the decoded polygon.
+    """
+
+    def _sparse_pair(self, occupied, pred_conf_on=1.0, pred_conf_off=0.0,
+                     r=0.15):
+        """GT + identical pred occupying only ``occupied`` bins (radius r)."""
+        g_dist = np.zeros(_NUM_VERTS, np.float32)
+        g_conf = np.zeros(_NUM_VERTS, np.float32)
+        g_off  = np.zeros(_NUM_VERTS, np.float32)
+        for b in occupied:
+            g_dist[b] = r
+            g_conf[b] = 1.0
+        gt72 = np.stack([g_dist, g_off, g_conf], axis=1).ravel()
+
+        p_conf = np.full(_NUM_VERTS, pred_conf_off, np.float32)
+        p_conf[list(occupied)] = pred_conf_on
+        # Pred dist on UNOCCUPIED bins is garbage on purpose (their regression
+        # is untrained in the real model — the gate must hide it).
+        p_dist = np.full(_NUM_VERTS, 0.3, np.float32)
+        p_dist[list(occupied)] = r
+        pred = np.stack([p_conf, p_dist, np.zeros(_NUM_VERTS, np.float32)],
+                        axis=1)
+        return gt72, pred
+
+    def _run(self, gt72, pred):
+        bbox = np.array([[0.3, 0.3, 0.7, 0.7]], dtype=np.float32)
+        ev = PolygonEvaluator(image_size=(_H, _W))
+        ev.update(
+            pred_boxes=bbox[np.newaxis],
+            pred_polygons=pred[np.newaxis, np.newaxis],
+            pred_scores=np.ones([1, 1], np.float32),
+            num_detections=np.array([1], np.int32),
+            gt_boxes=bbox[np.newaxis],
+            gt_polygons=gt72[np.newaxis, np.newaxis],
+            n_gt=np.array([1], np.int32),
+        )
+        return ev.evaluate()
+
+    def test_perfect_sparse_prediction_scores_one(self):
+        """6 occupied bins, identical pred → mIoU = 1 even though pred carries
+        garbage dist on the 18 empty bins (gated out, like at decode)."""
+        occupied = [0, 4, 8, 12, 16, 20]
+        gt72, pred = self._sparse_pair(occupied)
+        m = self._run(gt72, pred)
+        self.assertAlmostEqual(m['poly_mIoU'], 1.0, places=1)
+
+    def test_low_conf_pred_bins_are_excluded(self):
+        """Identical geometry but conf below the 0.4 gate on the garbage bins:
+        result must equal the perfect score, NOT be polluted by them."""
+        occupied = [0, 4, 8, 12, 16, 20]
+        gt72, pred_clean = self._sparse_pair(occupied, pred_conf_off=0.0)
+        _, pred_noisy = self._sparse_pair(occupied, pred_conf_off=0.39)
+        m_clean = self._run(gt72, pred_clean)
+        m_noisy = self._run(gt72, pred_noisy)
+        self.assertAlmostEqual(m_noisy['poly_mIoU'], m_clean['poly_mIoU'],
+                               places=5)
+
+    def test_high_conf_garbage_bins_do_hurt(self):
+        """Same garbage bins ABOVE the gate must lower the score — pins that
+        the gate is the conf channel, not something else."""
+        occupied = [0, 4, 8, 12, 16, 20]
+        gt72, pred_bad = self._sparse_pair(occupied, pred_conf_off=0.9)
+        m = self._run(gt72, pred_bad)
+        self.assertLess(m['poly_mIoU'], 0.9)
+
+    def test_degenerate_gt_counts_recall_not_miou(self):
+        """GT with < 3 occupied bins: match counts toward recall, no IoU sample."""
+        gt72, pred = self._sparse_pair([0, 12])
+        m = self._run(gt72, pred)
+        self.assertAlmostEqual(m['poly_recall50'], 1.0, places=5)
+        self.assertAlmostEqual(m['poly_mIoU'], 0.0, places=7)
+
+
 if __name__ == '__main__':
     unittest.main()

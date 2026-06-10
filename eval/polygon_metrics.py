@@ -7,7 +7,8 @@ Prediction format (from detection_generator output):
     pred_polygons: [B, max_boxes, 24, 3]  where [..., :] = (conf, dist, angle)
     - dist:  radial distance for each of 24 vertices, in **normalized** image units
     - angle: per-bin sub-bin offset in [0, 1) (vertex angle = (i + angle) * step)
-    - conf:  per-vertex confidence (not used for reconstruction here)
+    - conf:  per-vertex confidence (sigmoid-activated); bins below ``conf_thresh``
+      are EXCLUDED from rasterization, mirroring the decode/viz gate
 
 GT format (from yolo_parser._preprocess_polygons_v2):
     gt_polygons: [B, max_gt, 72] = [dist, angle, conf] x 24 interleaved
@@ -86,6 +87,10 @@ def _polygon_to_mask(
     Returns:
         Boolean array of shape [h, w].
     """
+    if vertices.shape[0] < 3:
+        # Fewer than 3 vertices cannot enclose area (e.g. a prediction whose
+        # conf gate left < 3 bins) — empty mask, not a cv2 error.
+        return np.zeros((h, w), dtype=bool)
     try:
         import cv2
         pts = vertices.astype(np.int32).reshape(-1, 1, 2)
@@ -146,12 +151,26 @@ def _count_eval_gt(n_g, i, gt_is_crowd, gt_is_dontcare) -> int:
 class PolygonEvaluator:
     """Accumulates prediction/GT polygon pairs and computes mask IoU metrics.
 
+    Vertex-validity gating: only bins whose conf channel passes the gate are
+    rasterized — pred bins need ``conf >= conf_thresh`` (the same 0.4 gate the
+    decode/viz path uses), GT bins need ``conf > 0.5`` (the parser writes a
+    binary validity). Empty GT bins encode ``dist = 0``; rasterizing them (the
+    pre-2026-06-11 behavior) injected a vertex at the box CENTER per empty bin,
+    turning any polygon that doesn't occupy all 24 bins into a center-spiked
+    star — a 4-vertex GT lost ~90% of its mask area, so poly_mIoU measured
+    star-vs-star similarity rather than the decoded polygons that ship.
+    Matched pairs whose gated GT has < 3 vertices are counted for recall but
+    skipped for mask IoU (no measurable GT mask).
+
     Args:
         image_size: (H, W) used for rasterizing polygon masks.
         iou_thresh: Bbox IoU threshold for matching predictions to GT.
+        conf_thresh: Per-bin confidence gate for PREDICTED vertices; must match
+            the decode/viz threshold so the metric scores what is deployed.
     """
 
-    def __init__(self, image_size: Tuple[int, int] = (672, 672), iou_thresh: float = 0.5):
+    def __init__(self, image_size: Tuple[int, int] = (672, 672), iou_thresh: float = 0.5,
+                 conf_thresh: float = 0.4):
         self._H, self._W = image_size
         # Radial-distance reconstruction is only correct for square inputs (the
         # parser stores a single isotropic radius). Fail loudly rather than
@@ -162,6 +181,7 @@ class PolygonEvaluator:
                 f"radius is isotropic); got H={self._H}, W={self._W}."
             )
         self._iou_thresh  = iou_thresh
+        self._conf_thresh = conf_thresh
         self._mask_ious:  List[float] = []
         self._n_matched   = 0
         self._n_gt_total  = 0
@@ -232,6 +252,7 @@ class PolygonEvaluator:
                         and best_gt not in matched_gt):
                     matched_dt.add(di)
                     matched_gt.add(best_gt)
+                    self._n_matched += 1
 
                     # ---- compute mask IoU for this match ----
                     # best_gt indexes the FILTERED GT (iou_mat columns); map back to
@@ -239,6 +260,20 @@ class PolygonEvaluator:
                     orig_gt = int(gt_keep_idx[best_gt])
                     p_poly = np.asarray(pred_polygons[i, di])        # [24, 3]
                     g_poly = np.asarray(gt_polygons[i, orig_gt])     # [72]
+
+                    # Gate bins on the conf channel. Pred uses the decode/viz
+                    # threshold; GT conf is the parser's binary bin validity.
+                    # Empty GT bins encode dist=0 — rasterizing them puts a
+                    # vertex at the box CENTER per empty bin (center-spiked
+                    # star masks; see class docstring).
+                    p_keep = np.asarray(p_poly[:, 0]) >= self._conf_thresh  # [24]
+                    g_keep = np.asarray(g_poly[2::3]) > 0.5                 # [24]
+
+                    if int(g_keep.sum()) < 3:
+                        # Degenerate GT polygon (< 3 occupied bins): the match
+                        # counts toward recall but there is no measurable GT
+                        # mask for an IoU sample.
+                        continue
 
                     # Prediction: (conf, dist, angle) per vertex. dist normalized;
                     # angle is the sigmoid'd sub-bin offset in [0, 1).
@@ -258,8 +293,8 @@ class PolygonEvaluator:
                     cx_g = (x1g + x2g) / 2.0
                     cy_g = (y1g + y2g) / 2.0
 
-                    p_verts = _radial_to_cartesian(cx_p, cy_p, p_dist, self._W, self._H, offsets=p_off)
-                    g_verts = _radial_to_cartesian(cx_g, cy_g, g_dist, self._W, self._H, offsets=g_off)
+                    p_verts = _radial_to_cartesian(cx_p, cy_p, p_dist, self._W, self._H, offsets=p_off)[p_keep]
+                    g_verts = _radial_to_cartesian(cx_g, cy_g, g_dist, self._W, self._H, offsets=g_off)[g_keep]
 
                     p_mask = _polygon_to_mask(p_verts, self._H, self._W)
                     g_mask = _polygon_to_mask(g_verts, self._H, self._W)
@@ -268,7 +303,6 @@ class PolygonEvaluator:
                     union = (p_mask | g_mask).sum()
                     iou   = inter / union if union > 0 else 0.0
                     self._mask_ious.append(float(iou))
-                    self._n_matched += 1
 
     # ------------------------------------------------------------------
     # Evaluation
@@ -286,10 +320,10 @@ class PolygonEvaluator:
         Returns:
             Dict with 'poly_mIoU' and 'poly_recall50'.
         """
-        if not self._mask_ious:
-            return {'poly_mIoU': 0.0, 'poly_recall50': 0.0}
-
-        miou    = float(np.mean(self._mask_ious))
+        # mIoU and recall are decoupled: a matched pair whose gated GT polygon
+        # is degenerate (< 3 occupied bins) counts for recall but yields no
+        # mask-IoU sample.
+        miou    = float(np.mean(self._mask_ious)) if self._mask_ious else 0.0
         recall  = self._n_matched / self._n_gt_total if self._n_gt_total > 0 else 0.0
         return {'poly_mIoU': miou, 'poly_recall50': float(recall)}
 
