@@ -45,8 +45,11 @@ def _eval_checkpoint(config, ckpt_path: str) -> dict:
     img_size = tuple(config.task.model.input_size[:2])
     coco_ev  = COCOEvaluator(num_classes=config.task.num_classes, image_size=img_size)
 
+    from train.task import normalize_images
+
     for step, (images, labels) in enumerate(val_ds):
-        preds = model(images, training=False)
+        # Eval parser emits uint8; the model needs float32 [0, 1].
+        preds = model(normalize_images(images), training=False)
         coco_ev.update(preds, labels)
         if step % 50 == 0:
             log.info("  eval step %d", step)
