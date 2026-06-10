@@ -235,5 +235,31 @@ class TestCopyPasteDecoder(unittest.TestCase):
         self.assertEqual(out['image/id'].numpy(), 789)
 
 
+class TestEncodedImageBranch(unittest.TestCase):
+    """The pipeline loads TFDS with SkipDecoding, so decoders receive ENCODED
+    image bytes (tf.string) and must decode them in their string branch.
+    These tests exercise that live path with real JPEG/PNG bytes."""
+
+    def test_polygon_decoder_decodes_jpeg_bytes(self):
+        from data_pipeline.tfds_decoders import PolygonDecoder
+        rgb = tf.cast(tf.random.uniform([48, 64, 3], 0, 255), tf.uint8)
+        ex = _cleaner_polygon_example(h=48, w=64)
+        ex['image'] = tf.io.encode_jpeg(rgb)          # scalar tf.string
+        out = PolygonDecoder(max_vertices=10938, num_classes=39).decode(ex)
+        self.assertEqual(out['image'].dtype, tf.uint8)
+        self.assertEqual(tuple(tf.shape(out['image']).numpy()), (48, 64, 3))
+        self.assertEqual(int(out['height']), 48)
+        self.assertEqual(int(out['width']), 64)
+
+    def test_copy_paste_decoder_decodes_rgba_png_bytes(self):
+        from data_pipeline.tfds_decoders import CopyPasteDecoder
+        rgba = tf.cast(tf.random.uniform([32, 32, 4], 0, 255), tf.uint8)
+        ex = _copy_paste_example(h=32, w=32)
+        ex['image'] = tf.io.encode_png(rgba)          # scalar tf.string
+        out = CopyPasteDecoder(num_classes=39).decode(ex)
+        self.assertEqual(out['image'].dtype, tf.uint8)
+        self.assertEqual(tuple(tf.shape(out['image']).numpy()), (32, 32, 4))
+
+
 if __name__ == '__main__':
     unittest.main()

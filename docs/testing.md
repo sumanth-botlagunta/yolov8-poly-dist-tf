@@ -13,15 +13,22 @@
 | `tests/test_*.py` (top level) | component tests: decoders, parser, copy_paste, mosaic, losses (computation + reference parity + polygon conventions + distance loss), polygon preprocessing, batch shapes | no |
 
 **Top-level test files (10 files):** `test_batch_shape_consistency.py`, `test_copy_paste.py`,
-`test_decoders.py`, `test_distance_loss.py`, `test_loss_computation.py`,
-`test_loss_reference_parity.py`, `test_mosaic.py`, `test_parser.py`,
-`test_polygon_loss_conventions.py`, `test_polygon_preprocessing.py`.
+`test_decoders.py` (includes encoded-bytes / `SkipDecoding` decoder tests), `test_distance_loss.py`,
+`test_loss_computation.py`, `test_loss_reference_parity.py`,
+`test_mosaic.py` (includes 4-in/4-out mosaic assertions), `test_parser.py`,
+`test_polygon_loss_conventions.py`,
+`test_polygon_preprocessing.py` (includes segment-equivalence tests asserting exact output parity
+of the `unsorted_segment_max` / `segment_min` formulation vs the old one-hot reference).
 
-**Unit test files (13 files):** `test_backbone.py`, `test_coco_crowd_dontcare.py`,
+**Unit test files (15 files):** `test_backbone.py`, `test_bf16_policy.py` (bfloat16 Keras policy
+applied correctly, heads remain float32), `test_coco_crowd_dontcare.py`,
 `test_coco_evaluator.py`, `test_config_loading.py`, `test_decoders.py`,
 `test_distance_evaluator.py`, `test_ema.py`, `test_model_forward.py`,
 `test_polygon_evaluator.py`, `test_sgd_warmup.py`, `test_tal_assigner.py`,
-`test_task_validation_streaming.py`, `test_viz_utils.py`.
+`test_task_validation_streaming.py`,
+`test_trainer_epoch_math.py` (verifies `YoloV8Trainer._steps_for_epoch` for fresh starts, full
+epochs, and mid-epoch resume remainder),
+`test_viz_utils.py`.
 
 **Integration test files (5 files):** `test_full_pipeline.py`, `test_checkpoint_migration.py`,
 `test_weight_map_migration.py`, `test_multigpu.py`, `test_ckpt_eval_loading.py`.
