@@ -33,7 +33,7 @@ Three config-driven tiers share the same code:
 
 ### Data Pipeline
 
-Multi-TFDS weighted sampling (each source `.repeat()`ed → stationary weights, infinite stream; images stay **encoded** through shuffle via `SkipDecoding`) → decode → pre-resize to 672² → Copy-Paste (composites at 672²; object scaled by `current/original` dims so relative size matches full-res compositing exactly) → Mosaic (**4-in/4-out**, **composed-affine**: per-image scale+placement affine folded into the global `random_perspective` matrix — one warp per source, no intermediate resizes or 2× canvas; label math bit-identical to the canvas formulation) → small post-unbatch shuffle → Flip → Polygon preprocessing → **uint8 out**. Color augmentation (normalize → HSV jitter → albumentations) runs per-BATCH on the GPU inside `train_step` (`data_pipeline/batch_color_aug.py`) with exactly the per-image randomness the parsers used to apply; albumentations applies only to detection rows (`ignore_bg == 0`).
+Multi-TFDS weighted sampling (each source `.repeat()`ed → stationary weights, infinite stream; images stay **encoded** through shuffle via `SkipDecoding`) → decode → pre-resize to 672² → Copy-Paste (composites at 672²; object scaled by `current/original` dims so relative size matches full-res compositing exactly) → Mosaic (**4-in/4-out**, **canvas formulation**: per-image resize at the drawn scale → `_place_in_cell` into the 2× canvas → ONE `random_perspective` warp to the output; the composed-affine variant was reverted 2026-06-11 — ~3× slower on the production CPU) → small post-unbatch shuffle → Flip → Polygon preprocessing → **uint8 out**. Color augmentation (normalize → HSV jitter → albumentations) runs per-BATCH on the GPU inside `train_step` (`data_pipeline/batch_color_aug.py`) with exactly the per-image randomness the parsers used to apply; albumentations applies only to detection rows (`ignore_bg == 0`).
 
 The geometric transform (`random_perspective`) is applied inside the mosaic stage for **both** the 4-image mosaic and non-mosaic single images; the parser no longer applies a separate affine.
 
@@ -59,7 +59,7 @@ Polygons go through three formats across the pipeline:
 |-------|--------|
 | TFDS input | `[N, max_vertices+2]` flat xy normalized, padded with -1 |
 | PolyYOLO target (training/loss) | `[N, 72]` = `[dist, angle, conf] × 24` (interleaved; `angle` = sub-bin offset in `[0,1)`; see `losses/tal_loss.py:_polygon_loss`) |
-| Cartesian (eval GT) | `[N, max_vertices, 2]` yx denormalized |
+| Cartesian (decode/eval/viz) | `[24, 2]` pixel `(x, y)` vertices reconstructed from the radial format (`(i + angle)·angle_step`, conf-gated ≥ 0.4) — eval GT labels themselves stay in the radial `[N, 72]` format |
 
 ### Model Heads
 
@@ -105,7 +105,7 @@ Distance loss: L1 on log-scale, masked to samples where `gt_distance > -10.0` (i
 
 ### Optimizer
 
-SGD with Nesterov momentum (0.937), cosine LR decay (initial=0.01, alpha=0.01), 300 epochs / 716,400 steps (`optimizers/sgd_warmup.py`). EMA with dynamic decay: `min(0.9999, (1+step)/(10+step))` (`optimizers/ema.py`). EMA weights are swapped in for evaluation and swapped back afterward.
+SGD with Nesterov momentum (0.937), cosine LR decay (initial=0.01, alpha=0.01), 300 epochs / 635,400 steps (`optimizers/sgd_warmup.py`). EMA with dynamic decay: `min(0.9999, (1+step)/(10+step))` (`optimizers/ema.py`). EMA weights are swapped in for evaluation and swapped back afterward.
 
 ## Actual File Layout
 
@@ -143,7 +143,7 @@ train/
   viz_utils.py         # box/polygon overlay rendering for TensorBoard image summaries
 configs/
   model_config.py      # config dataclasses
-  yaml_loader.py       # YAML → dataclasses via dacite
+  yaml_loader.py       # YAML → dataclasses (hand-rolled mapping; no dacite)
   registry.py
   class_map.py         # DETECTION_CLASSES list (39 class names, index = category_id)
   data/ model/ optimizer/ experiments/yolo/   # composable YAML fragments
@@ -159,9 +159,11 @@ tests/                 # unit/ integration/ smoke/ + component tests
 
 ## Configs & running
 
-- Configs are plain dataclasses (`configs/model_config.py`) loaded from composable YAML via
-  `dacite` (`configs/yaml_loader.py`). `scripts/run_train.py:_validate_config` checks
-  invariants (e.g. `output_poly_size == 360 // angle_step`) before training.
+- Configs are plain dataclasses (`configs/model_config.py`) loaded from composable YAML by a
+  hand-rolled mapper (`configs/yaml_loader.py` — NOT dacite, despite the dependency in
+  `requirements.txt`; unknown keys outside the `runtime`/`losses` sections are silently
+  ignored). `scripts/run_train.py:_validate_config` checks invariants
+  (e.g. `output_poly_size == 360 // angle_step`) before training.
 - Common workflows are wrapped as Claude Code skills (`.claude/skills/`): `/train`, `/eval`,
   `/export`, `/benchmark`, `/test`, `/check-env`, `/migrate-ckpt`, `/visualize-aug`.
 - Runtime flags (XLA via `tf.config.optimizer.set_jit`, mixed precision via the global Keras
@@ -207,5 +209,6 @@ Run with `/test` or `pytest tests/unit tests/smoke -v`.
 
 See `requirements.txt`. Core: `tensorflow==2.16.1`, `tensorflow-datasets>=4.9.0`,
 `albumentations`, `opencv-python-headless` (no libGL system dep — works on CI/servers),
-`pycocotools`, `scikit-image`, `dacite` (config loading), `PyYAML`, `absl-py`, `numpy`;
+`pycocotools`, `scikit-image`, `dacite` (listed but currently unused — `yaml_loader.py` is
+hand-rolled), `PyYAML`, `absl-py`, `numpy`;
 `pytest` / `pytest-cov` for tests.
