@@ -47,7 +47,7 @@ from typing import Callable, Dict, List, Tuple
 import tensorflow as tf
 
 from data_pipeline.augmentations import (
-    apply_perspective_image,
+    apply_perspective_images_batched,
     make_perspective_matrix,
     random_perspective,
     transform_boxes_polygons,
@@ -403,7 +403,7 @@ class Mosaic:
         xc_f = tf.cast(xc, tf.float32)
 
         examples = [one, two, three, four]
-        warped, A_list, boxes_list, polys_list = [], [], [], []
+        boxes_list, polys_list = [], []
 
         # Draw the global canvas→output matrix ONCE (same params as self._warp;
         # scale gain from the explicit [aug_scale_min, aug_scale_max] bounds).
@@ -420,7 +420,10 @@ class Mosaic:
 
         # Per quadrant: draw the per-image scale, compute (nh, nw) and the cell
         # placement (top_y/top_x + canvas off), build the source→canvas affine
-        # A_i, compose M_i = M @ A_i, and warp the source directly to the output.
+        # A_i, and compose M_i = M @ A_i. The 4 warps are issued as ONE batched
+        # ImageProjectiveTransformV3 call after the loop (identical math; a
+        # single dispatch parallelizes across quadrants inside the op).
+        M_list, src_list = [], []
         for i, ex in enumerate(examples):
             img = ex['image']
             h_in = tf.shape(img)[0]
@@ -460,15 +463,21 @@ class Mosaic:
                 tf.stack([tf.constant(0.0), tf.constant(0.0), tf.constant(1.0)]),
             ])
             M_i = M @ A_i
-
-            # Warp source directly to output. 114 fill covers both out-of-source
-            # AND out-of-canvas (matching the old 114 cell padding + warp fill).
-            warped_i = apply_perspective_image(img, M_i, H, W)
-            warped.append(warped_i)
+            M_list.append(M_i)
+            src_list.append(img)
 
             b_c, p_c = _scale_box_poly_to_canvas(ex, nh, nw, padh, padw, H2, W2)
             boxes_list.append(b_c)
             polys_list.append(p_c)
+
+        # Warp all 4 sources directly to the output in one batched call. 114
+        # fill covers both out-of-source AND out-of-canvas (matching the old
+        # 114 cell padding + warp fill). Sources share the pre-resized [H, W]
+        # shape, so they stack.
+        warped_all = apply_perspective_images_batched(
+            tf.stack(src_list, axis=0), tf.stack(M_list, axis=0), H, W,
+        )
+        warped = [warped_all[i] for i in range(4)]
 
         # --- Per-quadrant selection on the OUTPUT grid ---
         # Map each output pixel (x, y) (raw integer indices, no half-pixel offset,

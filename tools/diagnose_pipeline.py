@@ -139,54 +139,73 @@ def main() -> None:
     s1 = base.prefetch(AUTOTUNE).with_options(opts)
     stages.append(("1. read + sample + shuffle (encoded records)", s1, 1, args.samples))
 
+    # NOTE: stage order MUST mirror InputReader._build_detection_dataset —
+    # currently: decode → pre-resize → copy-paste → padded_batch(4) → mosaic →
+    # unbatch → shuffle(128) → parser → batch. Keep in sync when the pipeline
+    # changes, or the attribution lies.
     s2 = base.map(reader._decoder.decode, num_parallel_calls=AUTOTUNE)
     stages.append(("2. + decode (image bytes → pixels)",
                    s2.prefetch(AUTOTUNE).with_options(opts), 1, args.samples))
 
     s3 = s2
-    if reader._copy_paste_module is not None and reader._cnp_tfds_name:
-        cnp = reader._load_cnp_dataset()
-        s3 = tf.data.Dataset.zip((s2, cnp)).map(
-            reader._copy_paste_module.process_fn(is_training=True),
-            num_parallel_calls=AUTOTUNE,
-        )
-        stages.append(("3. + copy-paste (zip cnp + composite)",
-                       s3.prefetch(AUTOTUNE).with_options(opts), 1, args.samples))
-
-    s4 = s3
     if reader._mosaic_module is not None:
         H, W = reader._mosaic_module._H, reader._mosaic_module._W
 
         def _pre_resize(ex, H=H, W=W):
-            img = tf.cast(
-                tf.image.resize(tf.cast(ex['image'], tf.float32), [H, W], method='bilinear'),
-                tf.uint8,
+            img_in = ex['image']
+            shp = tf.shape(img_in)
+
+            def _resize():
+                return tf.cast(
+                    tf.image.resize(tf.cast(img_in, tf.float32), [H, W], method='bilinear'),
+                    tf.uint8,
+                )
+
+            img = tf.cond(
+                tf.logical_and(tf.equal(shp[0], H), tf.equal(shp[1], W)),
+                lambda: img_in, _resize,
             )
+            img.set_shape([H, W, 3])
             return {**ex, 'image': img}
 
-        s4 = (
-            s3
-            .map(_pre_resize, num_parallel_calls=AUTOTUNE)
+        s3 = s2.map(_pre_resize, num_parallel_calls=AUTOTUNE)
+        stages.append(("3. + pre-resize → %d²" % H,
+                       s3.prefetch(AUTOTUNE).with_options(opts), 1, args.samples))
+
+    s4 = s3
+    if reader._copy_paste_module is not None and reader._cnp_tfds_name:
+        cnp = reader._load_cnp_dataset()
+        s4 = tf.data.Dataset.zip((s3, cnp)).map(
+            reader._copy_paste_module.process_fn(is_training=True),
+            num_parallel_calls=AUTOTUNE,
+        )
+        stages.append(("4. + copy-paste (zip cnp + composite)",
+                       s4.prefetch(AUTOTUNE).with_options(opts), 1, args.samples))
+
+    s5 = s4
+    if reader._mosaic_module is not None:
+        s5 = (
+            s4
             .padded_batch(4, drop_remainder=True)
             .map(reader._mosaic_module.mosaic_fn(is_training=True),
                  num_parallel_calls=AUTOTUNE)
             .unbatch()
             .shuffle(128, seed=reader._seed, reshuffle_each_iteration=True)
         )
-        stages.append(("4. + pre-resize + mosaic(4→4) + unbatch + shuffle",
-                       s4.prefetch(AUTOTUNE).with_options(opts), 1, args.samples))
+        stages.append(("5. + mosaic(4→4) + unbatch + shuffle",
+                       s5.prefetch(AUTOTUNE).with_options(opts), 1, args.samples))
 
-    s5 = s4.map(reader._parser.parse_fn(is_training=True), num_parallel_calls=AUTOTUNE)
-    stages.append(("5. + parser (flip/HSV/albu/polygon targets)",
-                   s5.prefetch(AUTOTUNE).with_options(opts), 1, args.samples))
+    s6 = s5.map(reader._parser.parse_fn(is_training=True), num_parallel_calls=AUTOTUNE)
+    stages.append(("6. + parser (flip/polygon targets; color aug is on-GPU)",
+                   s6.prefetch(AUTOTUNE).with_options(opts), 1, args.samples))
 
-    s6 = s5.batch(td.global_batch_size, drop_remainder=True).prefetch(AUTOTUNE)
-    stages.append(("6. + batch(%d)" % td.global_batch_size,
-                   s6.with_options(opts), _batch_count, args.batches))
+    s7 = s6.batch(td.global_batch_size, drop_remainder=True).prefetch(AUTOTUNE)
+    stages.append(("7. + batch(%d)" % td.global_batch_size,
+                   s7.with_options(opts), _batch_count, args.batches))
 
-    s7 = reader()  # full merged stream incl. distance zip + options
-    stages.append(("7. FULL merged stream (detection + distance)",
-                   s7, _batch_count, args.batches))
+    s8 = reader()  # full merged stream incl. distance zip + options
+    stages.append(("8. FULL merged stream (detection + distance)",
+                   s8, _batch_count, args.batches))
 
     print(f"\n--- Stage attribution (threadpool={tp}, deterministic=False) ---")
     print("    NOTE: cumulative — the first big rate drop is the bottleneck stage.\n")
