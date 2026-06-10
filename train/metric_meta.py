@@ -50,7 +50,8 @@ METRIC_DESCRIPTIONS = {
     ),
     "poly_conf_loss": (
         "**Polygon Confidence Loss** (raw, pre-gain) — `BCE(sigmoid(pred), per-bin validity)`; "
-        "mean over the **valid vertices** (masked, like angle/dist), ÷ `num_objs`."
+        "mean over **ALL 24 bins** (occupied → 1, empty → 0; 2026-06-11 — empty bins need "
+        "the negative gradient), ÷ `num_objs`."
     ),
 
     # ---- COCO detection metrics (val) ----
@@ -76,7 +77,7 @@ METRIC_DESCRIPTIONS = {
     # ---- Optimizer / runtime (train/epoch/system) ----
     "lr":                   "**Learning Rate** — current value (cosine decay from 0.01, α=0.01, after linear warmup).",
     "momentum":             "**SGD Momentum** — Nesterov momentum, linearly warmed 0.8 → 0.937.",
-    "ema_decay":            "**EMA Decay** — current weight-averaging decay `min(0.9999, (1+step)/(10+step))`.",
+    "ema_decay":            "**EMA Decay** — current weight-averaging decay `min(average_decay, (1+step)/(10+step))` (average_decay=0.9999 by default).",
     "step_time_ms":         "**Step Time** (ms) — GPU compute per training step "
                             "(`_compiled_train_step` only; excludes waiting for data).",
     "data_wait_ms":         "**Data Wait** (ms) — time per step spent waiting for the input "
@@ -123,7 +124,12 @@ def describe(key: str) -> Optional[str]:
             base = _PER_CATEGORY.get(metric, metric)
             return f"**Per-class {base}** for class `{class_label}`."
         return None
+    # Exact registry entries win over the generic best_ composition — otherwise
+    # registered keys like `best_conf_thresh` / `best_checkpoint_epoch` were
+    # shadowed by the prefix strip (describe('conf_thresh') → None → no tooltip).
+    if key in METRIC_DESCRIPTIONS:
+        return METRIC_DESCRIPTIONS[key]
     if key.startswith("best_"):
         inner = describe(key[len("best_"):])
         return f"Best-so-far (max over epochs) of — {inner}" if inner else None
-    return METRIC_DESCRIPTIONS.get(key)
+    return None
