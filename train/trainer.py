@@ -175,13 +175,19 @@ class YoloV8Trainer:
             else:
                 epoch_inputs = self._train_ds
 
+            # Timing: the `for` pulls the next batch from the iterator BEFORE the
+            # body runs, so (body start − previous body end) is the time spent
+            # waiting on the input pipeline. Reporting only the compute time
+            # would overstate throughput badly whenever training is input-bound.
+            prev_body_end = time.time()
             for inputs in epoch_inputs:
+                data_dt = time.time() - prev_body_end
                 t0 = time.time()
                 step_losses = self._compiled_train_step(inputs)
                 self._global_step.assign_add(1)
                 python_step += 1
                 step_dt = time.time() - t0
-                step_times.append(step_dt)
+                step_times.append(step_dt + data_dt)  # wall-clock per step
 
                 if not _aug_logged and do_img_summary:
                     # Under distribution `inputs` is PerReplica; log the first
@@ -197,7 +203,7 @@ class YoloV8Trainer:
                 loss_count += 1
 
                 if python_step % log_interval == 0:
-                    self._log_step(step_losses, python_step, step_dt)
+                    self._log_step(step_losses, python_step, step_dt, data_dt)
 
                 # Mid-epoch periodic checkpoint; skip if this step was already saved.
                 if python_step % ckpt_interval == 0 and python_step != last_saved_step:
@@ -211,6 +217,10 @@ class YoloV8Trainer:
                     log.info("Graceful shutdown at step %d (epoch %d interrupted).",
                              python_step, epoch + 1)
                     return
+
+                # Reset AFTER logging/checkpointing so their cost is not
+                # attributed to the next step's data wait.
+                prev_body_end = time.time()
 
             # ---- validation (EMA weights) ----
             # try/finally so a failure inside validation can never leave the EMA
@@ -693,13 +703,21 @@ class YoloV8Trainer:
         lookup = key if key is not None else tag.split('/')[-1]
         tf.summary.scalar(tag, value, step=step, description=describe(lookup))
 
-    def _log_step(self, losses: dict, step: int, step_time: float) -> None:
-        """Log per-step scalars to TensorBoard and console."""
+    def _log_step(self, losses: dict, step: int, step_time: float,
+                  data_wait: float = 0.0) -> None:
+        """Log per-step scalars to TensorBoard and console.
+
+        ``step_time`` is the compute time (the train step itself); ``data_wait``
+        is the time spent waiting on the input pipeline for this batch. The
+        throughput is computed from their SUM (wall clock) — reporting compute
+        only would overstate speed whenever training is input-bound.
+        """
         sgd        = self._optimizer._optimizer
         lr         = float(sgd.lr)
         momentum   = float(sgd._current_momentum())
+        wall       = step_time + data_wait
         # Merged batch (detection + distance rows) — what the step actually consumed.
-        throughput = self._merged_batch_size / max(step_time, 1e-9)
+        throughput = self._merged_batch_size / max(wall, 1e-9)
         total_loss = float(losses.get('total_loss', 0.0))
         step_f     = float(step)
         ema_decay  = min(0.9999, (1.0 + step_f) / (10.0 + step_f))
@@ -711,6 +729,7 @@ class YoloV8Trainer:
             self._scalar('train/momentum',             momentum,         step=step)
             self._scalar('train/ema_decay',            ema_decay,        step=step)
             self._scalar('train/step_time_ms',         step_time * 1000, step=step)
+            self._scalar('train/data_wait_ms',         data_wait * 1000, step=step)
             self._scalar('train/throughput_img_per_s', throughput,       step=step)
             # GPU memory (best-effort; silently skipped on CPU-only machines)
             try:
@@ -722,9 +741,9 @@ class YoloV8Trainer:
 
         log.info(
             "Step %7d | loss=%.4f  lr=%.2e  mom=%.4f  "
-            "%.0fms/step  %.0f img/s",
+            "%.0fms compute + %.0fms data wait = %.0fms/step  %.0f img/s",
             step, total_loss, lr, momentum,
-            step_time * 1000, throughput,
+            step_time * 1000, data_wait * 1000, wall * 1000, throughput,
         )
 
     def _log_epoch(
