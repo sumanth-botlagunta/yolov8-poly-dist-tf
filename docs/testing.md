@@ -12,19 +12,27 @@
 | `tests/smoke/` | training-loop smoke (`TestDrySmoke` on synthetic data, 10 steps) + real-data smoke (`TestRealDataSmoke`, `@pytest.mark.smoke`) | only the marked real-data class |
 | `tests/test_*.py` (top level) | component tests: decoders, parser, copy_paste, mosaic, losses (computation + reference parity + polygon conventions + distance loss), polygon preprocessing, batch shapes | no |
 
-**Top-level test files (10 files):** `test_batch_shape_consistency.py`, `test_copy_paste.py`,
+**Top-level test files (11 files):** `test_batch_color_aug.py` (exact equivalence of the
+batched GPU colour aug vs the per-image `tf.image.adjust_*` reference, mask gating, dtype
+paths), `test_batch_shape_consistency.py`, `test_copy_paste.py` (includes the
+resolution-correction tests for compositing on pre-resized backgrounds),
 `test_decoders.py` (includes encoded-bytes / `SkipDecoding` decoder tests), `test_distance_loss.py`,
 `test_loss_computation.py`, `test_loss_reference_parity.py`,
-`test_mosaic.py` (includes 4-in/4-out mosaic assertions), `test_parser.py`,
-`test_polygon_loss_conventions.py`,
+`test_mosaic.py` (4-in/4-out semantics, composed-warp geometry/label/mask-partition tests,
+warp-scale-bounds distribution test), `test_parser.py`,
+`test_polygon_loss_conventions.py` (pins the 2026-06-11 all-bins conf convention),
 `test_polygon_preprocessing.py` (includes segment-equivalence tests asserting exact output parity
 of the `unsorted_segment_max` / `segment_min` formulation vs the old one-hot reference).
 
-**Unit test files (15 files):** `test_backbone.py`, `test_bf16_policy.py` (bfloat16 Keras policy
+**Unit test files (17 files):** `test_backbone.py`, `test_bf16_policy.py` (bfloat16 Keras policy
 applied correctly, heads remain float32), `test_coco_crowd_dontcare.py`,
 `test_coco_evaluator.py`, `test_config_loading.py`, `test_decoders.py`,
+`test_detection_generator_clip.py` (final boxes clipped to [0,1] after NMS),
 `test_distance_evaluator.py`, `test_ema.py`, `test_model_forward.py`,
-`test_polygon_evaluator.py`, `test_sgd_warmup.py`, `test_tal_assigner.py`,
+`test_polygon_evaluator.py`,
+`test_reencode_builder.py` (672² TFDS re-encode round trip on a synthetic source;
+`importorskip`s tfds, so it skips in environments without tensorflow-datasets),
+`test_sgd_warmup.py`, `test_tal_assigner.py`,
 `test_task_validation_streaming.py`,
 `test_trainer_epoch_math.py` (verifies `YoloV8Trainer._steps_for_epoch` for fresh starts, full
 epochs, and mid-epoch resume remainder),
