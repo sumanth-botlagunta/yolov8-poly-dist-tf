@@ -77,8 +77,14 @@ METRIC_DESCRIPTIONS = {
     "lr":                   "**Learning Rate** — current value (cosine decay from 0.01, α=0.01, after linear warmup).",
     "momentum":             "**SGD Momentum** — Nesterov momentum, linearly warmed 0.8 → 0.937.",
     "ema_decay":            "**EMA Decay** — current weight-averaging decay `min(0.9999, (1+step)/(10+step))`.",
-    "step_time_ms":         "**Step Time** (ms) — wall-clock per training step.",
-    "throughput_img_per_s": "**Throughput** — training images processed per second.",
+    "step_time_ms":         "**Step Time** (ms) — GPU compute per training step "
+                            "(`_compiled_train_step` only; excludes waiting for data).",
+    "data_wait_ms":         "**Data Wait** (ms) — time per step spent waiting for the input "
+                            "pipeline to produce the next batch. ≈0 when the pipeline keeps "
+                            "up; step wall-clock = step_time + data_wait.",
+    "throughput_img_per_s": "**Throughput** — training images per second of WALL CLOCK "
+                            "(merged batch ÷ (step_time + data_wait)) — the honest number "
+                            "for epoch-time projections.",
     "gpu_mem_gb":           "**GPU Memory** (GB) — current device allocation.",
     "gpu_mem_peak_gb":      "**GPU Memory, peak** (GB) — peak device allocation.",
     "time_s":               "**Epoch Time** (s) — wall-clock for the epoch (train + validation).",
