@@ -111,12 +111,25 @@ class V8ParserExtended(Parser):
             polygons = tf.boolean_mask(polygons, valid)
 
         # Resize to output_size so all images entering augmentation have a fixed shape.
+        # When the image arrives from the mosaic stage it is already exactly
+        # [h_out, w_out, 3] with a static (fully-defined) shape (random_perspective
+        # calls set_shape). In that case skip the cast→resize→cast round trip
+        # entirely. This decision is made at TRACE time via a python `if` on the
+        # static shape — exactly what we want inside dataset.map. Tests that feed
+        # variable-size raw images keep the resize path.
         h_out, w_out = self._output_size[0], self._output_size[1]
-        image = tf.cast(
-            tf.image.resize(tf.cast(image, tf.float32), [h_out, w_out], method='bilinear'),
-            tf.uint8,
-        )
-        image.set_shape([h_out, w_out, 3])
+        static_h = image.shape[0]
+        static_w = image.shape[1]
+        if static_h == h_out and static_w == w_out:
+            image.set_shape([h_out, w_out, 3])
+        else:
+            image = tf.cast(
+                tf.image.resize(
+                    tf.cast(image, tf.float32), [h_out, w_out], method='bilinear'
+                ),
+                tf.uint8,
+            )
+            image.set_shape([h_out, w_out, 3])
 
         # 2. Random horizontal flip
         if self._random_flip:
@@ -279,6 +292,16 @@ class V8ParserExtended(Parser):
             - dist = sqrt(dx² + dy²), conf = 1.0 if any vertex present, and
               angle = that vertex's fractional position within the bin.
 
+        Implementation uses a flat segment formulation instead of a dense
+        ``[N, P, n_angles]`` one-hot intermediate (P can be ~2000): every
+        (instance, bin) pair is given a unique segment id, and per-bin maxima are
+        computed with ``tf.math.unsorted_segment_max`` over the flattened
+        ``[N*P]`` distance vector. The bin representative (first-max vertex, to
+        match the old ``argmax`` tie-break) is recovered with a second
+        ``unsorted_segment_min`` over per-bin-max vertex indices. This is exactly
+        output-equivalent to the one-hot version (including ties) but avoids the
+        large dense intermediate.
+
         Args:
             boxes:    float32 [N, 4] yxyx normalized (used for box centers).
             polygons: float32 [N, max_vertices+2] flat xy pairs, -1 padded.
@@ -316,28 +339,48 @@ class V8ParserExtended(Parser):
         )  # [N, n_pairs]
         bins = tf.clip_by_value(bins, 0, n_angles - 1)
 
-        # For each (instance, bin), find the vertex with maximum radial distance.
-        bins_oh = tf.one_hot(bins, n_angles)  # [N, n_pairs, n_angles]
-        valid_3d = tf.cast(valid[:, :, tf.newaxis], tf.float32)  # [N, n_pairs, 1]
+        P = tf.shape(pts)[1]  # n_pairs
 
-        # Distance assigned to each (n_pairs, bin) cell
-        dists_assigned = (
-            dists[:, :, tf.newaxis] * bins_oh * valid_3d
-        )  # [N, n_pairs, n_angles]
+        # --- Segment formulation -------------------------------------------------
+        # Give each (instance, bin) pair a unique segment id in [0, N*n_angles).
+        seg_ids = tf.range(N)[:, tf.newaxis] * n_angles + bins   # [N, P] int32
+        flat_seg = tf.reshape(seg_ids, [-1])                     # [N*P]
 
-        # Max distance per bin: [N, n_angles]
-        max_dists = tf.reduce_max(dists_assigned, axis=1)
+        # Invalid vertices contribute distance 0 (same as the one-hot * valid_3d).
+        dist_valid = dists * tf.cast(valid, tf.float32)          # [N, P]
+        flat_dist = tf.reshape(dist_valid, [-1])                 # [N*P]
+
+        n_seg = N * n_angles
+        # Max distance per bin. Empty segments yield dtype-min; clamp to 0.0 so it
+        # matches the one-hot version (max over a row of zeros == 0).
+        max_flat = tf.math.unsorted_segment_max(flat_dist, flat_seg, n_seg)  # [n_seg]
+        max_dists = tf.maximum(tf.reshape(max_flat, [N, n_angles]), 0.0)     # [N, n_angles]
 
         # Confidence: 1.0 if any valid vertex was assigned to this bin
         conf_bins = tf.cast(max_dists > 0.0, tf.float32)  # [N, n_angles]
+
+        # Bin representative = FIRST vertex (smallest p) attaining the bin max,
+        # reproducing tf.argmax's first-max tie-break exactly.
+        m_per_elem = tf.gather(max_flat, flat_seg)                # [N*P] this elem's bin-max
+        p_idx = tf.tile(tf.range(P)[tf.newaxis, :], [N, 1])       # [N, P] vertex index
+        flat_p_idx = tf.reshape(p_idx, [-1])                      # [N*P]
+        BIG = tf.constant(2 ** 30, dtype=tf.int32)
+        # Float equality is exact: segment_max returns one of its actual inputs.
+        winner_idx = tf.where(flat_dist == m_per_elem, flat_p_idx, BIG)  # [N*P]
+        first_winner = tf.math.unsorted_segment_min(winner_idx, flat_seg, n_seg)  # [n_seg]
+        # Empty segments (or all-BIG) clamp to a valid index; conf==0 there so the
+        # gathered offset is zeroed out below regardless.
+        best_pair = tf.minimum(
+            tf.reshape(first_winner, [N, n_angles]),
+            tf.maximum(P - 1, 0),
+        )  # [N, n_angles]
 
         # Sub-bin angular offset: (vertex_angle - bin_start) / angle_step in [0, 1),
         # i.e. the fractional position of the vertex within its angular bin. This
         # lets the model recover the exact vertex angle, not just the bin index.
         frac = angles_deg / angle_step - tf.math.floor(angles_deg / angle_step)  # [N, n_pairs]
-        # Per bin, take the offset of the vertex that owns it (the max-radial-dist
-        # one — the same vertex whose distance is regressed in max_dists).
-        best_pair  = tf.argmax(dists_assigned, axis=1, output_type=tf.int32)  # [N, n_angles]
+        # Per bin, take the offset of the vertex that owns it (the first
+        # max-radial-dist one — the same vertex whose distance is regressed).
         angle_bins = tf.gather(frac, best_pair, batch_dims=1)                # [N, n_angles]
         # Empty bins (no vertex) carry offset 0.0; the loss masks them out via conf.
         angle_bins = angle_bins * conf_bins                                  # [N, n_angles]

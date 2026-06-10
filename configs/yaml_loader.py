@@ -153,6 +153,7 @@ def _fill_derived_fields(config: ExperimentConfig) -> None:
 _RUNTIME_KEYS = frozenset({
     "distribution_strategy", "num_gpus", "mixed_precision_dtype", "run_eagerly",
     "enable_xla", "num_cores_per_replica", "num_packs",
+    "inter_op_threads", "intra_op_threads",
 })
 
 
@@ -169,6 +170,8 @@ def _build_runtime_config(r: Dict[str, Any]) -> RuntimeConfig:
         enable_xla=r.get("enable_xla", False),
         num_cores_per_replica=r.get("num_cores_per_replica", 1),
         num_packs=r.get("num_packs", 1),
+        inter_op_threads=r.get("inter_op_threads", 0),
+        intra_op_threads=r.get("intra_op_threads", 0),
     )
 
 
@@ -330,6 +333,7 @@ def _build_data_config(d: Dict[str, Any]) -> DataConfig:
         with_distance=d.get("with_distance", False),
         poly_eval_gt_policy=d.get("poly_eval_gt_policy", "polyyolo"),
         class_remap_json_path=d.get("class_remap_json_path"),
+        private_threadpool_size=d.get("private_threadpool_size", 0),
         parser=parser_cfg,
         distance_data=dist_data_cfg,
     )

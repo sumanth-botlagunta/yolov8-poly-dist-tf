@@ -156,5 +156,216 @@ class TestEmptyPolygonAngleTarget(unittest.TestCase):
         self.assertEqual(int(out[0, 2::3].sum()), 2)   # two occupied bins (0 and 6)
 
 
+def _reference_one_hot(boxes, polygons, angle_step):
+    """Reference impl: the ORIGINAL one-hot algorithm (pre-segment formulation).
+
+    This is a verbatim copy of the old _preprocess_polygons_v2 body (lines 291-347)
+    used to assert exact output equivalence of the new segment formulation. It must
+    NOT be "improved" — it encodes the required behavior, including argmax tie-break.
+    """
+    n_angles = 360 // angle_step
+    N = tf.shape(boxes)[0]
+
+    cy = (boxes[:, 0] + boxes[:, 2]) / 2.0
+    cx = (boxes[:, 1] + boxes[:, 3]) / 2.0
+
+    pts = tf.reshape(polygons, [N, -1, 2])
+    valid = pts[:, :, 0] >= 0.0
+
+    dx = pts[:, :, 0] - cx[:, tf.newaxis]
+    dy = pts[:, :, 1] - cy[:, tf.newaxis]
+    dists = tf.sqrt(dx * dx + dy * dy)
+
+    angles_rad = tf.math.atan2(dy, dx)
+    angles_deg = angles_rad * (180.0 / math.pi)
+    angles_deg = tf.math.floormod(angles_deg, 360.0)
+    bins = tf.cast(tf.math.floor(angles_deg / angle_step), tf.int32)
+    bins = tf.clip_by_value(bins, 0, n_angles - 1)
+
+    bins_oh = tf.one_hot(bins, n_angles)
+    valid_3d = tf.cast(valid[:, :, tf.newaxis], tf.float32)
+
+    dists_assigned = dists[:, :, tf.newaxis] * bins_oh * valid_3d
+    max_dists = tf.reduce_max(dists_assigned, axis=1)
+    conf_bins = tf.cast(max_dists > 0.0, tf.float32)
+
+    frac = angles_deg / angle_step - tf.math.floor(angles_deg / angle_step)
+    best_pair = tf.argmax(dists_assigned, axis=1, output_type=tf.int32)
+    angle_bins = tf.gather(frac, best_pair, batch_dims=1)
+    angle_bins = angle_bins * conf_bins
+
+    result = tf.stack([max_dists, angle_bins, conf_bins], axis=-1)
+    return tf.reshape(result, [N, n_angles * 3])
+
+
+def _flat_poly(verts, pad_to):
+    """Build a [1, pad_to] flat (x,y) row from a list of (x,y) tuples, -1 padded."""
+    flat = np.array(verts, dtype=np.float32).reshape(-1)
+    if pad_to < flat.size:
+        pad_to = flat.size
+    out = np.full((pad_to,), -1.0, dtype=np.float32)
+    out[: flat.size] = flat
+    return out[np.newaxis, :]
+
+
+class TestSegmentEquivalence(unittest.TestCase):
+    """The segment formulation must be EXACTLY output-equivalent to the one-hot ref."""
+
+    def setUp(self):
+        self.parser = _make_parser()
+
+    def _assert_exact(self, boxes, polys, angle_step=15):
+        new = self.parser._preprocess_polygons_v2(boxes, polys, angle_step).numpy()
+        ref = _reference_one_hot(boxes, polys, angle_step).numpy()
+        np.testing.assert_allclose(new, ref, atol=0)
+        return new
+
+    # (a) random polygons -------------------------------------------------------
+    def test_random_polygons(self):
+        rng = np.random.default_rng(0)
+        for seed in range(20):
+            r = np.random.default_rng(seed)
+            for N in (1, 3, 17):
+                for P in (4, 50, 500):
+                    # Random boxes in [0,1] yxyx (ensure y0<y1, x0<x1).
+                    y0 = r.uniform(0.0, 0.5, size=N).astype(np.float32)
+                    x0 = r.uniform(0.0, 0.5, size=N).astype(np.float32)
+                    y1 = (y0 + r.uniform(0.1, 0.5, size=N)).astype(np.float32)
+                    x1 = (x0 + r.uniform(0.1, 0.5, size=N)).astype(np.float32)
+                    boxes = tf.constant(np.stack([y0, x0, y1, x1], axis=1))
+
+                    # Random vertices, with a random valid suffix per instance.
+                    pts = r.uniform(0.0, 1.0, size=(N, P, 2)).astype(np.float32)
+                    n_valid = r.integers(0, P + 1, size=N)
+                    for i in range(N):
+                        pts[i, n_valid[i]:, :] = -1.0
+                    polys = tf.constant(pts.reshape(N, P * 2))
+                    self._assert_exact(boxes, polys)
+
+    # (b) adversarial ties ------------------------------------------------------
+    def test_adversarial_ties_same_bin_same_radius(self):
+        # Center (0.5, 0.5). Two vertices within bin 1 (15°-30°) at IDENTICAL radius.
+        cx = cy = 0.5
+        r = 0.3
+        a1 = math.radians(18.0)
+        a2 = math.radians(27.0)  # same bin, same radius, different angle
+        verts = [
+            (cx + r * math.cos(a1), cy + r * math.sin(a1)),
+            (cx + r * math.cos(a2), cy + r * math.sin(a2)),
+        ]
+        boxes = tf.constant([[0.0, 0.0, 1.0, 1.0]], tf.float32)
+        polys = tf.constant(_flat_poly(verts, 8))
+        self._assert_exact(boxes, polys)
+
+        # Reversed order — argmax-first must still pick the first listed.
+        polys_rev = tf.constant(_flat_poly(verts[::-1], 8))
+        self._assert_exact(boxes, polys_rev)
+
+    def test_adversarial_ties_mirrored_in_bin(self):
+        # Two vertices mirrored around the bin midline at the same radius.
+        cx = cy = 0.5
+        r = 0.25
+        mid = 7.5
+        verts = [
+            (cx + r * math.cos(math.radians(mid - 3.0)),
+             cy + r * math.sin(math.radians(mid - 3.0))),
+            (cx + r * math.cos(math.radians(mid + 3.0)),
+             cy + r * math.sin(math.radians(mid + 3.0))),
+        ]
+        boxes = tf.constant([[0.0, 0.0, 1.0, 1.0]], tf.float32)
+        self._assert_exact(boxes, tf.constant(_flat_poly(verts, 8)))
+
+    # (c) boundaries, zero-radius, all-invalid, N=0 -----------------------------
+    def test_vertices_on_bin_boundaries(self):
+        cx = cy = 0.5
+        r = 0.4
+        verts = [
+            (cx + r * math.cos(math.radians(d)), cy + r * math.sin(math.radians(d)))
+            for d in (0.0, 15.0, 30.0, 90.0, 180.0, 345.0)
+        ]
+        boxes = tf.constant([[0.0, 0.0, 1.0, 1.0]], tf.float32)
+        self._assert_exact(boxes, tf.constant(_flat_poly(verts, 24)))
+
+    def test_zero_radius_vertices(self):
+        # Vertices exactly at the center → dist 0. Plus one real vertex.
+        cx = cy = 0.5
+        verts = [(cx, cy), (cx, cy), (0.8, 0.5)]
+        boxes = tf.constant([[0.0, 0.0, 1.0, 1.0]], tf.float32)
+        self._assert_exact(boxes, tf.constant(_flat_poly(verts, 8)))
+
+    def test_all_zero_radius(self):
+        cx = cy = 0.5
+        verts = [(cx, cy), (cx, cy)]
+        boxes = tf.constant([[0.0, 0.0, 1.0, 1.0]], tf.float32)
+        self._assert_exact(boxes, tf.constant(_flat_poly(verts, 8)))
+
+    def test_all_invalid_rows(self):
+        boxes = tf.constant([[0.0, 0.0, 1.0, 1.0], [0.1, 0.1, 0.6, 0.6]], tf.float32)
+        polys = tf.constant(np.full((2, 16), -1.0, np.float32))
+        self._assert_exact(boxes, polys)
+
+    def test_empty_instances(self):
+        # N = 0 (no boxes). Segment ops must handle num_segments == 0.
+        boxes = tf.zeros([0, 4], tf.float32)
+        polys = tf.zeros([0, 16], tf.float32)
+        new = self.parser._preprocess_polygons_v2(boxes, polys, 15).numpy()
+        ref = _reference_one_hot(boxes, polys, 15).numpy()
+        self.assertEqual(new.shape, (0, 72))
+        np.testing.assert_allclose(new, ref, atol=0)
+
+    # (d) border-clipped duplicates ---------------------------------------------
+    def test_border_clipped_duplicate_corner(self):
+        # Several vertices clipped to the SAME corner → identical coords/dist/bin.
+        boxes = tf.constant([[0.0, 0.0, 1.0, 1.0]], tf.float32)
+        verts = [(1.0, 1.0), (1.0, 1.0), (1.0, 1.0), (0.2, 0.5)]
+        self._assert_exact(boxes, tf.constant(_flat_poly(verts, 12)))
+
+    def test_border_clipped_zero_corner(self):
+        boxes = tf.constant([[0.0, 0.0, 1.0, 1.0]], tf.float32)
+        verts = [(0.0, 0.0), (0.0, 0.0), (0.5, 0.9)]
+        self._assert_exact(boxes, tf.constant(_flat_poly(verts, 8)))
+
+
+@unittest.skip("micro-benchmark, run via __main__ helper")
+class TestMicroBenchmark(unittest.TestCase):
+    pass
+
+
+def _micro_benchmark():
+    """Compare old one-hot vs new segment formulation wall time (eager)."""
+    import time
+
+    parser = _make_parser()
+    N, P, iters = 40, 1986, 100
+    rng = np.random.default_rng(123)
+    y0 = rng.uniform(0.0, 0.5, size=N).astype(np.float32)
+    x0 = rng.uniform(0.0, 0.5, size=N).astype(np.float32)
+    y1 = (y0 + rng.uniform(0.1, 0.5, size=N)).astype(np.float32)
+    x1 = (x0 + rng.uniform(0.1, 0.5, size=N)).astype(np.float32)
+    boxes = tf.constant(np.stack([y0, x0, y1, x1], axis=1))
+    pts = rng.uniform(0.0, 1.0, size=(N, P, 2)).astype(np.float32)
+    polys = tf.constant(pts.reshape(N, P * 2))
+
+    # Warmup
+    _ = _reference_one_hot(boxes, polys, 15)
+    _ = parser._preprocess_polygons_v2(boxes, polys, 15)
+
+    t0 = time.perf_counter()
+    for _ in range(iters):
+        _ = _reference_one_hot(boxes, polys, 15)
+    t_old = (time.perf_counter() - t0) / iters * 1000.0
+
+    t0 = time.perf_counter()
+    for _ in range(iters):
+        _ = parser._preprocess_polygons_v2(boxes, polys, 15)
+    t_new = (time.perf_counter() - t0) / iters * 1000.0
+
+    print(f"\nMicro-benchmark (N={N}, P={P}, {iters} iters, eager):")
+    print(f"  OLD one-hot : {t_old:.3f} ms / call")
+    print(f"  NEW segment : {t_new:.3f} ms / call")
+    print(f"  speedup     : {t_old / t_new:.2f}x")
+
+
 if __name__ == "__main__":
+    _micro_benchmark()
     unittest.main()

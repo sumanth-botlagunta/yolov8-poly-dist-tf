@@ -7,6 +7,22 @@ scale + shear + translate) warps and crops the canvas back to the output size.
 The same ``random_perspective`` is applied to non-mosaic single images, so it is
 the one geometric transform in the pipeline (the parser no longer does affine).
 
+4-in / 4-out semantics (epoch accounting)
+-----------------------------------------
+``mosaic_fn`` maps a ``padded_batch(4)`` group to **four** emitted samples (one
+per decoded image), not one. The previous implementation emitted a single sample
+per group (``tf.cond(do_mosaic, _mosaic(4 imgs), _single(1 img))`` then
+``expand_dims(0)``), which in the non-mosaic branch silently *discarded three of
+the four decoded images*. That broke epoch accounting: 4 raw images were consumed
+per emitted sample, so an "epoch" only saw a quarter of the dataset (and the three
+dropped images never contributed gradients).
+
+Now every decoded image yields exactly one emitted sample, and per-sample mosaic
+probability is still exactly ``mosaic_frequency``: one coin flip per group decides
+whether the group's 4 outputs are 4 mosaics (each built from a rotated quadrant
+permutation of the same 4 images) or 4 single-image warps. Downstream
+``.unbatch()`` then sees 4 elements (leading dim 4 instead of 1).
+
 Configuration (parser.mosaic in the experiment YAML):
     mosaic_frequency: 0.5
     mixup_frequency: 0.0
@@ -105,6 +121,60 @@ def _scale_box_poly_to_canvas(
     return boxes_c, polys_c
 
 
+# How each annotation field is padded up to the group-max instance count before
+# stacking. Per-instance (axis-0 = N) fields only. (key, pad_value)
+#   - boxes pad with zero rows [0,0,0,0]: the parser's clip_boxes min_side=0.005
+#     filter provably drops zero boxes (incl. after flip), so they never train.
+#   - polygons pad with -1.0 rows (defense in depth; the -1 sentinel marks invalid
+#     vertices). Width V is identical across the 4 results (same padded_batch group).
+#   - classes/dontcare pad 0 (int64); is_crowd pad False (NEVER True — crowd
+#     filtering is config-conditional in the parser); area/dists pad 0.0.
+_PAD_SPEC = (
+    ('groundtruth_boxes',    0.0,   tf.float32),
+    ('groundtruth_polygons', -1.0,  tf.float32),
+    ('groundtruth_classes',  0,     tf.int64),
+    ('groundtruth_is_crowd', False, tf.bool),
+    ('groundtruth_area',     0.0,   tf.float32),
+    ('groundtruth_dontcare', 0,     tf.int64),
+    ('groundtruth_dists',    0.0,   tf.float32),
+)
+
+
+def _stack_results(results: List[Dict[str, tf.Tensor]]) -> Dict[str, tf.Tensor]:
+    """Stack a list of per-sample result dicts to a single dict with leading dim len(results).
+
+    Per-instance annotation tensors have differing instance counts ``N_i``; each is
+    padded (per ``_PAD_SPEC``) up to the group-max ``N`` before ``tf.stack`` (which
+    requires equal shapes). Non-instance fields (image / height / width / source_id)
+    are stacked directly. Used by both ``tf.cond`` branches, so the output dicts have
+    identical keys, dtypes, and ranks.
+    """
+    # Group-max instance count across all results (boxes' axis-0).
+    n_list = [tf.shape(r['groundtruth_boxes'])[0] for r in results]
+    max_n = n_list[0]
+    for n_i in n_list[1:]:
+        max_n = tf.maximum(max_n, n_i)
+
+    out: Dict[str, tf.Tensor] = {}
+
+    for key, pad_val, dtype in _PAD_SPEC:
+        padded = []
+        for r, n_i in zip(results, n_list):
+            t = tf.cast(r[key], dtype)
+            pad_rows = max_n - n_i
+            # Pad only axis 0 (instances); trailing dims unchanged.
+            paddings = [[0, pad_rows]] + [[0, 0]] * (len(t.shape) - 1)
+            t = tf.pad(t, paddings, constant_values=pad_val)
+            padded.append(t)
+        out[key] = tf.stack(padded, axis=0)
+
+    out['image']     = tf.stack([r['image'] for r in results], axis=0)
+    out['height']    = tf.stack([r['height'] for r in results], axis=0)
+    out['width']     = tf.stack([r['width'] for r in results], axis=0)
+    out['source_id'] = tf.stack([r['source_id'] for r in results], axis=0)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Mosaic class
 # ---------------------------------------------------------------------------
@@ -150,7 +220,24 @@ class Mosaic:
     # ------------------------------------------------------------------
 
     def mosaic_fn(self, is_training: bool = True) -> Callable:
-        """Return a function for tf.data.Dataset.map() over a batch of 4 samples.
+        """Return a function for tf.data.Dataset.map() over a ``padded_batch(4)`` group.
+
+        Maps the 4-image group to FOUR emitted samples (leading dim 4), so every
+        decoded image yields exactly one output. One coin flip per group selects
+        the path; per-sample mosaic probability is still exactly ``mosaic_frequency``:
+
+          * mosaic branch: build 4 mosaics from the same 4 examples using rotated
+            quadrant permutations ``[(0,1,2,3),(1,2,3,0),(2,3,0,1),(3,0,1,2)]`` —
+            each image lands in each quadrant exactly once across the 4 mosaics.
+            Each ``_mosaic`` call draws its own split center / per-image scales /
+            ``random_perspective`` params (4 independent draws).
+          * single branch: ``_single`` on each of the 4 examples (4 independent
+            ``random_perspective`` draws).
+
+        Both branches return the SAME dict structure with every value stacked on
+        axis 0 to ``[4, ...]`` (annotations zero/-1/False/0.0 padded to the group
+        max instance count before stacking). Downstream ``.unbatch()`` yields 4
+        single examples with static image shape ``[H, W, 3]``.
 
         Both the mosaic branch and the single-image branch run random_perspective,
         so every training image gets the full geometric transform exactly once.
@@ -160,22 +247,30 @@ class Mosaic:
             def _select(d: Dict, i: int) -> Dict:
                 return {k: v[i] for k, v in d.items()}
 
-            one   = _select(batch, 0)
-            two   = _select(batch, 1)
-            three = _select(batch, 2)
-            four  = _select(batch, 3)
+            examples = [_select(batch, i) for i in range(4)]
 
             if not is_training:
-                result = self._single(one)
-            else:
-                do_mosaic = tf.random.uniform([]) < self._mosaic_freq
-                result = tf.cond(
-                    do_mosaic,
-                    lambda: self._mosaic(one, two, three, four),
-                    lambda: self._single(one),
-                )
+                results = [self._single(ex) for ex in examples]
+                return _stack_results(results)
 
-            return {k: tf.expand_dims(v, 0) for k, v in result.items()}
+            do_mosaic = tf.random.uniform([]) < self._mosaic_freq
+
+            def _mosaic_branch():
+                perms = [(0, 1, 2, 3), (1, 2, 3, 0), (2, 3, 0, 1), (3, 0, 1, 2)]
+                results = [
+                    self._mosaic(
+                        examples[p[0]], examples[p[1]],
+                        examples[p[2]], examples[p[3]],
+                    )
+                    for p in perms
+                ]
+                return _stack_results(results)
+
+            def _single_branch():
+                results = [self._single(ex) for ex in examples]
+                return _stack_results(results)
+
+            return tf.cond(do_mosaic, _mosaic_branch, _single_branch)
 
         return _fn
 

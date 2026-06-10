@@ -33,13 +33,20 @@ Three config-driven tiers share the same code:
 
 ### Data Pipeline
 
-Multi-TFDS weighted sampling → Copy-Paste augmentation → Mosaic (2× canvas assembly + `random_perspective`: rotation/scale/shear/translate, clip-to-edge) → Flip → HSV → Albumentations → Polygon preprocessing
+Multi-TFDS weighted sampling (each source `.repeat()`ed → stationary weights, infinite stream; images stay **encoded** through shuffle via `SkipDecoding`) → decode → Copy-Paste augmentation → Mosaic (**4-in/4-out**: 2× canvas assembly + `random_perspective`: rotation/scale/shear/translate, clip-to-edge) → small post-unbatch shuffle → Flip → HSV → Albumentations → Polygon preprocessing
 
 The geometric transform (`random_perspective`) is applied inside the mosaic stage for **both** the 4-image mosaic and non-mosaic single images; the parser no longer applies a separate affine.
 
+**Epoch semantics**: the training stream is infinite; the trainer runs **exactly
+`steps_per_loop` steps per epoch** (= `train_total_examples // batch` = 2388 for the
+poly_dist config) from one persistent iterator, so one epoch = one nominal data pass and
+the startup banner / LR schedule (`decay_steps = steps_per_loop × epochs`) / checkpoint
+interval are all true by construction. After a mid-epoch resume only the remainder to the
+next epoch boundary is run (`YoloV8Trainer._steps_for_epoch`). Eval datasets do not repeat.
+
 The distance dataset (`servingbot_polygon:1.0.1`) is a **separate stream** merged via `tf.data.Dataset.zip()` and concatenated on the batch dimension. Distance-only samples carry `ignore_bg=1` to suppress class loss on background. The distance stream is **training-only** (no validation merge path).
 
-Training batch sizes: 128 (detection) + 16 (distance).
+Training batch sizes: 128 (detection) + 16 (distance) — throughput/logs count the merged 144.
 
 ### Polygon Representation
 
@@ -176,6 +183,9 @@ Run with `/test` or `pytest tests/unit tests/smoke -v`.
 - **Polygon conf in predictions**: `predictions['polygons'][:, :, :, 0]` values are already sigmoid-activated by the detection generator — they are not raw logits. Apply your threshold directly.
 - **Polygon angle is a sub-bin offset**: the `poly_angle` channel is the offset within a bin (`(vertex_angle − bin_start)/angle_step ∈ [0,1)`), **not** a one-hot of the dominant bin. Decode the vertex angle as `(i + sigmoid(pred))·angle_step`; this is consumed in `detection_generator` / `polygon_metrics` / `viz_utils`. (See `losses/polygon_loss.py` for the masked-mean conventions.)
 - **Geometry lives in the mosaic stage**: `random_perspective` (rotation/scale/shear/translate, clip-to-edge) runs in `mosaic.py` for both the 4-image mosaic and single images; the parser does not apply a separate affine.
+- **Mosaic is 4-in/4-out**: each `padded_batch(4)` group emits 4 samples (one per decoded image) — one group coin flip; mosaic branch builds 4 mosaics of the same 4 images via rotated quadrant permutations (independent random draws), single branch warps each image. No decoded image is discarded; per-sample mosaic probability is exactly `mosaic_frequency`.
+- **Polygon binning is a segment formulation**: `_preprocess_polygons_v2` uses `unsorted_segment_max` + first-winner `unsorted_segment_min` instead of a `[N, P, 24]` one-hot — exactly output-equivalent including argmax-first tie behavior (tests assert equality).
+- **Runtime defaults (poly_dist YAML)**: `one_device` on 1 GPU, `mixed_bfloat16` (heads pinned float32 in `models/head.py`, no loss scaling needed), thread-pool caps for cgroup-capped hosts (`runtime.inter_op_threads`/`intra_op_threads`, `train_data.private_threadpool_size`). The training stream sets `tf.data` `deterministic=False` (sample order is not seed-reproducible; augmentation randomness unaffected).
 - **Polygon sub-losses are logged separately**: TensorBoard tags `train/poly_angle_loss`, `train/poly_dist_loss`, and `train/poly_conf_loss` allow diagnosing which polygon component is not converging.
 - **TensorBoard scalars carry names + formulae**: every scalar is written with a markdown `description` (`train/metric_meta.py`); per-category metrics are tagged by class name (`val/cls/<NN>_<name>/<metric>`), not bare index.
 
