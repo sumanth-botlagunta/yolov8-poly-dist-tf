@@ -76,3 +76,4 @@ tfds_cache/
 tensorflow_datasets/
 wandb/
 mlruns/
+.claude/projects/

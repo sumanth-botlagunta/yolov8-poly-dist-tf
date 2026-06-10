@@ -83,6 +83,13 @@ def _validate_config(config, output_dir: str) -> None:
         )
     if trainer.train_epochs <= 0:
         errors.append(f"trainer.train_epochs must be > 0, got {trainer.train_epochs}")
+    if trainer.steps_per_loop <= 0:
+        errors.append(
+            f"trainer.steps_per_loop must be > 0 (derived from train_total_examples "
+            f"// global_batch_size), got {trainer.steps_per_loop}. The training loop "
+            "runs exactly steps_per_loop steps per epoch — without it epochs have "
+            "no defined length."
+        )
 
     # --- dataset directories ---
     for label, data_cfg in [
@@ -141,6 +148,19 @@ def _apply_runtime_config(runtime_cfg, debug: bool) -> None:
     if run_eagerly:
         tf.config.run_functions_eagerly(True)
         logging.set_verbosity(logging.DEBUG)
+
+    # Thread-pool caps — must run before the TF context initializes (i.e. before
+    # any op executes). On cgroup-capped machines TF sizes its pools to the
+    # VISIBLE core count (e.g. 128) while the process may only use a fraction
+    # (e.g. 13 cores) — hundreds of threads contending for 13 cores thrash.
+    inter = getattr(runtime_cfg, 'inter_op_threads', 0)
+    intra = getattr(runtime_cfg, 'intra_op_threads', 0)
+    if inter > 0:
+        tf.config.threading.set_inter_op_parallelism_threads(inter)
+        logging.info("inter_op_parallelism_threads = %d", inter)
+    if intra > 0:
+        tf.config.threading.set_intra_op_parallelism_threads(intra)
+        logging.info("intra_op_parallelism_threads = %d", intra)
 
     if runtime_cfg.enable_xla:
         tf.config.optimizer.set_jit(True)

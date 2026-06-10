@@ -77,10 +77,18 @@ class YoloV8Trainer:
         self._model        = None
         self._optimizer    = None
         self._train_ds     = None
+        self._train_iter   = None   # persistent iterator (built lazily in train())
         self._val_ds       = None
         self._ckpt         = None
         self._ckpt_manager = None
         self._tb_writer    = None
+
+        # Each training step consumes a merged batch: detection + distance rows.
+        td = config.task.train_data
+        dist_cfg = getattr(td, 'distance_data', None)
+        self._merged_batch_size = td.global_batch_size + (
+            dist_cfg.global_batch_size if dist_cfg is not None else 0
+        )
 
         self._global_step   = tf.Variable(0, trainable=False, dtype=tf.int64,
                                           name='global_step')
@@ -96,7 +104,17 @@ class YoloV8Trainer:
     # ------------------------------------------------------------------
 
     def train(self, total_epochs: int) -> None:
-        """Run the full training loop."""
+        """Run the full training loop.
+
+        Epoch semantics: when ``steps_per_loop > 0`` (the normal case — derived
+        as train_total_examples // batch), every epoch is EXACTLY that many
+        steps, drawn from one persistent iterator over the infinite (repeated)
+        training stream. One epoch therefore equals one nominal pass over the
+        training set, and the steps/epoch, total-step, LR-schedule, and ETA
+        numbers reported at startup are the numbers that actually happen.
+        When ``steps_per_loop == 0`` (synthetic/test datasets with no example
+        count configured) the loop falls back to data-driven epochs.
+        """
         self._setup()
         start_epoch = self._auto_resume(self._resume_from)
 
@@ -106,6 +124,9 @@ class YoloV8Trainer:
         # Log ~20× per epoch; at least every 50 steps.
         spl           = trainer_cfg.steps_per_loop
         log_interval  = max(50, spl // 20) if spl > 0 else 50
+
+        if spl > 0 and self._train_iter is None:
+            self._train_iter = iter(self._train_ds)
 
         # Save a pre-training checkpoint so epoch 1 crashes always have a restore point.
         if start_epoch == 0:
@@ -129,7 +150,32 @@ class YoloV8Trainer:
             python_step  = int(self._global_step)
             _aug_logged  = False
 
-            for inputs in self._train_ds:
+            if spl > 0:
+                # Fixed-count epoch. After a mid-epoch resume global_step is not
+                # a multiple of steps_per_loop; run only the remainder so epoch
+                # boundaries stay at exact multiples (epoch k ends at k*spl).
+                steps_this_epoch = self._steps_for_epoch(python_step, spl)
+
+                def _epoch_inputs():
+                    for _ in range(steps_this_epoch):
+                        try:
+                            yield next(self._train_iter)
+                        except StopIteration:
+                            # Only possible if the training stream is finite
+                            # (misconfiguration — the detection stream repeats).
+                            log.warning(
+                                "Training dataset exhausted mid-epoch at "
+                                "global_step=%d — epoch truncated. The training "
+                                "stream should be infinite (.repeat()).",
+                                int(self._global_step),
+                            )
+                            return
+
+                epoch_inputs = _epoch_inputs()
+            else:
+                epoch_inputs = self._train_ds
+
+            for inputs in epoch_inputs:
                 t0 = time.time()
                 step_losses = self._compiled_train_step(inputs)
                 self._global_step.assign_add(1)
@@ -216,8 +262,8 @@ class YoloV8Trainer:
             avg_epoch_time = (time.time() - training_start) / max(epochs_done, 1)
             eta_seconds    = avg_epoch_time * (total_epochs - (epoch + 1))
             avg_step_time  = sum(step_times) / max(len(step_times), 1)
-            batch_size     = self._config.task.train_data.global_batch_size
-            throughput     = batch_size / max(avg_step_time, 1e-9)
+            # Each step consumes detection + distance rows (e.g. 128 + 16).
+            throughput     = self._merged_batch_size / max(avg_step_time, 1e-9)
             epoch_losses   = {k: v / max(loss_count, 1) for k, v in loss_accum.items()}
 
             self._log_epoch(
@@ -230,6 +276,17 @@ class YoloV8Trainer:
 
         total_time = time.time() - training_start
         log.info("Training complete. Total time: %s", _fmt_duration(total_time))
+
+    @staticmethod
+    def _steps_for_epoch(global_step: int, steps_per_loop: int) -> int:
+        """Steps to run in the epoch starting at ``global_step``.
+
+        A full epoch is ``steps_per_loop`` steps; after a mid-epoch resume only
+        the remainder to the next multiple of ``steps_per_loop`` is run, so
+        epoch k always ends at exactly ``k * steps_per_loop`` global steps and
+        the LR schedule / checkpoint cadence stay aligned with epochs.
+        """
+        return steps_per_loop - (global_step % steps_per_loop)
 
     # ------------------------------------------------------------------
     # Setup
@@ -367,7 +424,7 @@ class YoloV8Trainer:
             "\n"
             "=== Training Configuration ===\n"
             "  Epochs            : %d\n"
-            "  Steps/epoch       : %d\n"
+            "  Steps/epoch       : %d  (fixed; stream repeats — one nominal data pass)\n"
             "  Total steps       : %d\n"
             "  Train batch size  : %d  (+ %d distance)\n"
             "  Val batch size    : %d\n"
@@ -641,8 +698,8 @@ class YoloV8Trainer:
         sgd        = self._optimizer._optimizer
         lr         = float(sgd.lr)
         momentum   = float(sgd._current_momentum())
-        batch_size = self._config.task.train_data.global_batch_size
-        throughput = batch_size / max(step_time, 1e-9)
+        # Merged batch (detection + distance rows) — what the step actually consumed.
+        throughput = self._merged_batch_size / max(step_time, 1e-9)
         total_loss = float(losses.get('total_loss', 0.0))
         step_f     = float(step)
         ema_decay  = min(0.9999, (1.0 + step_f) / (10.0 + step_f))

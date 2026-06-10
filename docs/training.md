@@ -21,12 +21,12 @@ Three experiment tiers under `configs/experiments/yolo/` share the same code:
 
 ### Config inheritance (`base:`)
 A config may set a top-level `base: <relative path>` to inherit from another and deep-merge its
-own keys on top (override wins; dicts merge). Example — `yolov8_poly_dist_bf16.yaml` is just:
+own keys on top (override wins; dicts merge). Example — `yolov8_poly_dist_bf16.yaml` is now just
+an XLA A/B overlay (the base config already runs `mixed_bfloat16`):
 
 ```yaml
 base: yolov8_poly_dist.yaml
 runtime:
-  mixed_precision_dtype: bfloat16
   enable_xla: true
 ```
 
@@ -52,19 +52,33 @@ Validation at startup (`run_train.py:_validate_config`) checks invariants such a
   SIGTERM for preemption, and auto-resume from the latest checkpoint in `output_dir`.
 - `viz_utils.py` — renders box/polygon overlays for TensorBoard image summaries.
 
+**Epoch accounting**: when `steps_per_loop > 0` (the normal case — computed as
+`train_total_examples // batch_size`, e.g. 2388 = 305,780 // 128), every epoch runs exactly that
+many steps from one **persistent iterator** over the infinite training stream. After a mid-epoch
+resume (`YoloV8Trainer._steps_for_epoch`) only the remainder to the next multiple is run, keeping
+epoch boundaries at exact multiples of `steps_per_loop`. The cosine LR `decay_steps=716,400`
+(= 2388 × 300), warmup `7164` (= 3 epochs), and `checkpoint_interval=2388` (= 1 epoch) are all
+consistent with this count. When `steps_per_loop == 0` (synthetic/test configs with no example
+count configured) the loop falls back to data-driven epochs.
+
 Checkpoints are written to `output_dir/` every `checkpoint_interval` steps (defaults to one epoch);
 TensorBoard events to `output_dir/tb_events/`.
 
 ## Mixed precision & XLA
 Applied in `run_train.py:_apply_runtime_config` from `RuntimeConfig`: XLA via
-`tf.config.optimizer.set_jit`, mixed precision via the global Keras policy. Default is `float32`.
-Prefer `bfloat16` (no loss scaling) over `float16`. Validate on a few hundred steps (loss finite,
-curves tracking the float32 baseline) before a full run; benchmark with `/benchmark`.
+`tf.config.optimizer.set_jit`, mixed precision via the global Keras policy, and
+`inter_op_threads`/`intra_op_threads` (applied before any op). **`yolov8_poly_dist.yaml` now
+defaults to `mixed_bfloat16`** (prediction heads are pinned float32 in `models/head.py`; loss
+runs float32; no loss scaling needed). `yolov8_poly_dist_bf16.yaml` is now just an
+`enable_xla: true` A/B overlay on top of the base config. Prefer `bfloat16` over `float16`.
+Validate on a few hundred steps (loss finite, curves tracking a float32 baseline) before a full
+run; benchmark with `/benchmark`.
 
 ## Distributed training (multi-GPU)
 `MirroredStrategy` data-parallel training is supported and **numerically identical** to
-single-device. The default strategy auto-detects all visible GPUs; pass `--debug` or a custom
-strategy to override.
+single-device. `yolov8_poly_dist.yaml` defaults to `distribution_strategy: one_device` with
+`num_gpus: 1` (avoids MirroredStrategy variable-wrapping overhead on a single GPU). To use
+multiple GPUs switch to `MirroredStrategy`; pass `--debug` or a custom strategy to override.
 
 How it stays correct:
 - The model + optimizer are built inside `strategy.scope()`, and optimizer momentum slots are
@@ -87,6 +101,9 @@ logical devices).
 ## Derived fields
 `steps_per_loop`, `train_steps`, and `validation_steps` are computed from
 `train_total_examples` / `validation_total_examples` and batch sizes — don't hand-edit them.
+For the default config: `steps_per_loop = 305,780 // 128 = 2388`, `train_steps = 2388 × 300 =
+716,400`, warmup = 7164 steps (3 epochs), `checkpoint_interval = 2388` (1 epoch). These numbers
+appear in the startup banner logged by `YoloV8Trainer._log_startup_info`.
 
 ## File logging
 `train.log` is written automatically to `output_dir/train.log`. It captures the same output

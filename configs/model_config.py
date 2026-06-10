@@ -39,6 +39,12 @@ class RuntimeConfig:
     enable_xla: bool = False
     num_cores_per_replica: int = 1
     num_packs: int = 1
+    # CPU thread-pool caps (0 = leave TF defaults). On machines where the
+    # process is cgroup-capped to fewer cores than are visible (e.g. 13 of 128),
+    # TF's default pools oversubscribe massively and thrash; cap them to the
+    # actual quota. Applied in scripts/run_train.py before any TF op runs.
+    inter_op_threads: int = 0
+    intra_op_threads: int = 0
 
 
 @dataclasses.dataclass
@@ -229,6 +235,10 @@ class DataConfig:
     with_distance: bool = False
     poly_eval_gt_policy: str = "polyyolo"
     class_remap_json_path: Optional[str] = None
+    # tf.data private threadpool size for the training pipeline (0 = TF default,
+    # which sizes to all VISIBLE cores — set this to the real core quota on
+    # cgroup-capped machines).
+    private_threadpool_size: int = 0
     parser: ParserConfig = dataclasses.field(default_factory=ParserConfig)
     distance_data: Optional[DistanceDataConfig] = None
 
