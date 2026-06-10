@@ -284,51 +284,6 @@ def apply_perspective_image(
     return image_out
 
 
-def apply_perspective_images_batched(
-    images: tf.Tensor,
-    Ms: tf.Tensor,
-    target_h: int,
-    target_w: int,
-) -> tf.Tensor:
-    """Warp a STACK of images by per-image matrices in ONE op call.
-
-    Numerically identical to calling ``apply_perspective_image`` per image
-    (ImageProjectiveTransformV3 natively supports per-image transforms) but a
-    single batched dispatch parallelizes across all images inside the op and
-    avoids N separate kernel launches — the mosaic stage issues 4 quadrant
-    warps per emitted sample, so this matters on a CPU-quota-capped host.
-
-    Args:
-        images: uint8/float [N, H, W, 3] (equal sizes — e.g. pre-resized sources).
-        Ms:     float32 [N, 3, 3] input→output matrices.
-        target_h, target_w: output size.
-
-    Returns:
-        uint8 [N, target_h, target_w, 3].
-    """
-    images_f = tf.cast(images, tf.float32)
-    th_i = tf.cast(target_h, tf.int32)
-    tw_i = tf.cast(target_w, tf.int32)
-
-    M_inv = tf.linalg.inv(Ms)                          # [N, 3, 3]
-    M_inv = M_inv / M_inv[:, 2:3, 2:3]                 # normalize [2,2] = 1
-    # Row-major flatten [a0,a1,a2,b0,b1,b2,c0,c1,(c2)] → first 8 components,
-    # matching the single-image stacking order above.
-    transforms = tf.reshape(M_inv, [-1, 9])[:, :8]     # [N, 8]
-
-    out = tf.raw_ops.ImageProjectiveTransformV3(
-        images=images_f,
-        transforms=transforms,
-        output_shape=tf.stack([th_i, tw_i]),
-        fill_value=114.0,
-        interpolation="BILINEAR",
-        fill_mode="CONSTANT",
-    )
-    out = tf.cast(out, tf.uint8)
-    out.set_shape([None, target_h, target_w, 3])
-    return out
-
-
 def transform_boxes_polygons(
     boxes: tf.Tensor,
     polygons: tf.Tensor,

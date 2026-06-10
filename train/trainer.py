@@ -208,11 +208,13 @@ class YoloV8Trainer:
 
                 # Mid-epoch periodic checkpoint; skip if this step was already saved.
                 if python_step % ckpt_interval == 0 and python_step != last_saved_step:
+                    self._sync_completed_epochs(python_step, spl)
                     self._save_checkpoint()
                     last_saved_step = python_step
 
                 if self._shutdown_requested:
                     if python_step != last_saved_step:
+                        self._sync_completed_epochs(python_step, spl)
                         self._save_checkpoint()
                         last_saved_step = python_step
                     log.info("Graceful shutdown at step %d (epoch %d interrupted).",
@@ -287,6 +289,24 @@ class YoloV8Trainer:
 
         total_time = time.time() - training_start
         log.info("Training complete. Total time: %s", _fmt_duration(total_time))
+
+    def _sync_completed_epochs(self, python_step: int, steps_per_loop: int) -> None:
+        """Sync ``completed_epochs`` before a save that lands on an epoch boundary.
+
+        The final step of an epoch triggers the in-loop periodic save (with all
+        three tier configs, ``checkpoint_interval == steps_per_loop``) BEFORE the
+        post-validation ``_epoch_var.assign(epoch + 1)`` — and the epoch-end save
+        is then skipped by the ``last_saved_step`` guard. Without this sync every
+        boundary checkpoint persisted ``completed_epochs`` one too low, so any
+        resume from one re-ran a full extra epoch (and re-launching a finished
+        run trained one epoch past ``decay_steps`` at the cosine floor).
+
+        Training-wise the epoch IS complete at this point; only its validation
+        hasn't run yet. A resume from this checkpoint therefore skips that
+        validation pass (same outcome as a preemption during validation).
+        """
+        if steps_per_loop > 0 and python_step % steps_per_loop == 0:
+            self._epoch_var.assign(python_step // steps_per_loop)
 
     @staticmethod
     def _steps_for_epoch(global_step: int, steps_per_loop: int) -> int:
@@ -732,8 +752,9 @@ class YoloV8Trainer:
         # Merged batch (detection + distance rows) — what the step actually consumed.
         throughput = self._merged_batch_size / max(wall, 1e-9)
         total_loss = float(losses.get('total_loss', 0.0))
-        step_f     = float(step)
-        ema_decay  = min(0.9999, (1.0 + step_f) / (10.0 + step_f))
+        # Ask the EMA wrapper itself (honors the configured average_decay and
+        # dynamic_decay; the old inline formula hardcoded 0.9999).
+        ema_decay  = float(self._optimizer._get_decay())
 
         with self._tb_writer.as_default():
             for k, v in losses.items():

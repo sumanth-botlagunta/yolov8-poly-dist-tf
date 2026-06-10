@@ -101,15 +101,16 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
 ## Coordinate conventions (read carefully)
 - GT boxes from decoders/parsers: **`yxyx` normalized** `[0,1]`.
 - The loss/assigner convert to **`xyxy` pixels**.
-- Mosaic uses a **composed-affine** approach: a per-image placement affine `A_i`
-  (source-px → virtual 2× canvas-px) is composed with the global perspective matrix `M`
-  (canvas-px → output-px, drawn once via `augmentations.make_perspective_matrix`); the 4
-  source images are warped directly to the output in ONE batched
-  `apply_perspective_images_batched` call (no intermediate resize, no 2× canvas
-  allocation, single op dispatch). The label path maps labels through
-  `_scale_box_poly_to_canvas` → `transform_boxes_polygons(M)`, identical to the legacy
-  canvas-then-warp label math. Quadrant masks are recovered by back-projecting the output
-  grid through `M⁻¹` vs the split point; out-of-canvas pixels fill with gray 114.
+- Mosaic image path is the **canvas formulation**: per-image `tf.image.resize` at the
+  drawn scale → `_place_in_cell` crop/pad into the 2× canvas → ONE
+  `apply_perspective_image` warp canvas→output (`M` drawn once via
+  `augmentations.make_perspective_matrix`). The label path maps labels through
+  `_scale_box_poly_to_canvas` → `transform_boxes_polygons(M)`. A composed-affine variant
+  (per-quadrant affine folded into `M`, each source warped full-frame to the output) was
+  implemented and MEASURED SLOWER on the production CPU (~95 ms·core/img vs ~35:
+  `ImageProjectiveTransformV3` costs several times more per output pixel than
+  `tf.image.resize` there, and the composed form pays 4 full warps per mosaic). Both
+  formulations are geometrically identical — the label math never changed.
 - The warp's scale gain is drawn from the **explicit** `[aug_scale_min, aug_scale_max]`
   config bounds (`make_perspective_matrix(scale_min=, scale_max=)`). The earlier symmetric
   magnitude form widened the configured `[0.4, 1.9]` to `[0.1, 1.9]`, occasionally shrinking
