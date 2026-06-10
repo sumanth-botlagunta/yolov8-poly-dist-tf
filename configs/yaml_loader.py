@@ -1,6 +1,6 @@
 """Load experiment configuration from a YAML file into dataclass trees.
 
-The YAML structure mirrors docs/experiment_config.yaml.  We use dacite to map
+The YAML structure mirrors docs/experiment_config.yaml.  A hand-rolled mapper (NOT dacite) maps
 the parsed dict onto the typed dataclasses defined in configs/model_config.py.
 
 Usage:

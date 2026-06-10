@@ -86,6 +86,11 @@ def _make_config():
     cfg.trainer.train_epochs = _EPOCHS
     cfg.trainer.max_to_keep = 5
     cfg.task.summary_types = 'scalar'        # no image summaries in the stub
+    # The dataclass default leaves is_training=True on validation_data too; the
+    # stub keys "infinite vs 1-batch" off this flag, so set it explicitly or
+    # _run_validation would iterate an infinite stream and hang.
+    cfg.task.train_data.is_training = True
+    cfg.task.validation_data.is_training = False
     return cfg
 
 

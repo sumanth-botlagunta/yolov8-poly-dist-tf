@@ -97,8 +97,12 @@ def main(_):
     total_batches = 0
     img_id_base = 0   # running image-id counter (val uses drop_remainder=False)
 
+    from train.task import normalize_images
+
     for step, (images, labels) in enumerate(val_ds):
-        predictions = model(images, training=False)
+        # Eval parser emits uint8; the model needs float32 [0, 1] (feeding
+        # uint8 raises on the float32 conv kernels).
+        predictions = model(normalize_images(images), training=False)
         coco_ev.update(predictions, labels)
 
         if dist_ev:

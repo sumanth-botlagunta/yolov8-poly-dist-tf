@@ -32,7 +32,7 @@ Six per-pixel branches, each emitted at all 3 FPN levels:
 | `poly_conf` | 24 | per-vertex validity logit |
 | `dist` | 1 | log-scale object distance |
 
-**Smart bias init**: class bias = `log(5 / num_classes / (640/stride)^2)`, box bias = `1.0`.
+**Smart bias init**: class bias = `log(5 / num_classes / (input_size/stride)^2)` with the LIVE input size (672), box bias = `1.0`.
 **Init checkpoint**: only backbone + decoder weights are loaded; the head is randomly initialized.
 
 ## Anchors & strides

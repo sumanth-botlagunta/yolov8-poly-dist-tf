@@ -11,8 +11,8 @@ Responsibilities:
 
 Optimizer: SGD-Torch variant with cosine LR decay + linear warmup.
     initial_lr:    0.01
-    warmup_steps:  7,164
-    total_steps:   716,400
+    warmup_steps:  6,354
+    total_steps:   635,400
     alpha (min LR ratio): 0.01
 
 Classes:
@@ -26,6 +26,20 @@ from typing import Any, Dict, List, Optional, Tuple
 import tensorflow as tf
 
 log = logging.getLogger(__name__)
+
+
+def normalize_images(images: tf.Tensor) -> tf.Tensor:
+    """uint8 [0, 255] → float32 [0, 1]; float images pass through unchanged.
+
+    The parsers emit uint8 (colour aug + /255 moved to the batch level), so
+    EVERY consumer that calls ``model(images)`` directly — ``validation_step``,
+    ``tools/eval.py``, ``tools/continuous_eval.py`` — must normalize through
+    this one helper. Feeding raw uint8 to the model raises (float32 conv
+    kernels); feeding 0–255 floats would silently produce garbage.
+    """
+    if images.dtype == tf.uint8:
+        return tf.cast(images, tf.float32) / 255.0
+    return images
 
 
 class YoloV8Task:
@@ -220,8 +234,7 @@ class YoloV8Task:
         images, labels = inputs
         # Parsers now emit uint8; normalize to [0, 1] here. Keep float passthrough
         # for backward compat (some tests feed already-normalized float images).
-        if images.dtype == tf.uint8:
-            images = tf.cast(images, tf.float32) / 255.0
+        images = normalize_images(images)
         original_deploy = model.deploy
         model.deploy = True
         try:
