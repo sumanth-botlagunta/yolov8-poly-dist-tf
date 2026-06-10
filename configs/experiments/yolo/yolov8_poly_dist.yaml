@@ -124,6 +124,13 @@ task:
       angle_step: 15
       max_num_instances: 300
       max_vertices: 10938
+      # Resample polygons to 64 vertices at decode: every downstream stage
+      # (copy-paste, padded_batch, mosaic point transforms, flip, radial target)
+      # carries [N, 128] instead of [N, 3972]. The 24-bin radial target is exact
+      # for polygons with <= 64 vertices and within sampling tolerance otherwise
+      # (tests/test_polygon_preprocessing.py). Training-stream only; eval keeps
+      # full-width GT.
+      resample_points: 64
       aug_rand_hue: 0.015
       aug_rand_saturation: 0.7
       aug_rand_brightness: 0.4
@@ -291,5 +298,8 @@ runtime:
   per_gpu_thread_count: 0
   # Host CPU is cgroup-capped at ~13 cores while 128 are visible; cap TF's
   # pools to the real quota (tune on the machine if the cap changes).
-  inter_op_threads: 4
-  intra_op_threads: 12
+  # The training step is GPU-bound, so its host pools get few threads; the
+  # 13-core quota is reserved for the tf.data private pool (13 above). Total
+  # threads ≈ quota avoids context-switch thrash (was 4+12+13 = 29 on 13 cores).
+  inter_op_threads: 2
+  intra_op_threads: 4
