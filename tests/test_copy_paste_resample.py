@@ -68,6 +68,61 @@ def test_wide_object_polygon_is_resampled_not_truncated():
     )
 
 
+def _obj_with_scattered_oob_polygon(n_pairs):
+    # A polygon whose vertices ALTERNATE between the object centre (in-bounds when
+    # pasted) and a point far outside the object frame (x=y=2.5 → out of [0,1]
+    # after the obj→bg transform). copy_paste invalidates the out-of-bounds
+    # vertices in place via tf.where(keep, ...), so the surviving valid vertices
+    # are INTERLEAVED with -1 sentinels — not a contiguous prefix.
+    xs, ys = [], []
+    for i in range(n_pairs):
+        if i % 2 == 0:
+            xs.append(0.5); ys.append(0.5)   # centre → in-bounds
+        else:
+            xs.append(2.5); ys.append(2.5)   # far outside → invalidated to -1
+    pts = np.stack([xs, ys], axis=-1).reshape(-1).astype(np.float32)
+    return {
+        "image": tf.fill([40, 40, 4], tf.constant(200, tf.uint8)),
+        "orig_bbox": tf.constant([0.0, 0.0, 1.0, 1.0], tf.float32),
+        "label": tf.constant(3, tf.int64),
+        "points": tf.constant(pts),
+    }
+
+
+def test_scattered_oob_sentinels_do_not_corrupt_resample():
+    """Edge case: out-of-bounds vertices invalidated in place produce SCATTERED
+    -1 sentinels interleaved with valid vertices. resample_polygons assumed the
+    valid vertices were a contiguous prefix (`cmax = counts - 1`), so its
+    even-spaced gather indices straddled the interior -1 holes — pulling sentinels
+    INTO the resampled polygon and dropping real far-side vertices. After the fix,
+    valid vertices are compacted to a prefix first, so the resampled output
+    contains NO interleaved sentinels and spans the full kept contour.
+    """
+    n_poly_cols = 128                  # background width = 64 verts
+    n_pairs = 2000                     # object far wider than the budget
+    cnp = CopyAndPasteModule(
+        prob=1.0, max_resize_ratio=1.0, min_resize_ratio=1.0,
+    )
+    tf.random.set_seed(0)
+    out = cnp._copy_and_paste(
+        _bg(n_poly_cols), _obj_with_scattered_oob_polygon(n_pairs)
+    )
+
+    polys = out["groundtruth_polygons"].numpy()
+    assert polys.shape == (1, n_poly_cols), polys.shape
+    x = polys.reshape(-1, 2)[:, 0]
+    valid_idx = np.where(x >= 0.0)[0]
+    assert len(valid_idx) > 0, "no valid vertices survived"
+
+    # No -1 sentinel may appear BEFORE the last valid vertex: an interleaved hole
+    # is exactly the scattered-sentinel corruption this test pins out.
+    interior_sentinels = int((x[: valid_idx[-1] + 1] < 0.0).sum())
+    assert interior_sentinels == 0, (
+        f"{interior_sentinels} interleaved -1 sentinels in the resampled polygon "
+        "— resample treated scattered sentinels as a contiguous prefix"
+    )
+
+
 def test_narrow_object_polygon_is_padded():
     # Object narrower than the bg budget → padded with -1 (unchanged behavior).
     n_poly_cols = 128

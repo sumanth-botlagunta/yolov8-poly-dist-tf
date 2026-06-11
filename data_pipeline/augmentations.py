@@ -591,14 +591,30 @@ def resample_polygons(polygons: tf.Tensor, max_points: int) -> tf.Tensor:
     F = tf.shape(polygons)[1]
     pts = tf.reshape(polygons, [N, F // 2, 2])                       # [N, P, 2]
     P = tf.shape(pts)[1]
-    counts = tf.reduce_sum(tf.cast(pts[:, :, 0] >= 0.0, tf.int32), axis=1)  # [N] prefix len
-    cmax = tf.cast(tf.maximum(counts - 1, 0), tf.float32)            # last valid index
-    t = tf.linspace(0.0, 1.0, max_points)                           # [K]
-    idx = tf.round(t[tf.newaxis, :] * cmax[:, tf.newaxis])          # [N, K]
+    valid = pts[:, :, 0] >= 0.0                                      # [N, P]
+
+    # Compact the valid vertices to a contiguous prefix before sampling. At decode
+    # time the valid vertices are ALREADY a prefix, so this sort is a no-op (a
+    # stable sort of an all-False-then-all-True key preserves order) and the
+    # radial target is byte-identical to before. But copy-paste can hand us
+    # SCATTERED sentinels: it invalidates out-of-bounds vertices in place via
+    # tf.where(keep, ...), leaving -1 holes interleaved with valid vertices. The
+    # old `counts`/`cmax` logic assumed a prefix and treated `cmax = counts - 1`
+    # as the last valid index, so the even-spaced gather indices [0 .. counts-1]
+    # would straddle those interior -1 holes — pulling sentinels INTO the
+    # resampled output and dropping real far-side vertices. Compacting first makes
+    # the prefix assumption hold for every caller.
+    order = tf.argsort(tf.cast(~valid, tf.int32), axis=1, stable=True)  # valid first
+    pts = tf.gather(pts, order, batch_dims=1)                       # [N, P, 2] compacted
+
+    counts = tf.reduce_sum(tf.cast(valid, tf.int32), axis=1)        # [N] valid count
+    cmax = tf.cast(tf.maximum(counts - 1, 0), tf.float32)           # last valid index
+    t = tf.linspace(0.0, 1.0, max_points)                          # [K]
+    idx = tf.round(t[tf.newaxis, :] * cmax[:, tf.newaxis])         # [N, K]
     idx = tf.clip_by_value(tf.cast(idx, tf.int32), 0, tf.maximum(P - 1, 0))
-    out = tf.gather(pts, idx, batch_dims=1)                          # [N, K, 2]
+    out = tf.gather(pts, idx, batch_dims=1)                         # [N, K, 2]
     has = counts[:, tf.newaxis, tf.newaxis] > 0
-    out = tf.where(has, out, tf.fill(tf.shape(out), -1.0))           # empty rows → -1
+    out = tf.where(has, out, tf.fill(tf.shape(out), -1.0))          # empty rows → -1
     return tf.reshape(out, [N, max_points * 2])
 
 
