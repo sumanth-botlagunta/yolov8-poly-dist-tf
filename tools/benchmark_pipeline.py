@@ -56,14 +56,30 @@ def _run_benchmark(ds, n_steps: int) -> dict:
     measured correctly, not assumed to be the detection size (128).
     """
     import numpy as np
+    import tensorflow as tf
 
     step_times = []
     total_images = 0
     batch_size = 0
 
+    img_dtype = None
+    img_shape = None
+
     log.info("Warming up (2 steps)...")
     for batch in ds.take(2):
-        _ = _images_of(batch).numpy()[0, 0, 0, 0]  # force full materialization
+        imgs = _images_of(batch)
+        # The training pipeline emits uint8 images (the parser leaves the
+        # normalization to the model). Surface a silent dtype/shape drift — e.g.
+        # an accidental float32 cast upstream would balloon memory and quietly
+        # change what the benchmark measures.
+        img_dtype = imgs.dtype
+        img_shape = tuple(imgs.shape)
+        assert img_dtype == tf.uint8, (
+            f"Expected uint8 images from the training pipeline, got {img_dtype}. "
+            "A float32 cast upstream changes the measured workload and inflates "
+            "memory — the benchmark would no longer reflect the real pipeline."
+        )
+        _ = imgs.numpy()[0, 0, 0, 0]  # force full materialization
 
     log.info("Benchmarking %d steps...", n_steps)
     start_total = time.perf_counter()
@@ -90,6 +106,8 @@ def _run_benchmark(ds, n_steps: int) -> dict:
         'total_elapsed_sec': elapsed,
         'total_images': total_images,
         'batch_size': batch_size,
+        'image_dtype': str(img_dtype.name) if img_dtype is not None else 'unknown',
+        'image_shape': img_shape,
         'imgs_per_sec_avg': total_images / elapsed,
         'steps_per_sec_avg': n_steps / elapsed,
         'step_time_p50_ms': float(np.percentile(step_arr, 50)) * 1000,
@@ -142,6 +160,7 @@ def main() -> None:
     print(f"  Config:              {args.config}")
     print(f"  Batch size (actual): {stats['batch_size']}  (detection {batch_size}"
           f"{' + distance merge' if stats['batch_size'] != batch_size else ''})")
+    print(f"  Image dtype/shape:   {stats['image_dtype']}  {stats['image_shape']}")
     print(f"  Steps:               {args.steps}")
     print(f"  Total elapsed:       {stats['total_elapsed_sec']:.1f} sec")
     print(f"  Throughput:          {stats['imgs_per_sec_avg']:.0f} imgs/sec")
