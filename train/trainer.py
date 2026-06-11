@@ -698,7 +698,23 @@ class YoloV8Trainer:
         # swapped in as the live weights.
         self._optimizer.swap_in(self._model)
         try:
-            best_ckpt = tf.train.Checkpoint(model=self._model)
+            # Save optimizer + step counters alongside the (EMA) weights so the
+            # best checkpoint is resumable, not inference-only. Without the
+            # optimizer, restoring this checkpoint to continue training would lose
+            # the SGD `iterations` variable — the cosine LR schedule reads it, so
+            # the LR would snap back to its initial value and the momentum/velocity
+            # slots would reset, corrupting the trajectory. `global_step` /
+            # `completed_epochs` keep resume bookkeeping consistent. The model
+            # weights saved here are the EMA (shadow) weights (swapped in above),
+            # which is the correct inference state; the optimizer still holds the
+            # raw-weight slots, so a training resume continues correctly.
+            best_ckpt = tf.train.Checkpoint(
+                model=self._model,
+                optimizer=self._optimizer,
+                global_step=self._global_step,
+                completed_epochs=self._epoch_var,
+                best_metric=self._best_metric,
+            )
             best_ckpt.write(os.path.join(best_dir, 'ckpt'))
         finally:
             self._optimizer.swap_out(self._model)
@@ -746,7 +762,11 @@ class YoloV8Trainer:
         only would overstate speed whenever training is input-bound.
         """
         sgd        = self._optimizer._optimizer
-        lr         = float(sgd.lr)
+        # Log the LR that actually moved the weights for the batch just completed,
+        # not next step's LR. `apply_gradients` increments `iterations` at its end,
+        # so `sgd.lr` (which reads the schedule at the current `iterations`) is one
+        # step ahead by the time this logs.
+        lr         = float(sgd.lr_for_last_step)
         momentum   = float(sgd._current_momentum())
         wall       = step_time + data_wait
         # Merged batch (detection + distance rows) — what the step actually consumed.
