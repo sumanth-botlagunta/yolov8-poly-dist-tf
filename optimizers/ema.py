@@ -122,6 +122,20 @@ class ExponentialMovingAverage(tf.Module):
 
     def apply_gradients(self, grads_and_vars, **kwargs):
         """Apply gradients to real weights, then update all shadow weights."""
+        # Guard against the model gaining/losing variables AFTER the EMA wrapper
+        # was constructed (e.g. a layer built lazily on first call, or a variable
+        # monkey-patched on). `_model_vars`/`_shadows` are a fixed snapshot taken
+        # in __init__; if the model has since grown, the zip() below would silently
+        # average a stale subset and never track the new variables — a corruption
+        # that otherwise only surfaces (as a count mismatch) much later in
+        # swap_in() at eval time. This check is O(1) and runs every step.
+        if len(self._model_vars) != len(self._shadows):
+            raise ValueError(
+                "EMA shadow/model-var snapshot mismatch: "
+                f"{len(self._shadows)} shadows vs {len(self._model_vars)} tracked "
+                "model variables. The model must be fully built BEFORE the EMA "
+                "wrapper is constructed."
+            )
         result = self._optimizer.apply_gradients(grads_and_vars, **kwargs)
         # Increment BEFORE computing decay (matches Ultralytics ModelEMA): the first
         # averaging update therefore uses decay = (1+1)/(10+1), not (1+0)/(10+0).
