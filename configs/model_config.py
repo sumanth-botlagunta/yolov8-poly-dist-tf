@@ -85,7 +85,6 @@ class HeadConfig:
 class DetectionGeneratorConfig:
     max_boxes: int = 300
     nms_thresh: float = 0.65
-    iou_thresh: float = 0.001
     score_thresh: float = 0.05
     nms_type: str = "greedy"
     pre_nms_points: int = 30000

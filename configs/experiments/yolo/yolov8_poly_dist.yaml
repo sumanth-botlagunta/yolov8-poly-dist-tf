@@ -64,7 +64,6 @@ task:
     detection_generator:
       max_boxes: 300
       nms_thresh: 0.65
-      iou_thresh: 0.001
       score_thresh: 0.05
       nms_type: greedy
       pre_nms_points: 30000
@@ -209,7 +208,7 @@ task:
     with_polygons: true
     with_distance: false
     poly_eval_gt_policy: polyyolo
-    verbose_eval_results_per_category: true
+    # Per-category eval metrics are enabled via task.per_category_metrics (above).
     distance_data: null
     parser:
       angle_step: 15

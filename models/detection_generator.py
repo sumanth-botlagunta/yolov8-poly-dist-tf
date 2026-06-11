@@ -17,6 +17,7 @@ Classes:
 
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Optional, Tuple
 
 import tensorflow as tf
@@ -47,7 +48,6 @@ class YoloV8Layer:
         num_classes: int = 39,
         max_boxes: int = 300,
         nms_thresh: float = 0.65,
-        iou_thresh: float = 0.001,
         score_thresh: float = 0.05,
         pre_nms_points: int = 30000,
         nms_type: str = "greedy",
@@ -60,7 +60,6 @@ class YoloV8Layer:
         self.num_classes      = num_classes
         self.max_boxes        = max_boxes
         self.nms_thresh       = nms_thresh
-        self.iou_thresh       = iou_thresh
         self.score_thresh     = score_thresh
         self.pre_nms_points   = pre_nms_points
         self.reg_max          = reg_max
@@ -198,9 +197,18 @@ class YoloV8Layer:
         # Distance: exp + clamp, then pad
         if distance is not None:
             m_di     = tf.concat(c_di, axis=0)
-            di_exp   = tf.clip_by_value(
-                tf.exp(tf.gather(m_di, top)), self.min_distance, self.max_distance
+            # Clamp in LOG space *before* exp. The head emits log-distance; a few
+            # very large logits would overflow exp() to +inf, and clip(inf, ...)
+            # silently yields max_distance with no NaN/inf signal. Clamping the log
+            # first bounds the exp input to [log(min), log(max)] — identical result
+            # for in-range values, but no transient inf. min/max_distance are
+            # guaranteed positive (range [0.5, 10.0]), so the logs are finite.
+            log_di   = tf.clip_by_value(
+                tf.gather(m_di, top),
+                math.log(self.min_distance),
+                math.log(self.max_distance),
             )
+            di_exp   = tf.exp(log_di)
             sel_dist = tf.ensure_shape(tf.pad(di_exp, [[0, pad]]), [self.max_boxes])
         else:
             sel_dist = tf.zeros([self.max_boxes])
