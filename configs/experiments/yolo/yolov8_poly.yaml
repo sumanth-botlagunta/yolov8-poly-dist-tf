@@ -64,7 +64,6 @@ task:
     detection_generator:
       max_boxes: 300
       nms_thresh: 0.65
-      iou_thresh: 0.001
       nms_type: greedy
       pre_nms_points: 30000
       topN_per_anchor: 1
@@ -186,15 +185,9 @@ trainer:
   train_total_examples: 271166   # verified vs TFDS builders 2026-06-10 (was 305780, stale)
   validation_total_examples: 3903
   checkpoint_interval: 2118
-  validation_interval: 2118
   best_checkpoint_eval_metric: F1score50
   best_checkpoint_metric_comp: higher
   max_to_keep: 300
-  train_tf_function: true
-  train_tf_while_loop: true
-  eval_tf_function: true
-  eval_tf_while_loop: false
-  summary_interval: 2118
   optimizer_config:
     ema:
       average_decay: 0.9999
