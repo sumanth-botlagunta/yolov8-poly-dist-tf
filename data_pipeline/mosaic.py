@@ -321,8 +321,15 @@ class Mosaic:
         and masked by keep (same ordering as the boxes fed to random_perspective).
         """
         def _side(key, default_val, dtype):
-            v = ex.get(key, tf.zeros([0], dtype))
-            v = tf.cast(v, dtype)
+            # When a side field is absent, the fallback must have the SAME length
+            # as ``keep`` (one entry per box fed to random_perspective), not the
+            # 0-length ``tf.zeros([0], dtype)`` used previously — boolean_mask
+            # requires mask and tensor to share the masked dimension, so a
+            # length-0 fallback against an N-length ``keep`` raises
+            # ``ValueError: Shapes (0,) and (N,) are incompatible``. Build the
+            # fallback from ``keep`` so it is always N-length.
+            v = ex.get(key, None)
+            v = tf.zeros_like(keep, dtype=dtype) if v is None else tf.cast(v, dtype)
             return tf.boolean_mask(v, keep)
 
         return {
