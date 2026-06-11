@@ -231,12 +231,21 @@ class CopyAndPasteModule:
 
             new_pts = tf.reshape(tf.stack([x_bg, y_bg], axis=-1), [1, max_v])
 
-            # Pad / truncate to match bg polygon column count
+            # Fit to the bg polygon column count. The copy-paste source decoder
+            # does NOT resample, so an object can carry far more vertices than the
+            # background's (possibly resampled) width. When it does, EVENLY RESAMPLE
+            # the valid vertices to the column budget rather than taking the first
+            # n_poly_cols raw vertices — the latter keeps only a contiguous arc of
+            # the contour, which corrupts the PolyYOLO radial target (it discards
+            # the far side of the polygon entirely). resample_polygons preserves the
+            # per-bin max radius to within sampling resolution, identical to the
+            # decode-time resample the rest of the pipeline already relies on.
+            from data_pipeline.augmentations import resample_polygons
             n_poly_cols = tf.shape(bg_data['groundtruth_polygons'])[1]
             cur_cols = tf.shape(new_pts)[1]
             new_pts = tf.cond(
                 cur_cols >= n_poly_cols,
-                lambda: new_pts[:, :n_poly_cols],
+                lambda: resample_polygons(new_pts, n_poly_cols // 2),
                 lambda: tf.pad(
                     new_pts,
                     [[0, 0], [0, n_poly_cols - cur_cols]],
