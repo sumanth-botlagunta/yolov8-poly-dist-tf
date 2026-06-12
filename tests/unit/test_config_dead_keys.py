@@ -104,5 +104,28 @@ class TestUnknownKeyWarnings(unittest.TestCase):
             self.assertNotIn(k, joined)
 
 
+class TestDataConfigDefaultsMatchEmptyYaml(unittest.TestCase):
+    def test_dataconfig_defaults_match_empty_yaml(self):
+        """A bare DataConfig() must equal _build_data_config({}) for the
+        copy-paste and seed knobs.
+
+        The dataclass previously defaulted tfds_for_cnp/tfds_for_cnp_split/seed
+        to non-None values while the YAML path defaulted them to None — so
+        directly constructing DataConfig() silently enabled copy-paste (truthy
+        tfds_for_cnp) and seeded shuffling (seed=1000) that an empty YAML would
+        leave off.
+        """
+        from configs.model_config import DataConfig
+
+        direct = DataConfig()
+        from_empty_yaml = _build_data_config({})
+        for field in ("tfds_for_cnp", "tfds_for_cnp_split", "seed"):
+            self.assertEqual(
+                getattr(direct, field), getattr(from_empty_yaml, field),
+                f"DataConfig().{field} != _build_data_config({{}}).{field}",
+            )
+            self.assertIsNone(getattr(direct, field))
+
+
 if __name__ == "__main__":
     unittest.main()
