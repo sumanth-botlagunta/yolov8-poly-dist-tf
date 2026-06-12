@@ -26,9 +26,11 @@ Do not silently "align" the two paths; the divergence is recorded and owned.
 ## 2. BN/bias warmup LR ramps DOWN from `bias_lr_scale = 0.1`
 
 During warmup, parameter groups 0 (BatchNorm) and 1 (bias) start at
-`bias_lr_scale × base_lr` (default `0.1`) and **ramp down** to `base_lr`, while the
+`bias_lr_scale` (default `0.1`, an absolute LR — 10× the initial weight LR of 0.01
+in the provided config) and **ramp down** to `base_lr`, while the
 weight group ramps up from `0` to `base_lr`
-(`optimizers/sgd_warmup.py:_effective_lr`). Ultralytics warms biases up from a higher
+(`optimizers/sgd_warmup.py:_effective_lr` uses `bias_lr_scale` directly as the
+group-0/1 start, not multiplied by `base_lr`). Ultralytics warms biases up from a higher
 `warmup_bias_lr` rather than down. This **ramp-down direction is legacy parity** with
 the original TF2-Vision codebase the model was migrated from, and the live checkpoints
 were trained under it. Differing from Ultralytics here is intentional; do not invert the
