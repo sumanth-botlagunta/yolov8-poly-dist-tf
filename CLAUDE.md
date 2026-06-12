@@ -13,6 +13,12 @@ The authoritative hyperparameter reference is the experiment YAML you train with
 (architecture, data pipeline, losses, training, testing). The older
 `docs/implementation_plan.md` / top-level `MASTER_PLAN.md` references are obsolete and gone.
 
+**Before flagging a surprising behavior as a bug, read `docs/design_register.md`** — the
+intentional design register listing deliberate decisions (crowd policy, additive HSV,
+warmup ramp direction, polygon conf-over-all-bins, mosaic canvas formulation, `-1.0`
+polygon sentinel, etc.) that must not be "fixed" without a deliberate re-train/team
+decision.
+
 ## What This System Does
 
 A TensorFlow reimplementation of YOLOv8 with two extensions beyond standard detection:
