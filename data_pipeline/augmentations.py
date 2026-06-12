@@ -561,7 +561,12 @@ def clip_polygon_coords(polygons: tf.Tensor) -> tf.Tensor:
     Returns:
         float32 [N, max_vertices].
     """
-    valid = polygons >= 0.0
+    # Validity keys off the reserved -1.0 padding sentinel, NOT >= 0.0. A real
+    # vertex can be slightly negative (mosaic overflow near an image edge, e.g.
+    # -0.05) — those are > -1.0 and must be clipped into [0, 1]. The old >= 0.0
+    # check left such vertices at their negative value, where downstream stages
+    # then misread them as padding. -1.0 itself is not > -1.0, so padding is kept.
+    valid = polygons > -1.0
     clipped = tf.clip_by_value(polygons, 0.0, 1.0)
     return tf.where(valid, clipped, polygons)
 
