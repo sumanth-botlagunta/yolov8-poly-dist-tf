@@ -337,7 +337,14 @@ def transform_boxes_polygons(
     N = tf.shape(polygons)[0]
     max_v = tf.shape(polygons)[1]
     pts = tf.reshape(polygons, [N, max_v // 2, 2])           # [N, P, (x, y)]
-    valid = pts[:, :, 0] >= 0.0                              # source validity
+    # Source validity: -1.0 is the reserved polygon sentinel (see docs/design_register
+    # entry 10). A vertex with x strictly > -1.0 is a REAL vertex even if it is
+    # negative — mosaic-canvas overflow can legitimately place an in-view object's
+    # vertex at a slightly-negative input-normalized coordinate. Using `> -1.0`
+    # (not `>= 0.0`) transforms + clips-to-edge those vertices instead of dropping
+    # them, keeping polygon GT consistent with the box GT (boxes are clipped, not
+    # dropped, for the same overflow case).
+    valid = pts[:, :, 0] > -1.0                             # source validity
     pts_px = tf.stack([pts[:, :, 0] * w_in, pts[:, :, 1] * h_in], axis=-1)
     pts_out = _transform_points_px(pts_px, M)                # [N, P, 2] output px
     x_out = tf.clip_by_value(pts_out[..., 0] / tw_f, 0.0, 1.0)

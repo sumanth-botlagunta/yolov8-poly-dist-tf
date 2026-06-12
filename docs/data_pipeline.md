@@ -8,18 +8,21 @@ distance datasets are separate streams merged at the batch level.
 ```
 tfds.load (SkipDecoding: images stay ENCODED bytes through shuffle)
    → repeat each source dataset → sample_from_datasets(weights=[95,2,3])
-   → shuffle (encoded bytes — KB/element, not MB)
+   → shuffle (encoded bytes — KB/element, not MB; seed = self._seed)
    → decode (tf.string branch decodes inside parallel map)
    → pre-resize to 672² (uint8; preserves 'height'/'width' fields)
-   → zip(cnp_dataset) → Copy-Paste  (copy_paste.py, prob 0.2)  ← BEFORE mosaic
-   → padded_batch(4)
+   → zip(cnp_dataset)  (cnp source shuffle seed = self._seed+1) → Copy-Paste
+                           (copy_paste.py, prob 0.2)  ← BEFORE mosaic
+   → padded_batch(4, padding_values=…)  ← polygons pad with -1.0 (sentinel),
+                           not 0.0 (a valid vertex coord); every key explicit
    → Mosaic                (mosaic.py): 4-in / 4-out — one group coin flip;
                            mosaic branch = 4 mosaics of the same 4 images via
                            rotated quadrant permutations (composed-affine, one
                            warp per source, no 2× canvas); single branch = 4
                            independent random_perspective warps. No decoded
                            image is discarded.
-   → unbatch → shuffle(128)  (decorrelates 4-sample groups before batching)
+   → unbatch → shuffle(128, seed=self._seed+2)  (decorrelates 4-sample groups;
+                           distinct seed from the two source shuffles above)
    → parser polygon preprocessing  (yolo_parser.py / distance_parser.py)
                            parsers emit uint8 images — colour aug moved to GPU
    → batch(global_batch_size) + prefetch(AUTOTUNE)
@@ -138,6 +141,33 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
   `yolov8_poly_dist.yaml`) resamples polygons to 64 vertices at decode, so every downstream
   stage carries `[N, 128]` instead of the raw stored width (up to `[N, 10940]`). The 24-bin
   radial target is exact for ≤64-vertex polygons (tests pin this).
+
+## Polygon-GT correctness notes (train-semantics)
+
+These govern the polygon ground truth the loss sees. Changing them alters targets, so they
+are train-semantics decisions (do not flip mid-run). See `docs/design_register.md` for the
+`-1.0` sentinel and clip-to-edge conventions they build on.
+
+- **`-1.0` is the only polygon sentinel.** Vertex validity is tested as `x > -1.0`, not
+  `x >= 0.0`. A mosaic-canvas-overflow vertex with a slightly-negative input-normalized
+  coordinate that lands in-view is a *real* vertex: `transform_boxes_polygons` transforms and
+  **clips it to the edge** (consistent with the box GT for the same overflow), rather than
+  dropping it as padding.
+- **`padded_batch(4)` pads polygons with `-1.0`.** `input_reader` installs an explicit
+  per-key `padding_values` dict; `groundtruth_polygons` pads with `-1.0`, because the default
+  `0.0` is a valid top-left vertex coordinate and 0-padded rows would read as real vertices.
+  Every other key gets its natural empty (image 0, `''`, ints 0, boxes/area/dists 0.0,
+  `is_crowd` False).
+- **Copy-paste fits wide polygons by even resample, not truncation.** The cnp source decoder
+  does not resample, so a pasted object can carry far more polygon columns than the resampled
+  background. When `cur_cols >= n_poly_cols`, copy-paste evenly resamples the valid vertices to
+  the column budget (`resample_polygons`) instead of keeping the first N (a leading contour arc
+  that discards the far side and corrupts the radial target).
+- **`resample_polygons` compacts scattered sentinels.** Copy-paste invalidates out-of-bounds
+  vertices in place, producing `-1` sentinels *interleaved* with valid ones. `resample_polygons`
+  stable-argsorts valid-first to compact the kept vertices to a prefix before evenly sampling;
+  on decode-time prefix input the sort is a no-op and the output is byte-identical.
+
 - If decode + pre-resize still dominate (see `tools/diagnose_pipeline.py` stage table),
   build pre-resized dataset variants ONCE with `tools/reencode_tfds_672.py`: stores 672²
   JPEG + `orig_height`/`orig_width` (which `PolygonDecoder` prefers, keeping the copy-paste
