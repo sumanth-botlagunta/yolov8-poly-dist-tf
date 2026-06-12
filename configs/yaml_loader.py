@@ -65,7 +65,6 @@ from configs.model_config import (
     RuntimeConfig,
     TaskConfig,
     TrainerConfig,
-    WarmupConfig,
 )
 
 
@@ -423,7 +422,7 @@ def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
 _TRAINER_KEYS = frozenset({
     "train_epochs", "train_total_examples", "validation_total_examples",
     "checkpoint_interval", "best_checkpoint_eval_metric",
-    "best_checkpoint_metric_comp", "max_to_keep", "optimizer_config", "warmup",
+    "best_checkpoint_metric_comp", "max_to_keep", "optimizer_config",
     # steps_per_loop / train_steps / validation_steps are auto-derived but may be
     # present in YAML as documentation; accept silently.
     "steps_per_loop", "train_steps", "validation_steps",
@@ -435,6 +434,10 @@ _TRAINER_KEYS = frozenset({
 _TRAINER_KEYS_IGNORED = frozenset({
     "validation_interval", "summary_interval", "train_tf_function",
     "train_tf_while_loop", "eval_tf_function", "eval_tf_while_loop",
+    # Legacy linear-warmup block: never read (warmup is driven by
+    # optimizer_config.optimizer.sgd_torch.warmup_steps). Accepted silently so old
+    # YAMLs still load; do not re-add it to the live config.
+    "warmup",
 })
 
 
@@ -448,7 +451,9 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
     sgd_raw    = opt_raw.get("optimizer", {}).get(
         "sgd_torch", opt_raw.get("optimizer", {})
     )
-    warmup_raw = t.get("warmup", {}).get("linear", t.get("warmup", {}))
+    # NOTE: the legacy trainer.warmup.* block is not parsed — warmup is driven solely
+    # by OptimizerConfig.warmup_steps (sgd_torch.warmup_steps below). See the removed
+    # WarmupConfig; a stray trainer.warmup block in old YAML is silently ignored.
 
     ema_cfg    = EmaConfig(
         average_decay=ema_raw.get("average_decay", 0.9999),
@@ -458,10 +463,6 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
         initial_learning_rate=lr_raw.get("initial_learning_rate", 0.01),
         decay_steps=lr_raw.get("decay_steps", 716400),
         alpha=lr_raw.get("alpha", 0.01),
-    )
-    warmup_cfg = WarmupConfig(
-        warmup_steps=warmup_raw.get("warmup_steps", 7164),
-        warmup_learning_rate=warmup_raw.get("warmup_learning_rate", 0.0),
     )
     opt_cfg    = OptimizerConfig(
         momentum=sgd_raw.get("momentum", 0.937),
@@ -473,7 +474,6 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
         bias_keys=sgd_raw.get("bias_keys", ["bias", "beta"]),
         ema=ema_cfg,
         learning_rate=lr_cfg,
-        warmup=warmup_cfg,
     )
 
     return TrainerConfig(

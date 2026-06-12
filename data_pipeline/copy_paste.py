@@ -218,8 +218,11 @@ class CopyAndPasteModule:
             x_bg = (paste_x_f + pts[:, 0] * new_w_f) / W_f
             y_bg = (paste_y_f + pts[:, 1] * new_h_f) / H_f
             # A valid vertex that lands outside the background image is invalidated
-            # (-1 sentinel), matching mosaic._transform_polygons. Pinning it to the
-            # edge via clip would inject a wrong radial distance into the GT.
+            # (-1 sentinel), UNLIKE mosaic (transform_boxes_polygons / random_perspective)
+            # which CLIPS out-of-frame vertices to the edge for box-GT consistency
+            # (design_register entry 9). Here clipping would pin the vertex to the edge
+            # and inject a wrong radial distance into the pasted object's GT, so we drop
+            # it instead.
             in_bounds = tf.logical_and(
                 tf.logical_and(x_bg >= 0.0, x_bg <= 1.0),
                 tf.logical_and(y_bg >= 0.0, y_bg <= 1.0),

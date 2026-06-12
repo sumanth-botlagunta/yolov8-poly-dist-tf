@@ -136,6 +136,14 @@ task:
         mosaic_crop_mode: scale
         area_thresh: 0.5
         jitter: 0.0
+        # random_perspective (full-affine) strength applied after mosaic assembly
+        # AND to non-mosaic single images. degrees/shear in degrees; translate as a
+        # fraction of output size. These are the LIVE affine knobs (forwarded to
+        # Mosaic in data_pipeline/input_reader.py); aug_rand_translate above is NOT
+        # the affine translate. Shown here so they are visible/editable in config.
+        degrees: 10.0
+        shear: 2.0
+        translate: 0.1
 
   validation_data:
     tfds_name: "cleaner_polygon2026:2.0.0"
@@ -159,7 +167,11 @@ task:
       aug_rand_translate: 0.0
       aug_scale_min: 1.0
       aug_scale_max: 1.0
-      random_flip: true
+      # Must be false for eval: V8ParserExtended._parse_eval_data never reads
+      # random_flip (only _parse_train_data does), so a true here was misleading —
+      # it implied flips that the eval path never applies. Kept false for clarity
+      # and parity with yolov8_poly_dist.yaml.
+      random_flip: false
       letter_box: true
       resize_with_random_method: false
       skip_crowd_during_training: true
@@ -210,12 +222,9 @@ trainer:
         warmup_steps: 6354   # 3 epochs x 2118
         weight_keys: [kernel, weight]
         bias_keys: [bias, beta]
-  warmup:
-    type: linear
-    linear:
-      name: linear
-      warmup_learning_rate: 0.0
-      warmup_steps: 6354   # 3 epochs x 2118
+        # warmup_steps above is the SOLE warmup control (read by task.py via
+        # OptimizerConfig.warmup_steps). The legacy trainer.warmup.* block was never
+        # read and has been removed.
 
 runtime:
   distribution_strategy: mirrored

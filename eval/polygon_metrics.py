@@ -207,7 +207,9 @@ class PolygonEvaluator:
 
         Args:
             pred_boxes:     [B, max_det, 4] yxyx-normalized.
-            pred_polygons:  [B, max_det, 24, 3] PolyYOLO (conf, dist, angle_logits).
+            pred_polygons:  [B, max_det, 24, 3] PolyYOLO (conf, dist, angle) where
+                            angle is the sigmoid-activated sub-bin offset in [0, 1),
+                            not a raw logit.
             pred_scores:    [B, max_det] confidence.
             num_detections: [B] valid detection count.
             gt_boxes:       [B, max_gt, 4] yxyx-normalized.

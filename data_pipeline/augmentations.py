@@ -135,7 +135,7 @@ def random_horizontal_flip(
     N = tf.shape(polygons)[0]
     max_v = tf.shape(polygons)[1]
     pts = tf.reshape(polygons, [N, -1, 2])  # [N, n_pairs, (x, y)]
-    valid_x = pts[:, :, 0] >= 0.0  # [N, n_pairs]
+    valid_x = pts[:, :, 0] > -1.0  # [N, n_pairs] — sentinel is exactly -1.0 (design_register entry 10)
     x_flipped = tf.where(valid_x, 1.0 - pts[:, :, 0], pts[:, :, 0])
     pts_flipped = tf.stack([x_flipped, pts[:, :, 1]], axis=-1)
     poly_flipped = tf.reshape(pts_flipped, [N, max_v])
@@ -509,7 +509,7 @@ def random_affine(
     max_v = tf.shape(polygons)[1]
     pts = tf.reshape(polygons, [N, max_v // 2, 2])  # [N, n_pairs, (x, y)]
 
-    valid_x = pts[:, :, 0] >= 0.0  # [N, n_pairs]
+    valid_x = pts[:, :, 0] > -1.0  # [N, n_pairs] — sentinel is exactly -1.0 (design_register entry 10)
 
     x_out = (pts[:, :, 0] - x_start) / dx_range
     y_out = (pts[:, :, 1] - y_start) / dy_range
