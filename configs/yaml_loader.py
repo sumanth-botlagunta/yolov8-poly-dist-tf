@@ -463,7 +463,7 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
     )
     lr_cfg     = LrScheduleConfig(
         initial_learning_rate=lr_raw.get("initial_learning_rate", 0.01),
-        decay_steps=lr_raw.get("decay_steps", 716400),
+        decay_steps=lr_raw.get("decay_steps", 635400),
         alpha=lr_raw.get("alpha", 0.01),
     )
     opt_cfg    = OptimizerConfig(

@@ -254,7 +254,7 @@ class EmaConfig:
 @dataclasses.dataclass
 class LrScheduleConfig:
     initial_learning_rate: float = 0.01
-    decay_steps: int = 716400
+    decay_steps: int = 635400
     alpha: float = 0.01
 
 
