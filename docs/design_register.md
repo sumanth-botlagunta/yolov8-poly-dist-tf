@@ -145,3 +145,27 @@ module docstring's *Input Schema* and at the `serving_fn` decorator. A consumer 
 raw uint8/[0,255] camera frames must divide by 255 first. Do **not** "fix" this by
 inserting `images / 255.0` in `serving_fn` without owning the double-normalization and
 train/serve-skew consequences above.
+
+## 12. `jitter` config knob is reserved (parsed, defaulted to 0.0, not wired)
+
+`MosaicConfig.jitter` and `ParserConfig.jitter` (`configs/model_config.py`, parsed by
+`configs/yaml_loader.py`) are stored but **not forwarded** to `Mosaic` or the parser;
+every shipped tier sets `jitter: 0.0`. This is recorded as **judgment-laden, left as a
+reserved no-op knob** rather than silently removed or wired. Two reasons it is not
+"fixed" mechanically:
+
+* **Wiring it is out of scope and would add per-sample CPU cost.** A live `jitter` would
+  perturb box/polygon coordinates per sample inside the mosaic stage — extra per-sample
+  work on the CPU data pipeline, which the data-pipeline performance contract (entry 8)
+  forbids adding without a measured throughput decision. It would also change the
+  augmentation distribution the live checkpoints were trained under (a re-train decision).
+* **Removing it narrows the config surface.** `jitter` mirrors an upstream Ultralytics
+  hyperparameter; keeping the parsed-but-`0.0` knob preserves YAML compatibility and the
+  option to wire it deliberately later. Because every tier pins it to `0.0`, the
+  unwired state is behavior-neutral today (it is exactly equivalent to the absent
+  feature), so there is no live bug — only a latent, owned no-op.
+
+If you wire `jitter`, do it as a deliberate augmentation change (re-measure pipeline
+throughput, own the train/checkpoint-distribution shift) — not as a "dead-knob cleanup".
+If you instead remove it, drop the field from both dataclasses, the two `yaml_loader`
+parse sites, and the `jitter: 0.0` lines in all three tier YAMLs in one change.

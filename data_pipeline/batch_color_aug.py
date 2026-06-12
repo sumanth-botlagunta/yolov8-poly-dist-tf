@@ -176,10 +176,20 @@ def apply_albumentations_masks(
     # ToGray (p=0.01)
     gray = tf.tile(tf.image.rgb_to_grayscale(x), [1, 1, 1, 3])
     x = _sel(m_gray, gray, x)
-    # CLAHE (p=0.01) — local contrast boost via unsharp mask at tile scale (~33px)
-    local_mean = _box_blur_batch(x, 33)
-    clahe = tf.clip_by_value(x + 0.5 * (x - local_mean), 0.0, 1.0)
-    x = _sel(m_clahe, clahe, x)
+    # CLAHE (p=0.01) — local contrast boost via unsharp mask at tile scale (~33px).
+    # The 33×33 box blur is by far the most expensive op here, yet m_clahe is true
+    # with probability ~0.01·freq, so for almost every batch NO image is selected
+    # and _sel would just return x unchanged. Guard the whole CLAHE branch behind
+    # tf.cond(reduce_any(m_clahe)): inside @tf.function (and in eager) the false
+    # branch — overwhelmingly the common case — skips the 33-px blur entirely. The
+    # result is byte-identical to the unconditional form (tf.where with an
+    # all-False mask returns x), this only avoids wasted compute.
+    def _apply_clahe():
+        local_mean = _box_blur_batch(x, 33)
+        clahe = tf.clip_by_value(x + 0.5 * (x - local_mean), 0.0, 1.0)
+        return _sel(m_clahe, clahe, x)
+
+    x = tf.cond(tf.reduce_any(m_clahe), _apply_clahe, lambda: x)
     return x
 
 
