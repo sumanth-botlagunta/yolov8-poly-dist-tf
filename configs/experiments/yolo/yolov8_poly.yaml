@@ -119,7 +119,7 @@ task:
       # Resample polygons to 64 vertices at decode (training stream only): every
       # downstream stage carries [N, 128] instead of [N, 2*max_vertices]. The 24-bin
       # radial target is exact for polygons with <= 64 vertices and within sampling
-      # tolerance otherwise. Mirrors yolov8_poly_dist.yaml. Eval keeps full-width GT.
+      # tolerance otherwise. Mirrors yolov8_poly_dist.yaml.
       resample_points: 64
       aug_rand_hue: 0.015
       aug_rand_saturation: 0.7

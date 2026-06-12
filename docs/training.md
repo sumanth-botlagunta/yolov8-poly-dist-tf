@@ -50,7 +50,9 @@ Validation at startup (`run_train.py:_validate_config`) checks invariants such a
   COCO/distance/polygon evaluators.
 - `trainer.py:YoloV8Trainer` — custom loop (not Orbit) so it can: swap EMA weights around
   validation, merge the zipped detection+distance stream, save checkpoints at epoch end, handle
-  SIGTERM for preemption, and auto-resume from the latest checkpoint in `output_dir`.
+  SIGTERM for preemption, and auto-resume from the newest checkpoint across both `output_dir/`
+  (epoch-boundary saves) and `output_dir/resume/` (mid-epoch interruption saves, rotated, max 2);
+  whichever has the higher global step wins.
 - `viz_utils.py` — renders box/polygon overlays for TensorBoard image summaries.
 
 **Epoch accounting**: when `steps_per_loop > 0` (the normal case — computed as
@@ -114,8 +116,10 @@ diverges from `train_steps` so schedule drift is caught at startup.
 as stdout (absl-logging). If a run is killed and resumed the log is appended to, not overwritten.
 
 ## Resume from a specific checkpoint
-By default the trainer auto-resumes from the latest checkpoint in `output_dir`. To start from
-a specific step (e.g. after manually selecting the best non-final checkpoint):
+By default the trainer auto-resumes from the newest checkpoint across both `output_dir/`
+(epoch-boundary saves) and `output_dir/resume/` (mid-epoch interruption saves, rotated, max 2);
+whichever has the higher global step wins. To start from a specific step instead (e.g. after
+manually selecting the best non-final checkpoint):
 
 ```bash
 python scripts/run_train.py \
