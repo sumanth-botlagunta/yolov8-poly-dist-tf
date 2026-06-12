@@ -16,6 +16,33 @@ Flags:
     --checkpoint  Checkpoint path prefix.
     --output_dir  Directory to write SavedModel (and TFLite if requested).
     --tflite      Also run TFLiteConverter and save a .tflite file.
+
+Output Schema:
+    With model.deploy=True the SavedModel runs NMS in-graph and returns a dict of
+    post-processed detections (see models/detection_generator.py:YoloV8Layer):
+
+        bbox:           float32 [batch, max_boxes, 4]      yxyx, normalized [0, 1]
+        classes:        int64   [batch, max_boxes]         class id in [0, num_classes)
+        confidence:     float32 [batch, max_boxes]         detection score in [0, 1]
+        num_detections: int32   [batch]                    valid boxes per image; rows
+                                                           past this are zero padding
+        polygons:       float32 [batch, max_boxes, P, 3]   per-vertex (conf, dist, angle),
+                                                           already sigmoid/softplus
+                                                           activated. P = output_poly_size
+                                                           (= 360 // angle_step, 24 by
+                                                           default). conf in [0, 1], dist
+                                                           is normalized radial distance,
+                                                           angle is the sub-bin offset in
+                                                           [0, 1). Present only when the
+                                                           model has polygon heads.
+        distance:       float32 [batch, max_boxes]         estimated distance in metres,
+                                                           clamped to [min_distance,
+                                                           max_distance]. Present only
+                                                           when the model has a distance
+                                                           head.
+
+    max_boxes defaults to 300. polygons/distance keys are emitted per the configured
+    heads (with_polygons / with_distance).
 """
 
 import logging
