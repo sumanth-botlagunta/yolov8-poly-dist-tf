@@ -598,7 +598,7 @@ def resample_polygons(polygons: tf.Tensor, max_points: int) -> tf.Tensor:
     F = tf.shape(polygons)[1]
     pts = tf.reshape(polygons, [N, F // 2, 2])                       # [N, P, 2]
     P = tf.shape(pts)[1]
-    valid = pts[:, :, 0] >= 0.0                                      # [N, P]
+    valid = pts[:, :, 0] > -1.0                                      # [N, P] — sentinel is -1.0 (design_register entry 10)
 
     # Compact the valid vertices to a contiguous prefix before sampling. At decode
     # time the valid vertices are ALREADY a prefix, so this sort is a no-op (a

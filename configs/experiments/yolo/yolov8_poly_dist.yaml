@@ -142,8 +142,9 @@ task:
       aug_rand_translate: 0.1
       aug_scale_min: 1.0
       aug_scale_max: 1.0
-      aug_rand_angle: 0.0
-      aug_rand_perspective: 0.0
+      # (aug_rand_angle / aug_rand_perspective removed: they were dead config — never
+      #  applied. Geometric aug is the mosaic-stage random_perspective below, set via
+      #  mosaic.degrees / mosaic.shear / mosaic.translate.)
       random_flip: true
       letter_box: true
       resize_with_random_method: true
@@ -228,8 +229,7 @@ task:
       aug_rand_translate: 0.0
       aug_scale_min: 1.0
       aug_scale_max: 1.0
-      aug_rand_angle: 0.0
-      aug_rand_perspective: 0.0
+      # (aug_rand_angle / aug_rand_perspective removed: dead config, never applied.)
       # Evaluation is deterministic — the eval parse path never flips. This is
       # false to match reality; the eval parser would ignore `true` silently.
       random_flip: false

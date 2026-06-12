@@ -187,9 +187,9 @@ class ParserConfig:
     dummy_distance: bool = True
     with_polygons: bool = True
     albumentations_frequency: float = 1.0
-    # Additional augmentation parameters (0.0/False = disabled by default)
-    aug_rand_angle: float = 0.0
-    aug_rand_perspective: float = 0.0
+    # (Removed: aug_rand_angle / aug_rand_perspective were dead — never forwarded to
+    #  V8ParserExtended nor applied. Geometric aug is the mosaic-stage
+    #  random_perspective, configured via MosaicConfig.degrees/shear/translate.)
     jitter: float = 0.0
     random_pad: bool = False
     random_rotate: bool = False
