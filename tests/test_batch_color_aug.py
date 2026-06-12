@@ -133,6 +133,48 @@ def test_albumentations_forced_clahe_matches_reference():
     np.testing.assert_allclose(out[1], _clahe_ref(imgs[1]).numpy(), atol=1e-5)
 
 
+def test_clahe_all_false_mask_is_exact_passthrough():
+    """With no image selected for CLAHE, the output must be byte-identical to the
+    input — the tf.cond guard short-circuits the 33-px blur and changes nothing.
+
+    Pins the perf guard (skip the unconditional 33×33 box blur when no row needs
+    CLAHE) AND its correctness: the guarded path is identical to applying nothing.
+    """
+    tf.random.set_seed(7)
+    imgs = tf.random.uniform([3, 40, 40, 3], dtype=tf.float32)
+    off = tf.constant([False, False, False])
+    out = apply_albumentations_masks(
+        imgs, m_blur=off, m_median=off, m_gray=off, m_clahe=off,
+    ).numpy()
+    np.testing.assert_array_equal(out, imgs.numpy())
+
+
+def test_clahe_guard_matches_unconditional_under_tf_function():
+    """Inside @tf.function, the tf.cond-guarded CLAHE must equal the unconditional
+    masked form for BOTH the all-off batch (false branch) and a mixed batch
+    (true branch), proving the guard is a pure compute optimization.
+    """
+    @tf.function
+    def run(imgs, m_clahe):
+        off = tf.zeros_like(m_clahe)
+        return apply_albumentations_masks(
+            imgs, m_blur=off, m_median=off, m_gray=off, m_clahe=m_clahe,
+        )
+
+    tf.random.set_seed(8)
+    imgs = tf.random.uniform([3, 40, 40, 3], dtype=tf.float32)
+
+    # False branch: nothing selected → exact passthrough.
+    out_off = run(imgs, tf.constant([False, False, False])).numpy()
+    np.testing.assert_array_equal(out_off, imgs.numpy())
+
+    # True branch: row 1 selected → that row gets CLAHE, others untouched.
+    out_mix = run(imgs, tf.constant([False, True, False])).numpy()
+    np.testing.assert_array_equal(out_mix[0], imgs[0].numpy())
+    np.testing.assert_array_equal(out_mix[2], imgs[2].numpy())
+    np.testing.assert_allclose(out_mix[1], _clahe_ref(imgs[1]).numpy(), atol=1e-5)
+
+
 def test_albumentations_sequential_order_matches_reference():
     """Two masks on for the same row → transforms compose in order (blur then gray)."""
     tf.random.set_seed(5)
