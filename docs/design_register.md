@@ -169,3 +169,21 @@ If you wire `jitter`, do it as a deliberate augmentation change (re-measure pipe
 throughput, own the train/checkpoint-distribution shift) — not as a "dead-knob cleanup".
 If you instead remove it, drop the field from both dataclasses, the two `yaml_loader`
 parse sites, and the `jitter: 0.0` lines in all three tier YAMLs in one change.
+
+## Representational ceilings of the radial polygon format (2026-06-13 — do not re-flag)
+These are limits of the PolyYOLO radial format itself, identical in the legacy
+codebase, surveyed during the final pre-merge check. They are NOT bugs:
+
+11. **Radial center = box center.** For concave shapes whose box center lies
+    outside the polygon, a bin ray can cross the boundary twice; per-bin MAX
+    keeps only the farther crossing. Centroid-centering would not fix deep
+    concavities and would break checkpoint compatibility. Inherent.
+12. **Per-bin MAX distance = outer boundary only.** Holes and interior
+    concavities are unrepresentable (would need a second radius channel — a
+    format change). The 2026-06-13 arc-length resampling already removes the
+    worst practical symptom (empty bins along long edges).
+13. **Polygon conf gate 0.4 is a single module constant**
+    (`eval/polygon_metrics.DEFAULT_POLY_CONF_THRESH`), shared by decode-viz and
+    the eval metric — single-sourced so they cannot drift, but tuning eval
+    recall also moves the TensorBoard overlays. If the conf operating point is
+    ever retuned, consider promoting it to a config field.
