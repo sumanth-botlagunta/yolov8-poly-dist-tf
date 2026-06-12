@@ -89,26 +89,93 @@ class TestSubBinAngleOffset(unittest.TestCase):
         self.assertAlmostEqual(angle[0], 0.5, places=4)  # 7.5° / 15° = 0.5
 
 
+def _point_seg_dist(p, a, b):
+    """Min distance from point p to segment a→b (all length-2 arrays)."""
+    ab = b - a
+    denom = float(np.dot(ab, ab))
+    if denom == 0.0:
+        return float(np.linalg.norm(p - a))
+    t = float(np.dot(p - a, ab)) / denom
+    t = min(1.0, max(0.0, t))
+    proj = a + t * ab
+    return float(np.linalg.norm(p - proj))
+
+
+def _min_dist_to_contour(p, verts):
+    """Min distance from p to the CLOSED contour through `verts` (list of xy)."""
+    n = len(verts)
+    return min(
+        _point_seg_dist(p, verts[i], verts[(i + 1) % n]) for i in range(n)
+    )
+
+
 class TestResamplePolygons(unittest.TestCase):
-    """resample_polygons shrinks polygon width while preserving the radial target."""
+    """resample_polygons does UNIFORM ARC-LENGTH resampling along the closed contour.
+
+    2026-06-13: rewritten from index-subsampling to arc-length resampling. The old
+    code only SELECTED existing vertices, so a sparse polygon (e.g. a 4-corner
+    rectangle) kept its few points and the 24-bin radial target collapsed to a
+    diamond. Arc-length resampling interpolates points ALONG edges, so the radial
+    target now tracks the true boundary. This intentionally CHANGES the radial
+    target for sparse-vertex polygons (the fix) while staying within sampling
+    tolerance of the old behavior for dense uniform contours.
+    """
 
     def _circle_flat(self, cx, cy, r, n, pad_to):
         a = np.linspace(0, 2 * np.pi, n, endpoint=False)
         pts = np.stack([cx + r * np.cos(a), cy + r * np.sin(a)], 1).reshape(-1).astype(np.float32)
         return np.concatenate([pts, -np.ones(pad_to - pts.size, np.float32)])
 
-    def test_short_polygon_preserved_exactly(self):
+    # (a) Rectangle: arc resampling must POPULATE the bins the long edges cross. ----
+    def test_rectangle_arc_resample_fills_bins(self):
         from data_pipeline.augmentations import resample_polygons
         parser = _make_parser()
-        polys = tf.constant([self._circle_flat(0.5, 0.5, 0.3, 8, 200)])  # 8 verts, padded
-        boxes = tf.constant([[0.2, 0.2, 0.8, 0.8]], tf.float32)
-        orig = parser._preprocess_polygons_v2(boxes, polys, 15).numpy()
+        # Axis-aligned square, corners only, centered at (0.5, 0.5), half-extent 0.3.
+        h = 0.3
+        verts = [(0.5 - h, 0.5 - h), (0.5 + h, 0.5 - h),
+                 (0.5 + h, 0.5 + h), (0.5 - h, 0.5 + h)]
+        polys = tf.constant(_flat_poly(verts, 200))
+        boxes = tf.constant([[0.2, 0.2, 0.8, 0.8]], tf.float32)  # yxyx, centre (0.5,0.5)
+
+        # OLD index-subsampling kept only the 4 corners → <= 4 occupied bins.
+        raw_out = parser._preprocess_polygons_v2(boxes, polys, 15).numpy()
+        self.assertLessEqual(int(raw_out[0, 2::3].sum()), 4)
+
         red = resample_polygons(polys, 64)
         self.assertEqual(int(red.shape[1]), 128)   # 2 * 64
         out = parser._preprocess_polygons_v2(boxes, red, 15).numpy()
-        # <= K vertices → radial target identical (dist + conf).
-        np.testing.assert_allclose(out[:, 0::3], orig[:, 0::3], atol=1e-5)
-        np.testing.assert_array_equal(out[:, 2::3], orig[:, 2::3])
+        dist, angle, conf = out[0, 0::3], out[0, 1::3], out[0, 2::3]
+
+        # (a) occupied-bin count must be >= 16 of 24 (was <= 4).
+        self.assertGreaterEqual(int(conf.sum()), 16)
+
+        # per-bin distance within 3% of the analytic square-boundary distance.
+        for i in range(24):
+            if conf[i] > 0.0:
+                # exact vertex angle = (bin + sub-bin offset) * angle_step.
+                vang = math.radians((i + angle[i]) * 15.0)
+                analytic = h / max(abs(math.cos(vang)), abs(math.sin(vang)))
+                self.assertLessEqual(
+                    abs(dist[i] - analytic) / analytic, 0.03,
+                    f"bin {i}: dist {dist[i]:.4f} vs analytic {analytic:.4f}")
+
+    # (b) Dense circle: arc resampling ≈ index subsampling for dense uniform contours.
+    def test_dense_circle_radial_target_close(self):
+        from data_pipeline.augmentations import resample_polygons
+        parser = _make_parser()
+        # 200-vertex dense circle. The pre-existing dense expectation: the radial
+        # target equals the analytic circle radius (0.3) on every occupied bin, and
+        # resampling preserves that to sampling tolerance.
+        polys = tf.constant([self._circle_flat(0.5, 0.5, 0.3, 200, 5469 * 2)])
+        boxes = tf.constant([[0.2, 0.2, 0.8, 0.8]], tf.float32)
+        orig = parser._preprocess_polygons_v2(boxes, polys, 15).numpy()
+        out = parser._preprocess_polygons_v2(
+            boxes, resample_polygons(polys, 128), 15).numpy()
+        # All 24 bins occupied for a dense circle, both before and after.
+        self.assertEqual(int(orig[0, 2::3].sum()), 24)
+        self.assertEqual(int(out[0, 2::3].sum()), 24)
+        # Per-bin distances stay within sampling tolerance of the dense original.
+        np.testing.assert_allclose(out[:, 0::3], orig[:, 0::3], atol=1e-3)
 
     def test_long_polygon_radial_target_close(self):
         from data_pipeline.augmentations import resample_polygons
@@ -126,6 +193,62 @@ class TestResamplePolygons(unittest.TestCase):
         red = resample_polygons(polys, 32).numpy()
         self.assertEqual(red.shape, (1, 64))
         np.testing.assert_array_equal(red, -1.0)
+
+    # (d) Degenerate vertex counts and zero-length segments: no NaN, sentinel safe. --
+    def test_zero_one_two_vertex_rows(self):
+        from data_pipeline.augmentations import resample_polygons
+        K = 8
+        # Row 0: c=0 (all sentinel). Row 1: c=1. Row 2: c=2. Row 3: collinear dups.
+        row0 = _flat_poly([], 200)[0]
+        row1 = _flat_poly([(0.5, 0.5)], 200)[0]
+        row2 = _flat_poly([(0.3, 0.3), (0.7, 0.7)], 200)[0]
+        row3 = _flat_poly([(0.2, 0.2), (0.2, 0.2), (0.8, 0.2), (0.8, 0.8)], 200)[0]
+        polys = tf.constant(np.stack([row0, row1, row2, row3], axis=0))
+        out = resample_polygons(polys, K).numpy().reshape(4, K, 2)
+
+        self.assertFalse(np.isnan(out).any())            # no NaN anywhere
+        # c=0 → whole row is the -1 sentinel.
+        np.testing.assert_array_equal(out[0], -1.0)
+        # c=1 → the single point repeated K times; no sentinel introduced.
+        self.assertTrue((out[1][:, 0] > -1.0).all())
+        np.testing.assert_allclose(out[1], np.tile([0.5, 0.5], (K, 1)), atol=1e-6)
+        # c=2 → degenerate two-segment loop; points stay on the line y=x, no NaN.
+        self.assertTrue((out[2][:, 0] > -1.0).all())
+        np.testing.assert_allclose(out[2][:, 0], out[2][:, 1], atol=1e-5)
+        # collinear duplicate vertices (zero-length segment) → no NaN, all valid.
+        self.assertTrue((out[3][:, 0] > -1.0).all())
+
+    def test_p_smaller_and_larger_than_k(self):
+        """Rows where stored width P < K and P > K must both resample cleanly."""
+        from data_pipeline.augmentations import resample_polygons
+        # P (pairs) = 4, K = 16 (P < K).
+        small = _flat_poly([(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8)], 8)
+        out_small = resample_polygons(tf.constant(small), 16).numpy().reshape(16, 2)
+        self.assertFalse(np.isnan(out_small).any())
+        self.assertTrue((out_small[:, 0] > -1.0).all())   # P<K, all valid
+        # P (pairs) = 100, K = 16 (P > K).
+        circ = self._circle_flat(0.5, 0.5, 0.3, 100, 200)
+        out_big = resample_polygons(tf.constant([circ]), 16).numpy().reshape(16, 2)
+        self.assertFalse(np.isnan(out_big).any())
+        self.assertTrue((out_big[:, 0] > -1.0).all())
+
+    # (e) Numerical contract: float32, shape, every sample lies ON the input contour.
+    def test_dtype_shape_and_points_on_contour(self):
+        from data_pipeline.augmentations import resample_polygons
+        h = 0.3
+        verts = [(0.5 - h, 0.5 - h), (0.5 + h, 0.5 - h),
+                 (0.5 + h, 0.5 + h), (0.5 - h, 0.5 + h)]
+        polys = tf.constant(_flat_poly(verts, 200))
+        red = resample_polygons(polys, 64)
+        self.assertEqual(red.dtype, tf.float32)
+        self.assertEqual(tuple(red.shape), (1, 128))
+        out = red.numpy().reshape(-1, 2)
+        valid = out[out[:, 0] > -1.0]
+        contour = [np.array(v, np.float32) for v in verts]
+        for p in valid:
+            self.assertLessEqual(
+                _min_dist_to_contour(p, contour), 1e-5,
+                f"sampled point {p} is not on the input contour")
 
 
 class TestEmptyPolygonAngleTarget(unittest.TestCase):

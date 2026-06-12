@@ -116,6 +116,11 @@ task:
       angle_step: 15
       max_num_instances: 300
       max_vertices: 10938
+      # Resample polygons to 64 vertices at decode (training stream only): every
+      # downstream stage carries [N, 128] instead of [N, 2*max_vertices]. The 24-bin
+      # radial target is exact for polygons with <= 64 vertices and within sampling
+      # tolerance otherwise. Mirrors yolov8_poly_dist.yaml. Eval keeps full-width GT.
+      resample_points: 64
       aug_rand_hue: 0.015
       aug_rand_saturation: 0.7
       aug_rand_brightness: 0.4
@@ -133,7 +138,7 @@ task:
       mosaic:
         mosaic_frequency: 0.5
         mixup_frequency: 0.0
-        mosaic_center: 0.2
+        mosaic_center: 0.25   # explicit; matches Mosaic.__init__ + poly_dist tier (was 0.2)
         aug_scale_min: 0.4
         aug_scale_max: 1.9
         mosaic_crop_mode: scale
@@ -185,7 +190,7 @@ task:
       mosaic:
         mosaic_frequency: 0.0
         mixup_frequency: 0.0
-        mosaic_center: 0.2
+        mosaic_center: 0.25   # explicit; matches Mosaic.__init__ + poly_dist tier (was 0.2)
         aug_scale_min: 1.0
         aug_scale_max: 1.0
         mosaic_crop_mode: null

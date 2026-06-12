@@ -374,7 +374,7 @@ def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
     mosaic_cfg = MosaicConfig(
         mosaic_frequency=mosaic_raw.get("mosaic_frequency", 0.5),
         mixup_frequency=mosaic_raw.get("mixup_frequency", 0.0),
-        mosaic_center=mosaic_raw.get("mosaic_center", 0.2),
+        mosaic_center=mosaic_raw.get("mosaic_center", 0.25),  # matches Mosaic.__init__
         aug_scale_min=mosaic_raw.get("aug_scale_min", 0.4),
         aug_scale_max=mosaic_raw.get("aug_scale_max", 1.9),
         mosaic_crop_mode=mosaic_raw.get("mosaic_crop_mode", "scale"),
@@ -403,8 +403,10 @@ def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
         dummy_distance=p.get("dummy_distance", True),
         with_polygons=p.get("with_polygons", True),
         albumentations_frequency=p.get("albumentations_frequency", 1.0),
-        aug_rand_angle=p.get("aug_rand_angle", 0.0),
-        aug_rand_perspective=p.get("aug_rand_perspective", 0.0),
+        # NOTE: aug_rand_angle / aug_rand_perspective were dead config — parsed but
+        # never forwarded to V8ParserExtended nor applied (geometry lives in the
+        # mosaic-stage random_perspective: degrees/shear/translate). Removed; a stray
+        # key in an old YAML is silently ignored.
         jitter=p.get("jitter", 0.0),
         random_pad=p.get("random_pad", False),
         random_rotate=p.get("random_rotate", False),
@@ -461,7 +463,7 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
     )
     lr_cfg     = LrScheduleConfig(
         initial_learning_rate=lr_raw.get("initial_learning_rate", 0.01),
-        decay_steps=lr_raw.get("decay_steps", 716400),
+        decay_steps=lr_raw.get("decay_steps", 635400),
         alpha=lr_raw.get("alpha", 0.01),
     )
     opt_cfg    = OptimizerConfig(

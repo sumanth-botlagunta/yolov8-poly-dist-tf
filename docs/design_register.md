@@ -112,7 +112,23 @@ vertex; `== -1.0` means "no vertex here." Code that scans for valid vertices mus
 vertex, not a sentinel. The `-1.0` value is reserved and must not be produced by any
 transform as a real coordinate.
 
-## 11. Exported SavedModel expects pre-normalized [0,1] input — no /255 baked in
+## 11. ACSL config knob is parsed but not implemented (fails loud)
+
+`AcslConfig` (`configs/model_config.py`) and its YAML block (`acsl: { use_acsl, bg_*_ratio,
+common_cls, frequent_cls, rare_cls, threshold }`) describe an Adaptive Class Suppression
+Loss weighting scheme. The config is fully parsed (`configs/yaml_loader.py`), but the
+weighting math is **not implemented** in `TaskAlignedLossExtended._class_loss`. Choosing a
+specific ACSL formulation and re-calibrating `cls_gain` against it is a training-semantics
+decision, not a bug fix, so it is intentionally left unimplemented.
+
+To prevent the knob from silently lying (its previous behavior: `use_acsl: true` trained
+identically to `false`), `TaskAlignedLossExtended.__init__` now **raises
+NotImplementedError when `use_acsl=True`**, and `train/task.py:build_losses()` passes the
+config value through so the guard is actually reached. All shipped experiment YAMLs set
+`use_acsl: false`, so this changes no current training run. When ACSL is implemented,
+replace the raise with the weighting and update this entry.
+
+## 12. Exported SavedModel expects pre-normalized [0,1] input — no /255 baked in
 
 `tools/export_saved_model.py:serving_fn` accepts `float32 [0,1]` images and passes
 them straight to the model; the model has **no** internal `/255` layer
@@ -153,3 +169,21 @@ If you wire `jitter`, do it as a deliberate augmentation change (re-measure pipe
 throughput, own the train/checkpoint-distribution shift) — not as a "dead-knob cleanup".
 If you instead remove it, drop the field from both dataclasses, the two `yaml_loader`
 parse sites, and the `jitter: 0.0` lines in all three tier YAMLs in one change.
+
+## Representational ceilings of the radial polygon format (2026-06-13 — do not re-flag)
+These are limits of the PolyYOLO radial format itself, identical in the legacy
+codebase, surveyed during the final pre-merge check. They are NOT bugs:
+
+11. **Radial center = box center.** For concave shapes whose box center lies
+    outside the polygon, a bin ray can cross the boundary twice; per-bin MAX
+    keeps only the farther crossing. Centroid-centering would not fix deep
+    concavities and would break checkpoint compatibility. Inherent.
+12. **Per-bin MAX distance = outer boundary only.** Holes and interior
+    concavities are unrepresentable (would need a second radius channel — a
+    format change). The 2026-06-13 arc-length resampling already removes the
+    worst practical symptom (empty bins along long edges).
+13. **Polygon conf gate 0.4 is a single module constant**
+    (`eval/polygon_metrics.DEFAULT_POLY_CONF_THRESH`), shared by decode-viz and
+    the eval metric — single-sourced so they cannot drift, but tuning eval
+    recall also moves the TensorBoard overlays. If the conf operating point is
+    ever retuned, consider promoting it to a config field.

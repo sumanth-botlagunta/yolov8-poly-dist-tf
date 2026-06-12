@@ -215,7 +215,9 @@ class YoloV8Trainer:
                 if self._shutdown_requested:
                     if python_step != last_saved_step:
                         self._sync_completed_epochs(python_step, spl)
-                        self._save_checkpoint()
+                        # Interruption save goes to resume/ — keeps the main
+                        # checkpoint directory a clean epoch-boundary sequence.
+                        self._save_resume_checkpoint()
                         last_saved_step = python_step
                     log.info("Graceful shutdown at step %d (epoch %d interrupted).",
                              python_step, epoch + 1)
@@ -387,6 +389,20 @@ class YoloV8Trainer:
             self._ckpt,
             self._output_dir,
             max_to_keep=self._config.trainer.max_to_keep,
+        )
+        # Separate manager for INTERRUPTION saves (SIGTERM/SIGINT, supervisor
+        # restarts, preemptions). Keeping these out of the main directory keeps
+        # it a clean sequence of epoch-boundary checkpoints, while interruption
+        # saves rotate in resume/ (max 2). _auto_resume picks whichever of the
+        # two directories holds the highest global step, so a mid-epoch
+        # interruption resumes exactly where it stopped (the fixed-count epoch
+        # loop then runs only the remaining steps to the next boundary), and a
+        # stale resume checkpoint is automatically superseded once a newer
+        # epoch-boundary save exists.
+        self._resume_ckpt_manager = tf.train.CheckpointManager(
+            self._ckpt,
+            os.path.join(self._output_dir, 'resume'),
+            max_to_keep=2,
         )
 
         self._tb_writer = tf.summary.create_file_writer(
@@ -654,18 +670,51 @@ class YoloV8Trainer:
     # Checkpointing
     # ------------------------------------------------------------------
 
-    def _auto_resume(self, resume_from: str = None) -> int:
-        """Restore latest checkpoint (or an explicit one) and return the starting epoch.
+    @staticmethod
+    def _checkpoint_step(path: str) -> int:
+        """Parse the global step from a 'ckpt-<step>' checkpoint path (-1 if not parseable).
 
-        Uses the explicit `completed_epochs` counter saved in the checkpoint —
-        not global_step // steps_per_loop — so resume is exact even after
-        mid-epoch SIGINT or when steps_per_loop is zero.
+        All managed saves use ``checkpoint_number=global_step``, so the basename
+        suffix IS the global step — comparable across the main and resume/ dirs.
+        """
+        try:
+            return int(os.path.basename(path).rsplit('ckpt-', 1)[1])
+        except (IndexError, ValueError):
+            return -1
+
+    @classmethod
+    def _pick_latest_checkpoint(cls, candidates) -> Optional[str]:
+        """Pick the candidate path with the highest embedded global step.
+
+        Used to arbitrate between the main (epoch-boundary) directory and the
+        resume/ (interruption) directory: a mid-epoch interruption save has a
+        higher step than the last boundary save until the next boundary lands —
+        after which the boundary checkpoint wins and the stale resume save is
+        ignored ("used once" semantics, with no bookkeeping to corrupt).
+        """
+        candidates = [c for c in candidates if c]
+        if not candidates:
+            return None
+        return max(candidates, key=cls._checkpoint_step)
+
+    def _auto_resume(self, resume_from: str = None) -> int:
+        """Restore the newest checkpoint (or an explicit one) and return the starting epoch.
+
+        Considers BOTH the main (epoch-boundary) checkpoints and the resume/
+        (interruption) checkpoints and restores whichever has the highest global
+        step. Uses the explicit `completed_epochs` counter saved in the
+        checkpoint — not global_step // steps_per_loop — so resume is exact even
+        after mid-epoch SIGINT (the fixed-count epoch loop then runs only the
+        remainder to the next boundary, so no step is skipped or repeated).
 
         Args:
-            resume_from: Optional explicit checkpoint path.  If None, falls back
-                         to the latest checkpoint managed by CheckpointManager.
+            resume_from: Optional explicit checkpoint path. If given, it wins
+                         over both directories.
         """
-        target = resume_from or self._ckpt_manager.latest_checkpoint
+        target = resume_from or self._pick_latest_checkpoint([
+            self._ckpt_manager.latest_checkpoint,
+            self._resume_ckpt_manager.latest_checkpoint,
+        ])
         if target:
             self._ckpt.restore(target)
             completed  = int(self._epoch_var)
@@ -689,35 +738,47 @@ class YoloV8Trainer:
         )
         log.debug("Checkpoint saved: %s", path)
 
+    def _save_resume_checkpoint(self) -> None:
+        """Interruption save → resume/ (rotating, max 2) — main dir stays clean."""
+        path = self._resume_ckpt_manager.save(
+            checkpoint_number=int(self._global_step)
+        )
+        log.info("Resume checkpoint saved: %s", path)
+
     def _save_best_checkpoint(self, epoch: int, step: int) -> None:
         metric_name  = self._config.trainer.best_checkpoint_eval_metric
         metric_val   = float(self._best_metric)
         best_dir     = os.path.join(self._output_dir, f'best_{metric_name}')
         os.makedirs(best_dir, exist_ok=True)
-        # try/finally: a write failure (e.g. disk full) must not leave EMA weights
-        # swapped in as the live weights.
-        self._optimizer.swap_in(self._model)
-        try:
-            # Save optimizer + step counters alongside the (EMA) weights so the
-            # best checkpoint is resumable, not inference-only. Without the
-            # optimizer, restoring this checkpoint to continue training would lose
-            # the SGD `iterations` variable — the cosine LR schedule reads it, so
-            # the LR would snap back to its initial value and the momentum/velocity
-            # slots would reset, corrupting the trajectory. `global_step` /
-            # `completed_epochs` keep resume bookkeeping consistent. The model
-            # weights saved here are the EMA (shadow) weights (swapped in above),
-            # which is the correct inference state; the optimizer still holds the
-            # raw-weight slots, so a training resume continues correctly.
-            best_ckpt = tf.train.Checkpoint(
-                model=self._model,
-                optimizer=self._optimizer,
-                global_step=self._global_step,
-                completed_epochs=self._epoch_var,
-                best_metric=self._best_metric,
-            )
-            best_ckpt.write(os.path.join(best_dir, 'ckpt'))
-        finally:
-            self._optimizer.swap_out(self._model)
+        # Save the RAW (live) model weights together with the optimizer + step
+        # counters, exactly like a periodic checkpoint — do NOT swap EMA weights
+        # into the model first.
+        #
+        # Why no swap_in: the EMA shadow weights are tf.Variables tracked inside
+        # the EMA wrapper (`optimizer=self._optimizer`), so they are already
+        # serialized to disk by this checkpoint and recovered on resume via
+        # `ema.swap_in(model)` (eval/export use tools/ckpt_loading.py for exactly
+        # this). If we instead swapped EMA into `model/`, a *training* resume from
+        # this checkpoint would load EMA weights into the model while the SGD
+        # velocity slots restored from `optimizer/` were computed against the RAW
+        # (pre-EMA) weights — an incoherent (weights, momentum) pair that corrupts
+        # the subsequent trajectory and the EMA shadow update. Saving raw weights
+        # keeps the model/optimizer pair coherent for resume; the EMA shadows in
+        # `optimizer/` give eval/export the correct inference state.
+        #
+        # Saving the optimizer + counters (vs. a model-only inference checkpoint)
+        # is required for resume: without the SGD `iterations` variable the cosine
+        # LR schedule reads, the LR would snap back to its initial value and the
+        # momentum/velocity slots would reset, corrupting the trajectory.
+        # `global_step` / `completed_epochs` keep resume bookkeeping consistent.
+        best_ckpt = tf.train.Checkpoint(
+            model=self._model,
+            optimizer=self._optimizer,
+            global_step=self._global_step,
+            completed_epochs=self._epoch_var,
+            best_metric=self._best_metric,
+        )
+        best_ckpt.write(os.path.join(best_dir, 'ckpt'))
 
         # Write a human-readable metadata file alongside the checkpoint.
         meta_path = os.path.join(best_dir, 'best_info.yaml')

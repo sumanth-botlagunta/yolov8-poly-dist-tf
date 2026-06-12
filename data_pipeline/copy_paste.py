@@ -212,7 +212,7 @@ class CopyAndPasteModule:
         else:
             n_pairs = max_v // 2
             pts = tf.reshape(obj_pts, [n_pairs, 2])       # [n_pairs, (x, y)]
-            valid = pts[:, 0] >= 0.0                      # [n_pairs]
+            valid = pts[:, 0] > -1.0                      # [n_pairs] — sentinel is -1.0 (design_register entry 10)
 
             # Transform: x_bg = (paste_x + x_obj * new_w) / W
             x_bg = (paste_x_f + pts[:, 0] * new_w_f) / W_f
@@ -234,12 +234,24 @@ class CopyAndPasteModule:
 
             new_pts = tf.reshape(tf.stack([x_bg, y_bg], axis=-1), [1, max_v])
 
-            # Pad / truncate to match bg polygon column count
+            # Fit to the bg polygon column count. The copy-paste source decoder
+            # does NOT resample, so an object can carry far more vertices than the
+            # background's (possibly resampled) width. When it does, EVENLY RESAMPLE
+            # the valid vertices to the column budget rather than taking the first
+            # n_poly_cols raw vertices — the latter keeps only a contiguous arc of
+            # the contour, which corrupts the PolyYOLO radial target (it discards
+            # the far side of the polygon entirely). resample_polygons preserves the
+            # per-bin max radius to within sampling resolution, identical to the
+            # decode-time resample the rest of the pipeline already relies on.
+            from data_pipeline.augmentations import resample_polygons
             n_poly_cols = tf.shape(bg_data['groundtruth_polygons'])[1]
             cur_cols = tf.shape(new_pts)[1]
             new_pts = tf.cond(
                 cur_cols >= n_poly_cols,
-                lambda: new_pts[:, :n_poly_cols],
+                # compact=True: the in-bounds invalidation above (tf.where → -1)
+                # can leave scattered sentinels, so the valid vertices are NOT a
+                # prefix here and must be compacted before the even-spaced resample.
+                lambda: resample_polygons(new_pts, n_poly_cols // 2, compact=True),
                 lambda: tf.pad(
                     new_pts,
                     [[0, 0], [0, n_poly_cols - cur_cols]],
