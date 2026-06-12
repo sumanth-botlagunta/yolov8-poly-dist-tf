@@ -318,8 +318,10 @@ class TaskAlignedLossExtended:
             conf:  1.0 if a valid vertex was assigned to this bin (the validity
                    mask used by the angle/dist losses).
 
-        All three normalize by num_objs and average over the VALID vertices only
-        (masked by conf).
+        All three normalize by num_objs. Angle and dist average over the VALID
+        vertices only (masked by conf). Conf averages over ALL bins to provide a
+        negative signal that suppresses confidence on empty bins (it is NOT
+        conf-masked, unlike angle/dist).
 
         Returns:
             (poly_total, angle_loss, dist_loss_val, conf_loss_val)
