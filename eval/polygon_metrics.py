@@ -37,8 +37,16 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
+# Default radial bin count (angle_step=15 → 24 bins). _radial_to_cartesian
+# infers the actual count and angular step from len(radii) so a non-15° config
+# reconstructs at the right resolution; this is only the PolygonEvaluator default.
 _NUM_VERTICES = 24
-_ANGLE_STEP   = 2 * math.pi / _NUM_VERTICES   # radians per vertex
+
+# Per-bin confidence gate for PREDICTED polygon vertices. The evaluator and the
+# TensorBoard polygon overlay (train/viz_utils.py) MUST share this threshold so
+# the visualised contour matches the one scored — viz_utils imports this value
+# as its default rather than re-hardcoding 0.4.
+DEFAULT_POLY_CONF_THRESH = 0.4
 
 
 def _radial_to_cartesian(
@@ -47,30 +55,37 @@ def _radial_to_cartesian(
     w: int, h: int,
     offsets: np.ndarray = None,
 ) -> np.ndarray:
-    """Convert 24 normalized radial distances to Cartesian pixel vertices.
+    """Convert N normalized radial distances to Cartesian pixel vertices.
 
     The origin and radii are in **normalized** image coordinates (matching the
     parser's PolyYOLO encoding).  Vertices are reconstructed in normalized space
     and then scaled to pixels per-axis (``* w`` / ``* h``).
 
+    The vertex count N is inferred from ``len(radii)`` and the angular step is
+    ``2*pi / N``, so a non-15° config (e.g. angle_step=10 → 36 bins) reconstructs
+    at the correct angular resolution instead of assuming 24 bins.
+
     Args:
         cx_n, cy_n:  Polygon origin in normalized [0, 1] coordinates.
-        radii:       Shape [24], normalized radial distance per vertex.
+        radii:       Shape [N], normalized radial distance per vertex.
         w, h:        Image width / height in pixels.
-        offsets:     Optional shape [24], sub-bin angular offset in [0, 1) per
+        offsets:     Optional shape [N], sub-bin angular offset in [0, 1) per
                      bin (vertex angle = (i + offset) * angle_step). When None,
                      the bin centre angle (i * angle_step) is used.
 
     Returns:
-        Array of shape [24, 2] in pixel coordinates (x, y).
+        Array of shape [N, 2] in pixel coordinates (x, y).
     """
-    idx = np.arange(_NUM_VERTICES, dtype=np.float32)
+    radii = np.asarray(radii, dtype=np.float32)
+    n_verts = radii.shape[0]
+    angle_step = 2 * math.pi / n_verts
+    idx = np.arange(n_verts, dtype=np.float32)
     if offsets is not None:
         idx = idx + np.asarray(offsets, dtype=np.float32)
-    angles = idx * _ANGLE_STEP
+    angles = idx * angle_step
     xs = (cx_n + radii * np.cos(angles)) * w
     ys = (cy_n + radii * np.sin(angles)) * h
-    return np.stack([xs, ys], axis=1)   # [24, 2]
+    return np.stack([xs, ys], axis=1)   # [N, 2]
 
 
 def _polygon_to_mask(
@@ -170,8 +185,12 @@ class PolygonEvaluator:
     """
 
     def __init__(self, image_size: Tuple[int, int] = (672, 672), iou_thresh: float = 0.5,
-                 conf_thresh: float = 0.4):
+                 conf_thresh: float = DEFAULT_POLY_CONF_THRESH, num_vertices: int = _NUM_VERTICES):
         self._H, self._W = image_size
+        # Number of radial bins (= 360 // angle_step). _radial_to_cartesian
+        # infers the actual count from len(radii); this is kept for callers that
+        # want to validate against the configured value and to document intent.
+        self._num_vertices = num_vertices
         # Radial-distance reconstruction is only correct for square inputs (the
         # parser stores a single isotropic radius). Fail loudly rather than
         # silently report distorted mIoU on a non-square config.

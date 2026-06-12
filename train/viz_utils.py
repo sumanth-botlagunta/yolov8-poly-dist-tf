@@ -9,6 +9,8 @@ import logging
 
 import numpy as np
 
+from eval.polygon_metrics import DEFAULT_POLY_CONF_THRESH
+
 log = logging.getLogger(__name__)
 
 # Distinct BGR colors (OpenCV uses BGR) for up to 80 classes — cycles if more.
@@ -43,7 +45,8 @@ def _draw_box(canvas, y1n, x1n, y2n, x2n, color, label: str) -> None:
 
 
 def _draw_polygon(canvas, cxn, cyn, poly_conf, poly_dist, poly_angle=None,
-                  n_verts: int = 24) -> None:
+                  n_verts: int = 24,
+                  conf_thresh: float = DEFAULT_POLY_CONF_THRESH) -> None:
     """Draw a PolyYOLO radial polygon on a uint8 HWC canvas (in-place).
 
     Args:
@@ -54,6 +57,10 @@ def _draw_polygon(canvas, cxn, cyn, poly_conf, poly_dist, poly_angle=None,
                     angle becomes (i + offset) * (2*pi/n_verts). When None, the
                     bin centre angle i * (2*pi/n_verts) is used.
         n_verts:   Number of radial vertices (default 24).
+        conf_thresh: Per-bin confidence gate; bins below it are skipped. Defaults
+                    to the same value PolygonEvaluator scores with
+                    (DEFAULT_POLY_CONF_THRESH) so the drawn contour matches the
+                    scored one.
     """
     import cv2
     H, W = canvas.shape[:2]
@@ -64,7 +71,7 @@ def _draw_polygon(canvas, cxn, cyn, poly_conf, poly_dist, poly_angle=None,
     pts = []
     for i in range(n_verts):
         conf = float(poly_conf[i])   # already sigmoid-activated by detection_generator
-        if conf < 0.4:
+        if conf < conf_thresh:
             continue
         off = float(poly_angle[i]) if poly_angle is not None else 0.0
         angle_rad = (i + off) * bin_w
@@ -86,6 +93,7 @@ def render_summary_images(
     draw_box: bool = True,
     draw_poly: bool = True,
     class_names: list = None,
+    conf_thresh: float = DEFAULT_POLY_CONF_THRESH,
 ) -> "np.ndarray":
     """Draw predictions onto images and return a uint8 [N, H, W, 3] array.
 
@@ -100,6 +108,9 @@ def render_summary_images(
         draw_box:    Whether to draw bounding boxes.
         draw_poly:   Whether to overlay polygon contours.
         class_names: Optional list of class name strings.
+        conf_thresh: Per-bin polygon confidence gate; defaults to the value
+                     PolygonEvaluator scores with so the overlay matches the
+                     scored contour.
 
     Returns:
         uint8 numpy array [N, H, W, 3].
@@ -132,7 +143,8 @@ def render_summary_images(
                 _draw_polygon(canvas, cx_n, cy_n,
                               poly_conf=poly[:, 0],
                               poly_dist=poly[:, 1],
-                              poly_angle=poly[:, 2])
+                              poly_angle=poly[:, 2],
+                              conf_thresh=conf_thresh)
         out.append(canvas)
 
     return np.stack(out, axis=0)   # [N, H, W, 3]
