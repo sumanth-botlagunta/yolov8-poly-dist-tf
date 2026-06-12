@@ -169,6 +169,10 @@ task:
       angle_step: 15
       max_num_instances: 300
       max_vertices: 10938
+      # Must match the training-stream resampling: arc-length resample makes
+      # sparse annotations fill all boundary-crossed bins; eval GT must use the
+      # same representation or poly_mIoU penalizes correct full-shape predictions.
+      resample_points: 64
       aug_rand_hue: 0.0
       aug_rand_saturation: 0.0
       aug_rand_brightness: 0.0
