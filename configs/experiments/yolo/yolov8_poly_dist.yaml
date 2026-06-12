@@ -133,8 +133,7 @@ task:
       # (copy-paste, padded_batch, mosaic point transforms, flip, radial target)
       # carries [N, 128] instead of [N, 3972]. The 24-bin radial target is exact
       # for polygons with <= 64 vertices and within sampling tolerance otherwise
-      # (tests/test_polygon_preprocessing.py). Training-stream only; eval keeps
-      # full-width GT.
+      # (tests/test_polygon_preprocessing.py).
       resample_points: 64
       aug_rand_hue: 0.015
       aug_rand_saturation: 0.7
