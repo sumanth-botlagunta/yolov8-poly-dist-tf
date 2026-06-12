@@ -280,7 +280,12 @@ def test_full_legacy_simulation_exact_all_modules():
 
     reader = _FakeReader(shapes, tensors)
     stats = apply_weight_map(reader, model, modules=None)
-    assert stats == {"loaded": len(new_recs), "skipped": 0, "not_found": 0}
+    assert stats["loaded"] == len(new_recs)
+    assert stats["skipped"] == 0 and stats["not_found"] == 0
+    # Per-module coverage feeds the migrate_with_map write-guard; in this exact
+    # 1:1 simulation every selected module loads its full share.
+    assert sum(stats["loaded_by_module"].values()) == len(new_recs)
+    assert all(n > 0 for n in stats["loaded_by_module"].values())
 
     old_recs, skipped = wm.old_records(reader)
     res = wm.resolve(old_recs, new_recs)
@@ -342,3 +347,54 @@ def test_frozen_map_transfers_values_end_to_end():
     for i, (old_key, canon) in enumerate(LEGACY_TO_NEW.items()):
         r = by_canon[canon]
         assert np.allclose(r["var"].numpy(), tensors[old_key]), f"value mismatch: {canon}"
+
+
+# ---------------------------------------------------------------------------
+# migrate_with_map coverage guard (silent-empty-migration regression)
+# ---------------------------------------------------------------------------
+
+def test_apply_weight_map_reports_per_module_loaded():
+    """apply_weight_map returns loaded_by_module for the write-guard to use."""
+    model = _build(num_classes=39)
+    new_recs = wm.new_records(model)
+    r = next(rr for rr in new_recs if rr["module"] == "backbone"
+             and rr["block_ord"] == 0 and rr["role"] == "kernel")
+    key = "backbone/layer_with_weights-0/conv/kernel/.ATTRIBUTES/VARIABLE_VALUE"
+    shapes = {key: list(r["shape"])}
+    tensors = {key: np.full(r["shape"], 0.3, dtype=np.float32)}
+
+    stats = apply_weight_map(_FakeReader(shapes, tensors), model, modules=["backbone"])
+    assert "loaded_by_module" in stats
+    assert stats["loaded_by_module"].get("backbone", 0) == stats["loaded"] >= 1
+
+
+def test_migrate_with_map_refuses_to_write_empty_migration(tmp_path):
+    """migrate_with_map must raise (not silently write) when a selected module
+    loads zero weights — the silent-divergence failure mode.
+
+    Build a real on-disk checkpoint that contains NO legacy-recognizable keys, so
+    the curated map resolves no confident/suggested pairs. Before the fix this
+    wrote a checkpoint full of random-init weights and reported success; now it
+    must raise RuntimeError and leave no output checkpoint behind.
+    """
+    from tools.checkpoint_migration import migrate_with_map
+
+    model = _build(num_classes=39)
+
+    # A checkpoint with a single unrelated variable — none of the curated-map
+    # legacy keys are present, so resolution yields zero usable pairs.
+    junk = tf.Variable(tf.zeros([2, 2]), name="unrelated")
+    old_prefix = str(tmp_path / "legacy" / "ckpt")
+    (tmp_path / "legacy").mkdir(parents=True, exist_ok=True)
+    tf.train.Checkpoint(unrelated=junk).write(old_prefix)
+
+    out_prefix = str(tmp_path / "migrated" / "ckpt")
+
+    import pytest
+    with pytest.raises(RuntimeError, match="loaded no weights|Refusing to write"):
+        migrate_with_map(old_prefix, model, out_prefix, modules=["backbone"])
+
+    # No output checkpoint data file should have been written.
+    assert not (tmp_path / "migrated" / "ckpt.index").exists(), (
+        "migrate_with_map wrote a checkpoint despite loading zero weights"
+    )

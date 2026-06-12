@@ -181,7 +181,6 @@ def build_yolov8(config: ModelConfig) -> YoloV8:
         num_classes      = config.num_classes,
         max_boxes        = dg_cfg.max_boxes,
         nms_thresh       = dg_cfg.nms_thresh,
-        iou_thresh       = dg_cfg.iou_thresh,
         score_thresh     = dg_cfg.score_thresh,
         pre_nms_points   = dg_cfg.pre_nms_points,
         nms_type         = dg_cfg.nms_type,

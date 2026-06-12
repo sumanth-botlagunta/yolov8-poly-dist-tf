@@ -67,6 +67,13 @@ def main(_):
     from eval.polygon_metrics import PolygonEvaluator
 
     config = load_config(FLAGS.config)
+
+    # Activate the same precision policy the trainer used so a bfloat16-trained
+    # checkpoint is evaluated on the bfloat16 compute path (must run BEFORE the
+    # model is built).
+    from tools.runtime_setup import apply_eval_precision_policy
+    apply_eval_precision_policy(config)
+
     task   = YoloV8Task(config)
 
     model = _load_model_from_checkpoint(config, FLAGS.checkpoint)

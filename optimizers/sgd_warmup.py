@@ -96,6 +96,20 @@ class SGDTorch(tf.Module):
     def lr(self) -> tf.Tensor:
         return tf.cast(self._lr_fn(self.iterations), tf.float32)
 
+    @property
+    def lr_for_last_step(self) -> tf.Tensor:
+        """LR that was actually applied to the most recent ``apply_gradients``.
+
+        ``apply_gradients`` increments ``iterations`` at its *end*, but the
+        variable updates inside it use the LR for the *pre-increment* iteration.
+        Reading ``self.lr`` after the step therefore reports next step's LR (an
+        off-by-one for TensorBoard). This evaluates the schedule at
+        ``iterations - 1`` (clamped to 0 before the first step) so a logged LR
+        matches the LR that moved the weights for that batch.
+        """
+        prev = tf.maximum(self.iterations - 1, 0)
+        return tf.cast(self._lr_fn(prev), tf.float32)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------

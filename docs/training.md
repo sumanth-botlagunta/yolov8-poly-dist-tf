@@ -36,7 +36,8 @@ Validation at startup (`run_train.py:_validate_config`) checks invariants such a
 ## Optimizer & schedule
 - `optimizers/sgd_warmup.py:SGDTorch` — SGD + Nesterov momentum (0.937), decoupled weight decay,
   **3 param groups** (BN / bias / weights) with momentum warmup. During warmup the weight group's
-  LR ramps **up** from 0 while bias/BN ramp **down** from `bias_lr_scale·base_lr`; after warmup all
+  LR ramps **up** from 0 while bias/BN ramp **down** from `bias_lr_scale` (an absolute LR,
+  default `0.1` = 10× the initial weight LR, not `bias_lr_scale·base_lr`); after warmup all
   groups use the schedule LR.
 - LR: cosine decay, initial 0.01, α=0.01, 635,400 steps; linear warmup (6354 steps).
 - `optimizers/ema.py:ExponentialMovingAverage` — dynamic decay `min(0.9999, (1+step)/(10+step))`,

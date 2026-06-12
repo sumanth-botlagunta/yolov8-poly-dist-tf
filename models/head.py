@@ -14,7 +14,7 @@ Head architecture:
     cv4:     num_dist_block × Conv(128, 3×3)          — dist stem (fixed 128 ch at all levels)
 
 Smart bias initialization is applied when smart_bias=True:
-    class head bias: log(5 / num_classes / (640/stride)^2)
+    class head bias: log(5 / num_classes / (input_size/stride)^2)   # input_size=672 by default
     box head bias:   1.0
 
 Classes:

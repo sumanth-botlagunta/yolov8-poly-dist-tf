@@ -784,6 +784,23 @@ def migrate_with_map(
         mapping_json=mapping_json, include_suggested=include_suggested,
     )
 
+    # Coverage guard, mirroring migrate_with_frozen: refuse to write a checkpoint
+    # where nothing loaded or an entire selected module loaded zero weights. With
+    # the curated map, that means every candidate pair for a module was ambiguous
+    # or shape-mismatched — the module stays at random init and the migration is
+    # silently wrong. Fail loudly BEFORE writing instead.
+    empty = [m for m, n in stats.get("loaded_by_module", {}).items() if n == 0]
+    if stats["loaded"] == 0 or empty:
+        raise RuntimeError(
+            "Map migration loaded no weights for "
+            f"{empty or 'any module'} (loaded={stats['loaded']}, "
+            f"skipped={stats['skipped']}, not_found={stats['not_found']}). All "
+            "candidate pairs were ambiguous or shape-mismatched — run `report` to "
+            "inspect and add entries to MANUAL_OVERRIDES in "
+            "tools/checkpoint_weight_map.py. Refusing to write a "
+            f"partially-initialized checkpoint to {output_ckpt_path}."
+        )
+
     output_path = Path(output_ckpt_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tf.train.Checkpoint(model=new_model).write(output_ckpt_path)
@@ -864,6 +881,11 @@ def apply_weight_map(
         log.info("Variable mapping written to: %s", mapping_json)
 
     stats = {"loaded": 0, "skipped": 0, "not_found": 0}
+    # Track per-module loaded counts so callers can apply the same coverage guard
+    # as the frozen path (refuse to write a checkpoint where a whole selected
+    # module loaded nothing). Initialize every selected module to 0 so a module
+    # that contributes no pairs at all is visible as empty, not merely absent.
+    loaded_by_module = {m: 0 for m in resolved_modules}
     for p in pairs:
         try:
             tensor = reader.get_tensor(p["key"])
@@ -879,6 +901,8 @@ def apply_weight_map(
             continue
         var.assign(tensor)
         stats["loaded"] += 1
+        loaded_by_module[p["module"]] = loaded_by_module.get(p["module"], 0) + 1
+    stats["loaded_by_module"] = loaded_by_module
 
     log.info("Assignment complete: loaded=%d skipped=%d not_found=%d",
              stats["loaded"], stats["skipped"], stats["not_found"])
@@ -908,12 +932,16 @@ def migrate_checkpoint(
         Only load variables belonging to these module names. When ``None``
         (default) the modules are auto-selected by comparing the old and new
         classification head widths (see :func:`resolve_modules`).
-    strategy : {"auto", "map", "structural", "name"}
+    strategy : {"auto", "frozen", "map", "structural", "name"}
         ``"auto"`` (default) inspects the checkpoint: legacy object checkpoints
-        (``layer_with_weights``/``_head``) use ``"map"``; otherwise ``"structural"``.
-        ``"map"`` uses the curated structural weight map for the legacy→new
-        migration (:mod:`tools.checkpoint_weight_map`) and the 39-class module
-        rule (:func:`select_modules_39`). ``"structural"`` matches by DFS
+        (``layer_with_weights``/``_head``) use ``"frozen"``; otherwise
+        ``"structural"`` (see :func:`_detect_strategy`). ``"auto"`` never selects
+        the unverified ``"map"`` resolver. ``"frozen"`` assigns via the committed
+        hand-verified frozen map. ``"map"`` (opt-in only) uses the curated
+        structural weight map for the legacy→new migration
+        (:mod:`tools.checkpoint_weight_map`) and the 39-class module rule
+        (:func:`select_modules_39`); like ``"frozen"`` it now refuses to write if
+        a whole selected module loaded nothing. ``"structural"`` matches by DFS
         structure + role + shape. ``"name"`` is the legacy fuzzy name matcher.
     mapping_json : str, optional
         Write the resolved old→new variable mapping (and diagnostics) to JSON.

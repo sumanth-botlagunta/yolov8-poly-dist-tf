@@ -44,6 +44,11 @@ class ExponentialMovingAverage(tf.Module):
         self._average_decay = average_decay
         self._dynamic_decay = dynamic_decay
         self._ema_step = tf.Variable(0, trainable=False, dtype=tf.int64, name='ema_step')
+        # Keep a reference to the live model so apply_gradients can detect the
+        # model GROWING variables after construction (the shadows are a fixed
+        # snapshot). Comparing the live count against the snapshot is the only
+        # way to catch that; comparing two same-length snapshots cannot.
+        self._model = model
         self._model_vars = list(model.variables)
         # tf.identity copies the tensor value; works with both tf.Variable and
         # keras.Variable (Keras 3 removes .read_value()).
@@ -122,6 +127,27 @@ class ExponentialMovingAverage(tf.Module):
 
     def apply_gradients(self, grads_and_vars, **kwargs):
         """Apply gradients to real weights, then update all shadow weights."""
+        # Guard against the model gaining/losing variables AFTER the EMA wrapper
+        # was constructed (e.g. a layer built lazily on first call, or a variable
+        # monkey-patched on). `_model_vars`/`_shadows` are a fixed snapshot taken
+        # in __init__; if the model has since grown, the zip() below would silently
+        # average a stale subset and never track the new variables — a corruption
+        # that otherwise only surfaces (as a count mismatch) much later in
+        # swap_in() at eval time. This check is O(1) and runs every step.
+        #
+        # Compare the LIVE model variable count against the shadow snapshot — NOT
+        # `len(self._model_vars)` vs `len(self._shadows)`, which are two lists
+        # built together in __init__ and therefore equal by construction (the old
+        # form was a no-op that could never fire). `self._model.variables`
+        # re-reads the model's current variable list every step, so it catches a
+        # model that grew variables after EMA construction.
+        if len(self._model.variables) != len(self._shadows):
+            raise ValueError(
+                "EMA shadow/model-var snapshot mismatch: "
+                f"{len(self._shadows)} shadows vs {len(self._model.variables)} live "
+                "model variables. The model must be fully built BEFORE the EMA "
+                "wrapper is constructed."
+            )
         result = self._optimizer.apply_gradients(grads_and_vars, **kwargs)
         # Increment BEFORE computing decay (matches Ultralytics ModelEMA): the first
         # averaging update therefore uses decay = (1+1)/(10+1), not (1+0)/(10+0).
