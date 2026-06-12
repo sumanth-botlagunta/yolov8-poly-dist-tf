@@ -215,7 +215,9 @@ class YoloV8Trainer:
                 if self._shutdown_requested:
                     if python_step != last_saved_step:
                         self._sync_completed_epochs(python_step, spl)
-                        self._save_checkpoint()
+                        # Interruption save goes to resume/ — keeps the main
+                        # checkpoint directory a clean epoch-boundary sequence.
+                        self._save_resume_checkpoint()
                         last_saved_step = python_step
                     log.info("Graceful shutdown at step %d (epoch %d interrupted).",
                              python_step, epoch + 1)
@@ -387,6 +389,20 @@ class YoloV8Trainer:
             self._ckpt,
             self._output_dir,
             max_to_keep=self._config.trainer.max_to_keep,
+        )
+        # Separate manager for INTERRUPTION saves (SIGTERM/SIGINT, supervisor
+        # restarts, preemptions). Keeping these out of the main directory keeps
+        # it a clean sequence of epoch-boundary checkpoints, while interruption
+        # saves rotate in resume/ (max 2). _auto_resume picks whichever of the
+        # two directories holds the highest global step, so a mid-epoch
+        # interruption resumes exactly where it stopped (the fixed-count epoch
+        # loop then runs only the remaining steps to the next boundary), and a
+        # stale resume checkpoint is automatically superseded once a newer
+        # epoch-boundary save exists.
+        self._resume_ckpt_manager = tf.train.CheckpointManager(
+            self._ckpt,
+            os.path.join(self._output_dir, 'resume'),
+            max_to_keep=2,
         )
 
         self._tb_writer = tf.summary.create_file_writer(
@@ -654,18 +670,51 @@ class YoloV8Trainer:
     # Checkpointing
     # ------------------------------------------------------------------
 
-    def _auto_resume(self, resume_from: str = None) -> int:
-        """Restore latest checkpoint (or an explicit one) and return the starting epoch.
+    @staticmethod
+    def _checkpoint_step(path: str) -> int:
+        """Parse the global step from a 'ckpt-<step>' checkpoint path (-1 if not parseable).
 
-        Uses the explicit `completed_epochs` counter saved in the checkpoint —
-        not global_step // steps_per_loop — so resume is exact even after
-        mid-epoch SIGINT or when steps_per_loop is zero.
+        All managed saves use ``checkpoint_number=global_step``, so the basename
+        suffix IS the global step — comparable across the main and resume/ dirs.
+        """
+        try:
+            return int(os.path.basename(path).rsplit('ckpt-', 1)[1])
+        except (IndexError, ValueError):
+            return -1
+
+    @classmethod
+    def _pick_latest_checkpoint(cls, candidates) -> Optional[str]:
+        """Pick the candidate path with the highest embedded global step.
+
+        Used to arbitrate between the main (epoch-boundary) directory and the
+        resume/ (interruption) directory: a mid-epoch interruption save has a
+        higher step than the last boundary save until the next boundary lands —
+        after which the boundary checkpoint wins and the stale resume save is
+        ignored ("used once" semantics, with no bookkeeping to corrupt).
+        """
+        candidates = [c for c in candidates if c]
+        if not candidates:
+            return None
+        return max(candidates, key=cls._checkpoint_step)
+
+    def _auto_resume(self, resume_from: str = None) -> int:
+        """Restore the newest checkpoint (or an explicit one) and return the starting epoch.
+
+        Considers BOTH the main (epoch-boundary) checkpoints and the resume/
+        (interruption) checkpoints and restores whichever has the highest global
+        step. Uses the explicit `completed_epochs` counter saved in the
+        checkpoint — not global_step // steps_per_loop — so resume is exact even
+        after mid-epoch SIGINT (the fixed-count epoch loop then runs only the
+        remainder to the next boundary, so no step is skipped or repeated).
 
         Args:
-            resume_from: Optional explicit checkpoint path.  If None, falls back
-                         to the latest checkpoint managed by CheckpointManager.
+            resume_from: Optional explicit checkpoint path. If given, it wins
+                         over both directories.
         """
-        target = resume_from or self._ckpt_manager.latest_checkpoint
+        target = resume_from or self._pick_latest_checkpoint([
+            self._ckpt_manager.latest_checkpoint,
+            self._resume_ckpt_manager.latest_checkpoint,
+        ])
         if target:
             self._ckpt.restore(target)
             completed  = int(self._epoch_var)
@@ -688,6 +737,13 @@ class YoloV8Trainer:
             checkpoint_number=int(self._global_step)
         )
         log.debug("Checkpoint saved: %s", path)
+
+    def _save_resume_checkpoint(self) -> None:
+        """Interruption save → resume/ (rotating, max 2) — main dir stays clean."""
+        path = self._resume_ckpt_manager.save(
+            checkpoint_number=int(self._global_step)
+        )
+        log.info("Resume checkpoint saved: %s", path)
 
     def _save_best_checkpoint(self, epoch: int, step: int) -> None:
         metric_name  = self._config.trainer.best_checkpoint_eval_metric
