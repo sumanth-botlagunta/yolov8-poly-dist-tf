@@ -146,7 +146,11 @@ class LossConfig:
 class MosaicConfig:
     mosaic_frequency: float = 0.5
     mixup_frequency: float = 0.0
-    mosaic_center: float = 0.2
+    # 0.25 = half-range of the mosaic split point as a fraction of canvas size.
+    # Matches Mosaic.__init__ default + its docstring + the poly_dist tier YAML; the
+    # dataclass previously defaulted to 0.2, silently disagreeing with the runtime
+    # default whenever a tier YAML omitted mosaic_center.
+    mosaic_center: float = 0.25
     aug_scale_min: float = 0.4
     aug_scale_max: float = 1.9
     mosaic_crop_mode: str = "scale"

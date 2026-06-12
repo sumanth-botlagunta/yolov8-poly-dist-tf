@@ -375,7 +375,7 @@ def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
     mosaic_cfg = MosaicConfig(
         mosaic_frequency=mosaic_raw.get("mosaic_frequency", 0.5),
         mixup_frequency=mosaic_raw.get("mixup_frequency", 0.0),
-        mosaic_center=mosaic_raw.get("mosaic_center", 0.2),
+        mosaic_center=mosaic_raw.get("mosaic_center", 0.25),  # matches Mosaic.__init__
         aug_scale_min=mosaic_raw.get("aug_scale_min", 0.4),
         aug_scale_max=mosaic_raw.get("aug_scale_max", 1.9),
         mosaic_crop_mode=mosaic_raw.get("mosaic_crop_mode", "scale"),

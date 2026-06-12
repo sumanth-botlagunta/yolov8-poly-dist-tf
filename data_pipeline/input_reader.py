@@ -196,6 +196,11 @@ class InputReader:
                 raw_datasets, weights=weights, seed=self._seed
             )
 
+        # Detection source shuffle: seed=self._seed (the base seed). The cnp source
+        # shuffle uses self._seed+1 and the post-unbatch shuffle uses self._seed+2 so
+        # the three shuffle stages draw from DISTINCT RNG streams — sharing one seed
+        # makes the permutations correlated, which can partially undo each stage's
+        # decorrelation of the previous one.
         ds = ds.shuffle(self._shuffle_buffer_size, seed=self._seed, reshuffle_each_iteration=True)
 
         if self._decoder is not None:
@@ -248,16 +253,42 @@ class InputReader:
         # Mosaic: batch(4) → combine (4 in → 4 out) → unbatch.
         if self._mosaic_module is not None:
             mosaic_fn = self._mosaic_module.mosaic_fn(is_training=True)
+            # Explicit padding_values for EVERY key in the decoder element spec
+            # (PolygonDecoder/ServingBot output, preserved by copy-paste). Without
+            # this, padded_batch pads every numeric field with 0, which is WRONG
+            # for groundtruth_polygons: 0.0 is a valid (top-left) vertex coordinate,
+            # so 0-padded rows would read as real vertices instead of the reserved
+            # -1.0 sentinel (see docs/design_register entry 10) and corrupt the
+            # PolyYOLO radial target. We pin -1.0 for polygons and the natural empty
+            # value for every other field. Keyed by name so it survives spec
+            # reordering; dtypes match the decoder exactly.
+            _padding_values = {
+                'image': tf.constant(0, tf.uint8),
+                'source_id': tf.constant('', tf.string),
+                'height': tf.constant(0, tf.int32),
+                'width': tf.constant(0, tf.int32),
+                'groundtruth_boxes': tf.constant(0.0, tf.float32),
+                'groundtruth_classes': tf.constant(0, tf.int64),
+                'groundtruth_polygons': tf.constant(-1.0, tf.float32),  # sentinel
+                'groundtruth_is_crowd': tf.constant(False, tf.bool),
+                'groundtruth_area': tf.constant(0.0, tf.float32),
+                'groundtruth_dontcare': tf.constant(0, tf.int64),
+                'groundtruth_dists': tf.constant(0.0, tf.float32),
+            }
             ds = (
                 ds
-                .padded_batch(4, drop_remainder=True)
+                .padded_batch(4, drop_remainder=True, padding_values=_padding_values)
                 .map(mosaic_fn, num_parallel_calls=_AUTOTUNE)
                 .unbatch()
                 # mosaic_fn emits 4 samples per 4-group (the 4 mosaics share
                 # source images, and the group coin flip makes mosaic/non-mosaic
                 # arrive in runs of 4) — a small shuffle breaks those clusters up
                 # before batching. ~128 × 1.4 MB decoded samples ≈ 180 MB buffer.
-                .shuffle(128, seed=self._seed, reshuffle_each_iteration=True)
+                # seed=self._seed+2: a DISTINCT seed from the pre-decode source
+                # shuffle (seed) and the cnp source shuffle (seed+1) so the three
+                # shuffle stages do not share an RNG stream (correlated permutations
+                # across stages would partially undo each other's decorrelation).
+                .shuffle(128, seed=self._seed + 2, reshuffle_each_iteration=True)
             )
 
         if self._parser is not None:
@@ -381,7 +412,12 @@ class InputReader:
             # tf.string branch decodes with channels=4 in the parallel map.
             decoders={'image': tfds.decode.SkipDecoding()},
         )
-        ds = ds.shuffle(500, seed=self._seed, reshuffle_each_iteration=True).repeat()
+        # cnp source shuffle: seed=self._seed+1 — a DISTINCT seed from the detection
+        # source shuffle (self._seed) and the post-unbatch shuffle (self._seed+2).
+        # The cnp stream is zipped with the detection stream for copy-paste; sharing a
+        # seed would lock the cnp permutation in lockstep with the detection one,
+        # pairing the same background/paste-object indices every epoch.
+        ds = ds.shuffle(500, seed=self._seed + 1, reshuffle_each_iteration=True).repeat()
         if self._cnp_decoder is not None:
             ds = ds.map(self._cnp_decoder.decode, num_parallel_calls=_AUTOTUNE)
         return ds

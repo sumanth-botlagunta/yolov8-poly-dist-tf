@@ -130,7 +130,7 @@ task:
       mosaic:
         mosaic_frequency: 0.5
         mixup_frequency: 0.0
-        mosaic_center: 0.2
+        mosaic_center: 0.25   # explicit; matches Mosaic.__init__ + poly_dist tier (was 0.2)
         aug_scale_min: 0.4
         aug_scale_max: 1.9
         mosaic_crop_mode: scale
@@ -170,7 +170,7 @@ task:
       mosaic:
         mosaic_frequency: 0.0
         mixup_frequency: 0.0
-        mosaic_center: 0.2
+        mosaic_center: 0.25   # explicit; matches Mosaic.__init__ + poly_dist tier (was 0.2)
         aug_scale_min: 1.0
         aug_scale_max: 1.0
         mosaic_crop_mode: null
