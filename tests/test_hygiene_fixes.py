@@ -186,3 +186,112 @@ def test_eval_random_flip_false_everywhere():
         # training parser keeps flips on (poly_dist/poly/bbox all flip in train)
         assert cfg.task.train_data.parser.random_flip is True, \
             f"{name}: train_data.parser.random_flip should be true"
+
+
+# ---------------------------------------------------------------------------
+# README step count matches the authoritative config (no stale 716400)
+# ---------------------------------------------------------------------------
+
+_README_PATH = os.path.join(os.path.dirname(__file__), '..', 'README.md')
+
+
+def test_readme_step_count_matches_config():
+    """README's documented LR-schedule step count and ckpt names must equal the
+    authoritative decay_steps in yolov8_poly_dist.yaml (635400, = 271166//128 * 300),
+    not the stale 716400."""
+    cfg = load_config(os.path.join(_CFG_DIR, 'yolov8_poly_dist.yaml'))
+    decay_steps = cfg.trainer.optimizer_config.learning_rate.decay_steps
+    assert decay_steps == 635400, f"config decay_steps drifted: {decay_steps}"
+
+    with open(_README_PATH) as f:
+        readme = f.read()
+    # The stale value must not reappear (any spacing/checkpoint form).
+    assert '716400' not in readme and '716 400' not in readme, \
+        "README still references the stale 716400 step count"
+    # The correct value must be present (schedule line + checkpoint names).
+    assert '635 400 steps' in readme, "README LR-schedule step count not updated"
+    assert 'ckpt-635400' in readme, "README checkpoint names not updated to 635400"
+
+
+def test_readme_does_not_claim_yaml_loader_uses_dacite():
+    """yaml_loader.py is a hand-rolled mapper (it says so in its module docstring);
+    the README structure table must not claim it uses dacite."""
+    loader_path = os.path.join(os.path.dirname(__file__), '..', 'configs', 'yaml_loader.py')
+    with open(loader_path) as f:
+        loader_src = f.read()
+    assert 'NOT dacite' in loader_src, "yaml_loader no longer self-documents as non-dacite"
+
+    with open(_README_PATH) as f:
+        readme = f.read()
+    assert 'ExperimentConfig via dacite' not in readme, \
+        "README still claims yaml_loader.py converts via dacite"
+    assert 'hand-rolled mapper (not dacite)' in readme, \
+        "README should state yaml_loader uses a hand-rolled mapper, not dacite"
+
+
+# ---------------------------------------------------------------------------
+# Bias/BN warmup LR: docs describe bias_lr_scale as an ABSOLUTE start LR
+# ---------------------------------------------------------------------------
+
+def test_bias_warmup_start_lr_is_absolute_in_code():
+    """_effective_lr uses bias_lr_scale directly as the group-0/1 warmup start LR
+    (an absolute LR), NOT bias_lr_scale * base_lr. Pin the actual numeric behavior so
+    the docs (design_register entry 2, training.md) cannot drift back to '× base_lr'."""
+    from optimizers.sgd_warmup import SGDTorch
+
+    base_lr = 0.01
+    bias_scale = 0.1
+    lr_fn = tf.keras.optimizers.schedules.CosineDecay(
+        initial_learning_rate=base_lr, decay_steps=10_000, alpha=0.01
+    )
+    opt = SGDTorch(lr_fn=lr_fn, bias_lr_scale=bias_scale, warmup_steps=1000)
+    # At warmup start (t=0) the bias group LR must equal bias_lr_scale (0.1),
+    # i.e. 10x base_lr — NOT bias_lr_scale*base_lr (0.001).
+    lr_bias_start = float(opt._effective_lr(base_lr=tf.constant(base_lr), t=tf.constant(0.0), group=1))
+    assert abs(lr_bias_start - bias_scale) < 1e-7, \
+        f"bias warmup start LR should be {bias_scale} (absolute), got {lr_bias_start}"
+    assert abs(lr_bias_start - bias_scale * base_lr) > 1e-7, \
+        "bias warmup start must NOT be bias_lr_scale * base_lr"
+
+
+def test_docs_describe_bias_lr_scale_as_absolute_not_times_base():
+    """The design register and training doc must not describe the bias warmup start as
+    'bias_lr_scale × base_lr' / 'bias_lr_scale·base_lr' (the code uses it absolutely)."""
+    docs_dir = os.path.join(os.path.dirname(__file__), '..', 'docs')
+    with open(os.path.join(docs_dir, 'design_register.md')) as f:
+        reg = f.read()
+    with open(os.path.join(docs_dir, 'training.md')) as f:
+        trn = f.read()
+    # design_register must no longer ASSERT the start is bias_lr_scale × base_lr.
+    assert 'start at\n`bias_lr_scale × base_lr`' not in reg and \
+        'start at `bias_lr_scale × base_lr`' not in reg, \
+        "design_register still says bias warmup starts at bias_lr_scale × base_lr"
+    # training.md must no longer say it ramps DOWN *from* bias_lr_scale·base_lr
+    # (mentioning it only inside a 'not bias_lr_scale·base_lr' clarification is fine).
+    assert 'down** from `bias_lr_scale·base_lr`' not in trn, \
+        "training.md still says bias warmup ramps down from bias_lr_scale·base_lr"
+    # Both should now flag it as an absolute LR.
+    assert 'absolute' in reg.lower(), "design_register should note bias start is absolute"
+    assert 'absolute' in trn.lower(), "training.md should note bias start is absolute"
+
+
+# ---------------------------------------------------------------------------
+# tal_loss._polygon_loss docstring matches polygon_conf_loss behavior
+# ---------------------------------------------------------------------------
+
+def test_polygon_loss_docstring_distinguishes_conf_from_angle_dist():
+    """polygon_conf_loss averages BCE over ALL bins (negative signal on empties),
+    while angle/dist mask to valid vertices. The tal_loss._polygon_loss docstring must
+    NOT claim all three average over valid vertices only."""
+    from losses import polygon_loss as pl
+    from losses.tal_loss import TaskAlignedLossExtended
+
+    conf_src = inspect.getsource(pl.polygon_conf_loss)
+    assert 'mean over ALL bins' in conf_src, \
+        "polygon_conf_loss no longer averages over all bins (test premise stale)"
+
+    doc = TaskAlignedLossExtended._polygon_loss.__doc__
+    assert 'average over the VALID vertices only\n        (masked by conf)' not in doc, \
+        "tal_loss docstring still claims all three sub-losses are valid-vertex-masked"
+    assert 'ALL bins' in doc, \
+        "tal_loss docstring should note conf averages over ALL bins"
