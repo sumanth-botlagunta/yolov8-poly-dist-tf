@@ -64,6 +64,12 @@ def main(_):
     from configs.yaml_loader import load_config
     config = load_config(FLAGS.config)
 
+    # Activate the trainer's precision policy once before any model is built so the
+    # continuous-eval curve matches the trainer's own bfloat16 validation numerics
+    # (the global policy persists for every checkpoint evaluated in the loop).
+    from tools.runtime_setup import apply_eval_precision_policy
+    apply_eval_precision_policy(config)
+
     log_path    = os.path.join(FLAGS.watch_dir, 'eval_log.jsonl')
     seen        = set()
     eval_count  = 0

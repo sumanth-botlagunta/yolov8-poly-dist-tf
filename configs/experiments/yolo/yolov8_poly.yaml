@@ -1,6 +1,9 @@
 # Experiment: yolov8_poly
 # Pipeline: bbox + cls + polygon (24-vertex PolyYOLO). NO distance head.
-# Derived from yolov8_poly_dist.yaml — only changed fields are listed.
+# Standalone, fully self-contained config (the loader does NOT apply `base:`
+# inheritance here — every field below is the live value). It parallels
+# yolov8_poly_dist.yaml with the distance head/stream disabled; diff the two files
+# to see what differs (with_distance, dist_gain, distance_data, etc.).
 
 task:
   init_checkpoint: initial_checkpoint_folder/ckpt-920304
@@ -64,7 +67,6 @@ task:
     detection_generator:
       max_boxes: 300
       nms_thresh: 0.65
-      iou_thresh: 0.001
       nms_type: greedy
       pre_nms_points: 30000
       topN_per_anchor: 1
@@ -137,12 +139,20 @@ task:
         mosaic_crop_mode: scale
         area_thresh: 0.5
         jitter: 0.0
+        # random_perspective (full-affine) strength applied after mosaic assembly
+        # AND to non-mosaic single images. degrees/shear in degrees; translate as a
+        # fraction of output size. These are the LIVE affine knobs (forwarded to
+        # Mosaic in data_pipeline/input_reader.py); aug_rand_translate above is NOT
+        # the affine translate. Shown here so they are visible/editable in config.
+        degrees: 10.0
+        shear: 2.0
+        translate: 0.1
 
   validation_data:
     tfds_name: "cleaner_polygon2026:2.0.0"
     tfds_split: test
     tfds_data_dir: /home/user/tensorflow_datasets/
-    global_batch_size: 2
+    global_batch_size: 64   # match the poly_dist tier; bs=2 ran ~32x more val batches/epoch
     is_training: false
     shuffle_buffer_size: 100
     prob_copy_n_paste: 0.0
@@ -160,7 +170,11 @@ task:
       aug_rand_translate: 0.0
       aug_scale_min: 1.0
       aug_scale_max: 1.0
-      random_flip: true
+      # Must be false for eval: V8ParserExtended._parse_eval_data never reads
+      # random_flip (only _parse_train_data does), so a true here was misleading —
+      # it implied flips that the eval path never applies. Kept false for clarity
+      # and parity with yolov8_poly_dist.yaml.
+      random_flip: false
       letter_box: true
       resize_with_random_method: false
       skip_crowd_during_training: true
@@ -186,15 +200,9 @@ trainer:
   train_total_examples: 271166   # verified vs TFDS builders 2026-06-10 (was 305780, stale)
   validation_total_examples: 3903
   checkpoint_interval: 2118
-  validation_interval: 2118
   best_checkpoint_eval_metric: F1score50
   best_checkpoint_metric_comp: higher
   max_to_keep: 300
-  train_tf_function: true
-  train_tf_while_loop: true
-  eval_tf_function: true
-  eval_tf_while_loop: false
-  summary_interval: 2118
   optimizer_config:
     ema:
       average_decay: 0.9999
@@ -217,12 +225,9 @@ trainer:
         warmup_steps: 6354   # 3 epochs x 2118
         weight_keys: [kernel, weight]
         bias_keys: [bias, beta]
-  warmup:
-    type: linear
-    linear:
-      name: linear
-      warmup_learning_rate: 0.0
-      warmup_steps: 6354   # 3 epochs x 2118
+        # warmup_steps above is the SOLE warmup control (read by task.py via
+        # OptimizerConfig.warmup_steps). The legacy trainer.warmup.* block was never
+        # read and has been removed.
 
 runtime:
   distribution_strategy: mirrored

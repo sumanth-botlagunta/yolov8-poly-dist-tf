@@ -65,7 +65,6 @@ from configs.model_config import (
     RuntimeConfig,
     TaskConfig,
     TrainerConfig,
-    WarmupConfig,
 )
 
 
@@ -238,7 +237,6 @@ def _build_model_config(m: Dict[str, Any], task: Dict[str, Any]) -> ModelConfig:
     det_gen_cfg = DetectionGeneratorConfig(
         max_boxes=det_gen_raw.get("max_boxes", 300),
         nms_thresh=det_gen_raw.get("nms_thresh", 0.65),
-        iou_thresh=det_gen_raw.get("iou_thresh", 0.001),
         score_thresh=det_gen_raw.get("score_thresh", 0.05),
         nms_type=det_gen_raw.get("nms_type", "greedy"),
         pre_nms_points=det_gen_raw.get("pre_nms_points", 30000),
@@ -309,7 +307,23 @@ def _build_loss_config(l: Dict[str, Any]) -> LossConfig:
     )
 
 
+_DATA_KEYS = frozenset({
+    "tfds_name", "tfds_split", "tfds_data_dir", "global_batch_size", "is_training",
+    "shuffle_buffer_size", "drop_remainder", "tfds_sampling_weights",
+    "prob_copy_n_paste", "tfds_for_cnp", "tfds_for_cnp_split", "seed",
+    "with_polygons", "with_distance", "poly_eval_gt_policy", "class_remap_json_path",
+    "private_threadpool_size", "parser", "distance_data",
+})
+
+# Keys present in the experiment YAMLs that the loader intentionally does not
+# consume (TF-Vision vestigial flags / download toggles handled elsewhere).
+_DATA_KEYS_IGNORED = frozenset({
+    "tfds_download",
+})
+
+
 def _build_data_config(d: Dict[str, Any]) -> DataConfig:
+    _warn_unknown_keys(d, _DATA_KEYS, "data", ignored=_DATA_KEYS_IGNORED)
     parser_cfg    = _build_parser_config(d.get("parser", {}))
     dist_data_raw = d.get("distance_data")
     dist_data_cfg: Optional[DistanceDataConfig] = None
@@ -405,7 +419,30 @@ def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
     )
 
 
+_TRAINER_KEYS = frozenset({
+    "train_epochs", "train_total_examples", "validation_total_examples",
+    "checkpoint_interval", "best_checkpoint_eval_metric",
+    "best_checkpoint_metric_comp", "max_to_keep", "optimizer_config",
+    # steps_per_loop / train_steps / validation_steps are auto-derived but may be
+    # present in YAML as documentation; accept silently.
+    "steps_per_loop", "train_steps", "validation_steps",
+})
+
+# TF-Vision trainer keys this custom training loop does not honor. They are not
+# wired into TrainerConfig; listing them here documents the intentional drop so a
+# typo in a *real* trainer key still warns.
+_TRAINER_KEYS_IGNORED = frozenset({
+    "validation_interval", "summary_interval", "train_tf_function",
+    "train_tf_while_loop", "eval_tf_function", "eval_tf_while_loop",
+    # Legacy linear-warmup block: never read (warmup is driven by
+    # optimizer_config.optimizer.sgd_torch.warmup_steps). Accepted silently so old
+    # YAMLs still load; do not re-add it to the live config.
+    "warmup",
+})
+
+
 def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
+    _warn_unknown_keys(t, _TRAINER_KEYS, "trainer", ignored=_TRAINER_KEYS_IGNORED)
     opt_raw    = t.get("optimizer_config", {})
     ema_raw    = opt_raw.get("ema", {})
     lr_raw     = opt_raw.get("learning_rate", {}).get(
@@ -414,7 +451,9 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
     sgd_raw    = opt_raw.get("optimizer", {}).get(
         "sgd_torch", opt_raw.get("optimizer", {})
     )
-    warmup_raw = t.get("warmup", {}).get("linear", t.get("warmup", {}))
+    # NOTE: the legacy trainer.warmup.* block is not parsed — warmup is driven solely
+    # by OptimizerConfig.warmup_steps (sgd_torch.warmup_steps below). See the removed
+    # WarmupConfig; a stray trainer.warmup block in old YAML is silently ignored.
 
     ema_cfg    = EmaConfig(
         average_decay=ema_raw.get("average_decay", 0.9999),
@@ -424,10 +463,6 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
         initial_learning_rate=lr_raw.get("initial_learning_rate", 0.01),
         decay_steps=lr_raw.get("decay_steps", 716400),
         alpha=lr_raw.get("alpha", 0.01),
-    )
-    warmup_cfg = WarmupConfig(
-        warmup_steps=warmup_raw.get("warmup_steps", 7164),
-        warmup_learning_rate=warmup_raw.get("warmup_learning_rate", 0.0),
     )
     opt_cfg    = OptimizerConfig(
         momentum=sgd_raw.get("momentum", 0.937),
@@ -439,7 +474,6 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
         bias_keys=sgd_raw.get("bias_keys", ["bias", "beta"]),
         ema=ema_cfg,
         learning_rate=lr_cfg,
-        warmup=warmup_cfg,
     )
 
     return TrainerConfig(

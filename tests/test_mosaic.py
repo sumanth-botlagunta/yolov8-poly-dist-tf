@@ -474,5 +474,40 @@ class TestWarpScaleBounds(unittest.TestCase):
         self.assertAlmostEqual(float(M[0, 0]), 1.0, places=5)
 
 
+class TestFilteredAnnsMissingFields(unittest.TestCase):
+    """Pinning test: _filtered_anns tolerates absent per-box side fields.
+
+    A side field (e.g. groundtruth_dists) may be missing from an example that
+    nevertheless carries boxes. The fallback for a missing field must be an
+    N-length default (one entry per kept-mask slot), not a 0-length tensor:
+    tf.boolean_mask requires the masked tensor and the mask to share the masked
+    dimension, so a length-0 fallback against an N-length keep raised
+    `ValueError: Shapes (0,) and (N,) are incompatible`.
+    """
+
+    def test_missing_dists_field_does_not_crash(self):
+        # 2 boxes, keep both; example omits groundtruth_dists entirely.
+        ex = {"groundtruth_classes": tf.constant([1, 2], tf.int64)}
+        boxes = tf.zeros([2, 4], tf.float32)
+        polys = tf.fill([2, _MAXV], -1.0)
+        keep = tf.constant([True, True])
+        out = Mosaic._filtered_anns(ex, boxes, polys, keep)
+        # Missing field falls back to an N-length default, then masked by keep.
+        self.assertEqual(out["groundtruth_dists"].shape[0], 2)
+        self.assertEqual(out["groundtruth_area"].shape[0], 2)
+        np.testing.assert_array_equal(out["groundtruth_classes"].numpy(), [1, 2])
+
+    def test_missing_field_with_partial_keep(self):
+        # keep drops one box; the N-length fallback must mask down to the kept count.
+        ex = {}  # no side fields at all
+        boxes = tf.zeros([3, 4], tf.float32)
+        polys = tf.fill([3, _MAXV], -1.0)
+        keep = tf.constant([True, False, True])
+        out = Mosaic._filtered_anns(ex, boxes, polys, keep)
+        self.assertEqual(out["groundtruth_dists"].shape[0], 2)
+        self.assertEqual(out["groundtruth_classes"].shape[0], 2)
+        self.assertEqual(out["groundtruth_is_crowd"].shape[0], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -20,7 +20,6 @@ Dataclasses:
     OptimizerConfig
     EmaConfig
     LrScheduleConfig
-    WarmupConfig
     TrainerConfig
     TaskConfig
     ExperimentConfig
@@ -85,7 +84,6 @@ class HeadConfig:
 class DetectionGeneratorConfig:
     max_boxes: int = 300
     nms_thresh: float = 0.65
-    iou_thresh: float = 0.001
     score_thresh: float = 0.05
     nms_type: str = "greedy"
     pre_nms_points: int = 30000
@@ -228,9 +226,14 @@ class DataConfig:
     drop_remainder: bool = True
     tfds_sampling_weights: Optional[List[float]] = None
     prob_copy_n_paste: float = 0.2
-    tfds_for_cnp: Optional[str] = "cleaner_copy_paste:1.0.0"
-    tfds_for_cnp_split: Optional[str] = "train_f"
-    seed: Optional[int] = 1000
+    # Defaults are None to match yaml_loader._build_data_config({}) — a bare
+    # DataConfig() must behave identically to an empty YAML. Non-None defaults
+    # here previously made direct construction silently enable copy-paste
+    # (truthy tfds_for_cnp) and seeded shuffling (seed=1000) while the YAML path
+    # left them off. The shipped experiment YAMLs set these explicitly.
+    tfds_for_cnp: Optional[str] = None
+    tfds_for_cnp_split: Optional[str] = None
+    seed: Optional[int] = None
     with_polygons: bool = True
     with_distance: bool = False
     poly_eval_gt_policy: str = "polyyolo"
@@ -257,23 +260,18 @@ class LrScheduleConfig:
 
 
 @dataclasses.dataclass
-class WarmupConfig:
-    warmup_steps: int = 7164
-    warmup_learning_rate: float = 0.0
-
-
-@dataclasses.dataclass
 class OptimizerConfig:
     momentum: float = 0.937
     momentum_start: float = 0.8
     nesterov: bool = True
     weight_decay: float = 0.0005
+    # The sole warmup control. The legacy nested WarmupConfig (trainer.warmup.*) was
+    # never read — warmup is driven entirely by this field — and has been removed.
     warmup_steps: int = 7164
     weight_keys: List[str] = dataclasses.field(default_factory=lambda: ["kernel", "weight"])
     bias_keys: List[str] = dataclasses.field(default_factory=lambda: ["bias", "beta"])
     ema: EmaConfig = dataclasses.field(default_factory=EmaConfig)
     learning_rate: LrScheduleConfig = dataclasses.field(default_factory=LrScheduleConfig)
-    warmup: WarmupConfig = dataclasses.field(default_factory=WarmupConfig)
 
 
 @dataclasses.dataclass

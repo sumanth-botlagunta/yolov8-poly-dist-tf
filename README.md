@@ -29,7 +29,7 @@ The codebase supports three experiment tiers (config-driven, shared code):
 | Classes | 39 |
 | Activation | ReLU throughout |
 | Optimizer | SGDTorch — decoupled WD, Nesterov, per-param-group, linear momentum warmup |
-| LR schedule | Cosine decay, initial 0.01, α=0.01, 716 400 steps |
+| LR schedule | Cosine decay, initial 0.01, α=0.01, 635 400 steps |
 | EMA | Dynamic decay `min(0.9999, (1+step)/(10+step))` |
 
 ---
@@ -84,7 +84,9 @@ python scripts/run_train.py \
     --debug
 ```
 
-Checkpoints are saved to `output_dir/` every `checkpoint_interval` steps (default 2388).  
+Checkpoints are saved to `output_dir/` every `checkpoint_interval` steps (default 2118
+= 271,166 train examples // batch size 128 = one epoch; set `checkpoint_interval` in your
+YAML to override).  
 TensorBoard events are written to `output_dir/tb_events/`.
 
 ```bash
@@ -144,7 +146,7 @@ Set `task.init_checkpoint` in your YAML to the migrated checkpoint path so `trai
 ```bash
 python tools/eval.py \
     --config      configs/experiments/yolo/yolov8_poly_dist.yaml \
-    --checkpoint  /path/to/output/ckpt-716400 \
+    --checkpoint  /path/to/output/ckpt-635400 \
     --split       val \
     --output_json /tmp/results.json
 ```
@@ -161,13 +163,13 @@ Metrics reported: **mAP** (0.50:0.95), **mAP50**, **AR100**, **F1@50**,
 # SavedModel (deploy=True, NMS baked in)
 python tools/export_saved_model.py \
     --config      configs/experiments/yolo/yolov8_poly_dist.yaml \
-    --checkpoint  /path/to/output/ckpt-716400 \
+    --checkpoint  /path/to/output/ckpt-635400 \
     --output_dir  /tmp/saved_model
 
 # Also produce a .tflite file
 python tools/export_saved_model.py \
     --config      configs/experiments/yolo/yolov8_poly_dist.yaml \
-    --checkpoint  /path/to/output/ckpt-716400 \
+    --checkpoint  /path/to/output/ckpt-635400 \
     --output_dir  /tmp/saved_model \
     --tflite
 ```
@@ -204,7 +206,7 @@ pytest tests/unit/ tests/integration/ --cov=. --cov-report=term-missing
 configs/
   experiments/yolo/        Experiment YAMLs (yolov8_bbox, yolov8_poly, yolov8_poly_dist)
   model_config.py          All config dataclasses
-  yaml_loader.py           YAML → ExperimentConfig via dacite
+  yaml_loader.py           YAML → ExperimentConfig via hand-rolled mapper (not dacite)
   registry.py              Registry for backbone / decoder / head classes
   class_map.py             DETECTION_CLASSES list + SERVINGBOT_CLASS_REMAP {0: 35}
 
@@ -299,7 +301,7 @@ trainer:
   optimizer_config:
     learning_rate:
       initial_learning_rate: 0.01
-      decay_steps: 716400
+      decay_steps: 635400
       alpha: 0.01
     momentum: 0.937
     weight_decay: 0.0005
