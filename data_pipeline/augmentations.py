@@ -571,7 +571,9 @@ def clip_polygon_coords(polygons: tf.Tensor) -> tf.Tensor:
     return tf.where(valid, clipped, polygons)
 
 
-def resample_polygons(polygons: tf.Tensor, max_points: int) -> tf.Tensor:
+def resample_polygons(
+    polygons: tf.Tensor, max_points: int, compact: bool = False
+) -> tf.Tensor:
     """Resample each polygon to a fixed ``max_points`` vertices (flat xy pairs).
 
     Apply this at DECODE time (before any augmentation), where the valid vertices
@@ -589,12 +591,24 @@ def resample_polygons(polygons: tf.Tensor, max_points: int) -> tf.Tensor:
         order (the per-bin max radius is preserved to within sampling resolution).
       - 0 valid vertices             → all -1.
 
+    The even-spaced gather assumes the valid vertices are a contiguous PREFIX. When
+    ``compact=True`` the function first compacts scattered sentinels to a prefix via
+    a stable argsort; pass it ONLY from callers that can hand interior -1 holes
+    (the copy-paste path, which invalidates out-of-bounds vertices in place). At
+    decode time the TFDS contract already guarantees a prefix, so the default
+    ``compact=False`` skips the O(P log P) sort — on the decode-time shape
+    (``P``≈5470) that sort dominates and is pure overhead (it is a no-op there:
+    sorting an all-False-then-all-True key preserves order). See the copy-paste
+    caller for the corruption the sort prevents when sentinels ARE scattered.
+
     Verified to leave the ``_preprocess_polygons_v2`` radial target unchanged for
     polygons with <= max_points vertices, and within sampling error otherwise.
 
     Args:
         polygons:   float32 [N, F] flat xy pairs, -1 padded (valid = prefix).
         max_points: target vertex count K; output width is 2*K.
+        compact:    if True, compact scattered sentinels to a prefix first (needed
+                    only when valid vertices may be interleaved with -1 holes).
 
     Returns:
         float32 [N, 2*max_points].
@@ -605,19 +619,18 @@ def resample_polygons(polygons: tf.Tensor, max_points: int) -> tf.Tensor:
     P = tf.shape(pts)[1]
     valid = pts[:, :, 0] > -1.0                                      # [N, P] — sentinel is -1.0 (design_register entry 10)
 
-    # Compact the valid vertices to a contiguous prefix before sampling. At decode
-    # time the valid vertices are ALREADY a prefix, so this sort is a no-op (a
-    # stable sort of an all-False-then-all-True key preserves order) and the
-    # radial target is byte-identical to before. But copy-paste can hand us
-    # SCATTERED sentinels: it invalidates out-of-bounds vertices in place via
-    # tf.where(keep, ...), leaving -1 holes interleaved with valid vertices. The
-    # old `counts`/`cmax` logic assumed a prefix and treated `cmax = counts - 1`
-    # as the last valid index, so the even-spaced gather indices [0 .. counts-1]
-    # would straddle those interior -1 holes — pulling sentinels INTO the
-    # resampled output and dropping real far-side vertices. Compacting first makes
-    # the prefix assumption hold for every caller.
-    order = tf.argsort(tf.cast(~valid, tf.int32), axis=1, stable=True)  # valid first
-    pts = tf.gather(pts, order, batch_dims=1)                       # [N, P, 2] compacted
+    # Compact the valid vertices to a contiguous prefix before sampling. Only the
+    # copy-paste path (compact=True) needs this: it invalidates out-of-bounds
+    # vertices in place via tf.where(keep, ...), leaving -1 holes interleaved with
+    # valid vertices. Without compaction the `counts`/`cmax` logic assumes a prefix
+    # and treats `cmax = counts - 1` as the last valid index, so the even-spaced
+    # gather indices [0 .. counts-1] straddle those interior -1 holes — pulling
+    # sentinels INTO the resampled output and dropping real far-side vertices.
+    # At decode time the vertices are ALREADY a prefix (TFDS contract), so the sort
+    # is a no-op and is skipped (compact=False) to avoid its O(P log P) cost.
+    if compact:
+        order = tf.argsort(tf.cast(~valid, tf.int32), axis=1, stable=True)  # valid first
+        pts = tf.gather(pts, order, batch_dims=1)                   # [N, P, 2] compacted
 
     counts = tf.reduce_sum(tf.cast(valid, tf.int32), axis=1)        # [N] valid count
     cmax = tf.cast(tf.maximum(counts - 1, 0), tf.float32)           # last valid index

@@ -248,7 +248,10 @@ class CopyAndPasteModule:
             cur_cols = tf.shape(new_pts)[1]
             new_pts = tf.cond(
                 cur_cols >= n_poly_cols,
-                lambda: resample_polygons(new_pts, n_poly_cols // 2),
+                # compact=True: the in-bounds invalidation above (tf.where → -1)
+                # can leave scattered sentinels, so the valid vertices are NOT a
+                # prefix here and must be compacted before the even-spaced resample.
+                lambda: resample_polygons(new_pts, n_poly_cols // 2, compact=True),
                 lambda: tf.pad(
                     new_pts,
                     [[0, 0], [0, n_poly_cols - cur_cols]],
