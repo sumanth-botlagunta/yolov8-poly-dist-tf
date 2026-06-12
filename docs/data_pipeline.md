@@ -91,7 +91,8 @@ training step; each sub-stream also prefetches internally.
 |-------|--------|-------|
 | TFDS input | `[N, max_vertices+2]` flat xy, normalized, **-1 padded** | both x and y are -1 for an invalid/padded pair |
 | PolyYOLO target (loss) | `[N, 72] = [dist, angle, conf] × 24` interleaved | `tal_loss.py:_polygon_loss` reads `0::3`=dist, `1::3`=sub-bin angle offset, `2::3`=conf |
-| Eval Cartesian GT | `[N, max_vertices, 2]` yx denormalized | for mask IoU |
+| Cartesian (transient, per matched pair) | `[K, 2]` pixel `(x, y)` | reconstructed from the radial format only at IoU time (`eval/polygon_metrics.py:_radial_to_cartesian`), conf-gated to `K ≤ 24` occupied bins; never persisted |
+| Eval GT | `[N, 72]` radial (same as training GT) | GT is **not** converted to Cartesian — it stays in the radial format through eval |
 
 **Radial encoding** (`_preprocess_polygons_v2`): for each of 24 angle bins, find valid vertices
 whose angle from the box center falls in the bin and take the max-radius one; `dist` = that
@@ -139,8 +140,10 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
   making it easy to tell whether the bottleneck is in tf.data or on the GPU.
 - `parser.resample_points: 64` (both the detection and distance streams in
   `yolov8_poly_dist.yaml`) resamples polygons to 64 vertices at decode, so every downstream
-  stage carries `[N, 128]` instead of the raw stored width (up to `[N, 10940]`). The 24-bin
-  radial target is exact for ≤64-vertex polygons (tests pin this).
+  stage carries `[N, 128]` instead of the raw stored width (up to `[N, 10940]`). Arc-length
+  resampling interpolates 64 points uniformly along the closed contour (interpolating on edges,
+  NOT subsampling original vertices), so for polygons with more than 64 original vertices the
+  radial target is within sampling tolerance, not exact; it is exact only for ≤64-vertex polygons.
 
 ## Polygon-GT correctness notes (train-semantics)
 

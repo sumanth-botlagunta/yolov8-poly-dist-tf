@@ -93,7 +93,7 @@ TensorBoard events are written to `output_dir/tb_events/`.
 tensorboard --logdir /path/to/output/tb_events
 ```
 
-Auto-resume on preemption: the trainer restores from the latest checkpoint in `output_dir` at startup with no extra flags.
+Auto-resume on preemption: at startup the trainer restores from the newest checkpoint across both `output_dir/` (epoch-boundary saves) and `output_dir/resume/` (mid-epoch interruption saves, rotated, max 2); whichever has the higher global step wins. No extra flags needed.
 
 ### Performance: mixed precision & XLA
 
@@ -316,9 +316,10 @@ trainer:
 | TFDS input | `[N, max_vertices+2]` xy normalized, padded with -1 | Raw dataset format |
 | PolyYOLO (training GT) | `[N, 72]` = `[dist, angle_norm, conf] × 24` interleaved | Origin implicit (cx, cy of box); see `losses/tal_loss.py:_polygon_loss` |
 | Prediction output | `[B, max_det, 24, 3]` = `(conf, dist, angle)` all activated | From detection_generator — conf is sigmoid, apply threshold directly |
-| Cartesian (eval) | `[N, max_vertices, 2]` yx denormalized | For mask IoU |
+| Cartesian (transient, per matched pair) | `[K, 2]` pixel `(x, y)` | Reconstructed from the radial format only at IoU time (`eval/polygon_metrics.py:_radial_to_cartesian`), conf-gated to `K ≤ 24` occupied bins; never persisted |
+| Eval GT | `[N, 72]` radial (same as training GT) | GT is **not** converted to Cartesian — it stays in the radial `[dist, angle, conf] × 24` format through eval |
 
-Vertex angles are fixed: `θᵢ = i × 2π/24` for i = 0…23. Distance regressor predicts the radial distance at each angle; angle head selects the dominant bin via softmax.
+Vertex angles are fixed: `θᵢ = i × 2π/24` for i = 0…23. The distance regressor predicts the radial distance at each angle; the angle head predicts a continuous sub-bin offset `δ ∈ [0,1)` per bin via BCE on `sigmoid(pred)`, where `vertex_angle = (i + sigmoid(pred)) × angle_step`.
 
 ---
 

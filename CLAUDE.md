@@ -65,7 +65,7 @@ Polygons go through three formats across the pipeline:
 |-------|--------|
 | TFDS input | `[N, max_vertices+2]` flat xy normalized, padded with -1 |
 | PolyYOLO target (training/loss) | `[N, 72]` = `[dist, angle, conf] × 24` (interleaved; `angle` = sub-bin offset in `[0,1)`; see `losses/tal_loss.py:_polygon_loss`) |
-| Cartesian (decode/eval/viz) | `[24, 2]` pixel `(x, y)` vertices reconstructed from the radial format (`(i + angle)·angle_step`, conf-gated ≥ 0.4) — eval GT labels themselves stay in the radial `[N, 72]` format |
+| Cartesian (decode/eval/viz) | `[M, 2]` pixel `(x, y)` vertices after conf-gate ≥ 0.4 (M ≤ 24 occupied bins) reconstructed from the radial format (`(i + angle)·angle_step`); the pre-gate intermediate is `[24, 2]` — eval GT labels themselves stay in the radial `[N, 72]` format |
 
 ### Model Heads
 
