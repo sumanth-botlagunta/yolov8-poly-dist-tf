@@ -583,15 +583,28 @@ def resample_polygons(
     width (often thousands of vertices) is far more than the 24-bin PolyYOLO target
     needs.
 
-    Algorithm (fully vectorized, graph-mode safe): take ``max_points`` indices
-    evenly spaced along each polygon's valid prefix and gather them.
-      - <= max_points valid vertices → loss-free (every vertex is included; some
-        are duplicated, which does not change the radial target).
-      - >  max_points valid vertices → max_points evenly-spaced vertices in stored
-        order (the per-bin max radius is preserved to within sampling resolution).
-      - 0 valid vertices             → all -1.
+    Algorithm — UNIFORM ARC-LENGTH RESAMPLING along the CLOSED contour (fully
+    vectorized, graph-mode safe). The valid vertices ``v_0..v_{c-1}`` (a contiguous
+    prefix after the optional ``compact`` pre-step) are treated as a closed polygon
+    with wraparound edge ``v_{c-1}→v_0``. We walk the perimeter ``L`` and place ``K``
+    samples at arc positions ``t_k = k·L/K`` (k=0..K-1; ``t_0 = 0`` keeps the first
+    original vertex exactly), INTERPOLATING new points on the edges via
+    ``tf.searchsorted`` over the cumulative segment lengths + linear interpolation.
 
-    The even-spaced gather assumes the valid vertices are a contiguous PREFIX. When
+    This DIFFERS from the previous index-subsampling: that approach only ever
+    *selected* existing vertices, so a rectangle annotated with 4 corners stayed 4
+    points and the 24-bin radial target (``yolo_parser._preprocess_polygons_v2``)
+    occupied ≤4 bins → a diamond, not the rectangle. Arc-length resampling creates
+    points ALONG edges, so long edges crossing several angular bins now populate
+    those bins. The radial target therefore CHANGES for sparse-vertex polygons (that
+    is the fix); for dense uniform contours it is within sampling tolerance of the
+    old index-subsampling behavior.
+      - c == 0 valid vertices → all -1.
+      - c == 1                → that point repeated K times (degenerate, no NaN).
+      - c >= 2                → K points uniformly spaced by arc length around the
+                                closed loop; every output point lies ON an input edge.
+
+    The sampling assumes the valid vertices are a contiguous PREFIX. When
     ``compact=True`` the function first compacts scattered sentinels to a prefix via
     a stable argsort; pass it ONLY from callers that can hand interior -1 holes
     (the copy-paste path, which invalidates out-of-bounds vertices in place). At
@@ -600,9 +613,6 @@ def resample_polygons(
     (``P``≈5470) that sort dominates and is pure overhead (it is a no-op there:
     sorting an all-False-then-all-True key preserves order). See the copy-paste
     caller for the corruption the sort prevents when sentinels ARE scattered.
-
-    Verified to leave the ``_preprocess_polygons_v2`` radial target unchanged for
-    polygons with <= max_points vertices, and within sampling error otherwise.
 
     Args:
         polygons:   float32 [N, F] flat xy pairs, -1 padded (valid = prefix).
@@ -613,6 +623,7 @@ def resample_polygons(
     Returns:
         float32 [N, 2*max_points].
     """
+    K = max_points
     N = tf.shape(polygons)[0]
     F = tf.shape(polygons)[1]
     pts = tf.reshape(polygons, [N, F // 2, 2])                       # [N, P, 2]
@@ -622,25 +633,80 @@ def resample_polygons(
     # Compact the valid vertices to a contiguous prefix before sampling. Only the
     # copy-paste path (compact=True) needs this: it invalidates out-of-bounds
     # vertices in place via tf.where(keep, ...), leaving -1 holes interleaved with
-    # valid vertices. Without compaction the `counts`/`cmax` logic assumes a prefix
-    # and treats `cmax = counts - 1` as the last valid index, so the even-spaced
-    # gather indices [0 .. counts-1] straddle those interior -1 holes — pulling
-    # sentinels INTO the resampled output and dropping real far-side vertices.
-    # At decode time the vertices are ALREADY a prefix (TFDS contract), so the sort
-    # is a no-op and is skipped (compact=False) to avoid its O(P log P) cost.
+    # valid vertices. Without compaction the prefix assumption below is violated and
+    # interior -1 holes are treated as real vertices (sentinel coords poison the
+    # interpolation). At decode time the vertices are ALREADY a prefix (TFDS
+    # contract), so the sort is a no-op and is skipped (compact=False) to avoid its
+    # O(P log P) cost. See the copy-paste caller for the corruption it prevents.
     if compact:
         order = tf.argsort(tf.cast(~valid, tf.int32), axis=1, stable=True)  # valid first
         pts = tf.gather(pts, order, batch_dims=1)                   # [N, P, 2] compacted
+        valid = pts[:, :, 0] > -1.0                                 # [N, P] recompute after sort
 
-    counts = tf.reduce_sum(tf.cast(valid, tf.int32), axis=1)        # [N] valid count
-    cmax = tf.cast(tf.maximum(counts - 1, 0), tf.float32)           # last valid index
-    t = tf.linspace(0.0, 1.0, max_points)                          # [K]
-    idx = tf.round(t[tf.newaxis, :] * cmax[:, tf.newaxis])         # [N, K]
-    idx = tf.clip_by_value(tf.cast(idx, tf.int32), 0, tf.maximum(P - 1, 0))
-    out = tf.gather(pts, idx, batch_dims=1)                         # [N, K, 2]
-    has = counts[:, tf.newaxis, tf.newaxis] > 0
-    out = tf.where(has, out, tf.fill(tf.shape(out), -1.0))          # empty rows → -1
-    return tf.reshape(out, [N, max_points * 2])
+    counts = tf.reduce_sum(tf.cast(valid, tf.int32), axis=1)        # [N] valid count c per row
+    Pf = tf.maximum(P, 1)
+
+    # --- Closed-loop segment geometry ---------------------------------------
+    # Segment i runs v_i → next(i) over the CLOSED valid loop of c vertices:
+    #   next(i) = v_{i+1}  for 0 <= i < c-1   (interior edge), and
+    #   next(i) = v_0      for i == c-1        (wrap edge that closes the loop).
+    # Segments with i >= c are FAKE (their start vertex is padding) and get length 0.
+    # The wrap is to v_0 (loop start), NOT v_c (which is -1 padding) — so we must
+    # build next(i) explicitly rather than a plain roll.
+    idx_row = tf.broadcast_to(tf.range(P)[tf.newaxis, :], [N, P])  # [N, P]
+    c_row = counts[:, tf.newaxis]                                   # [N, 1]
+    # For each segment, the index of its END vertex in the closed valid loop.
+    is_last = tf.equal(idx_row, tf.maximum(c_row - 1, 0))          # [N, P] i == c-1
+    end_idx = tf.where(is_last, tf.zeros_like(idx_row), idx_row + 1)  # [N, P] wrap last→0
+    end_idx = tf.clip_by_value(end_idx, 0, tf.maximum(P - 1, 0))
+    nxt = tf.gather(pts, end_idx, batch_dims=1)                    # [N, P, 2] next(i)
+    # A segment is REAL iff its start vertex is valid AND the loop has >= 2 vertices
+    # (a single-vertex loop has no edges; its self-wrap stays length 0). For i < c-1
+    # both endpoints are real interior vertices; for i == c-1 the end wraps to v_0.
+    seg_real = tf.logical_and(idx_row < c_row, c_row >= 2)          # [N, P]
+    seg_vec = nxt - pts                                             # [N, P, 2]
+    seg_len = tf.sqrt(tf.reduce_sum(seg_vec * seg_vec, axis=-1) + 1e-20)  # [N, P]
+    seg_len = tf.where(seg_real, seg_len, tf.zeros_like(seg_len))   # fake segments → 0
+
+    perim = tf.reduce_sum(seg_len, axis=1)                          # [N] L per row
+    # Exclusive cumulative length: cum[i] = sum of seg_len[0..i-1] = arc dist to v_i.
+    cum_incl = tf.cumsum(seg_len, axis=1)                           # [N, P] inclusive
+    cum = cum_incl - seg_len                                        # [N, P] exclusive (arc start of seg i)
+
+    # --- Target arc positions t_k = k·L/K ------------------------------------
+    k = tf.cast(tf.range(K), tf.float32)[tf.newaxis, :]            # [1, K]
+    t = k * (perim[:, tf.newaxis] / tf.cast(K, tf.float32))        # [N, K] in [0, L)
+
+    # Locate each t_k's segment: largest i with cum[i] <= t_k. searchsorted on the
+    # inclusive cumulative lengths (side='right') gives that segment index directly.
+    seg_idx = tf.searchsorted(cum_incl, t, side="right")           # [N, K] in [0, P]
+    # Clamp to the last REAL segment (c-1), never a fake/padding segment. For a
+    # zero-perimeter row (c <= 1) every t_k == 0 and searchsorted on the all-zero
+    # cumulative returns P; clamping to c-1 (==0 for c==1) lands on segment 0 = v_0,
+    # which is exactly the "repeat v_0" degenerate behavior the spec wants. The
+    # global clamp to P-1 guards the c==0 row (whose output is overwritten with -1).
+    last_real = tf.clip_by_value(counts - 1, 0, tf.maximum(P - 1, 0))  # [N]
+    seg_idx = tf.minimum(seg_idx, last_real[:, tf.newaxis])        # [N, K]
+    seg_idx = tf.clip_by_value(seg_idx, 0, tf.maximum(P - 1, 0))    # clamp to valid range
+
+    # Linear interpolation within the located segment.
+    seg_start = tf.gather(cum, seg_idx, batch_dims=1)              # [N, K] arc at seg start
+    seg_l = tf.gather(seg_len, seg_idx, batch_dims=1)             # [N, K] this segment length
+    p0 = tf.gather(pts, seg_idx, batch_dims=1)                     # [N, K, 2]
+    v = tf.gather(seg_vec, seg_idx, batch_dims=1)                  # [N, K, 2]
+    # Safe division: zero-length (degenerate / collinear-duplicate / fake) segments
+    # give frac 0 → output stays at p0, no NaN.
+    frac = tf.math.divide_no_nan(t - seg_start, seg_l)            # [N, K]
+    frac = tf.clip_by_value(frac, 0.0, 1.0)
+    out = p0 + frac[:, :, tf.newaxis] * v                          # [N, K, 2]
+
+    # --- Degenerate row handling --------------------------------------------
+    # c == 0 → all -1 sentinel. c == 1 → no real segment (perim 0), so every t_k = 0
+    # lands on segment 0 with frac 0 → out == v_0 repeated K times (the spec).
+    has = counts[:, tf.newaxis, tf.newaxis] > 0                    # [N, 1, 1]
+    out = tf.where(has, out, tf.fill(tf.shape(out), -1.0))         # empty rows → -1
+    _ = Pf  # P>=1 guaranteed by callers; kept explicit for graph shape clarity
+    return tf.reshape(out, [N, K * 2])
 
 
 # ---------------------------------------------------------------------------
