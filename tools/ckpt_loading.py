@@ -1,15 +1,16 @@
 """Shared checkpoint-loading helper for eval / export tools.
 
-The trainer writes two kinds of checkpoints:
-  - periodic ``ckpt-N``: ``model/`` holds the RAW (live) weights and the EMA
-    shadow weights live under ``optimizer/`` (the EMA wrapper).
-  - ``best_*/ckpt``: the trainer swaps EMA in before writing, so ``model/``
-    already holds the EMA weights and there is no ``optimizer/`` subtree.
+The trainer writes two kinds of checkpoints, and BOTH store the RAW (live)
+weights under ``model/`` with the EMA shadow weights under ``optimizer/`` (the
+EMA wrapper):
+  - periodic ``ckpt-N``
+  - ``best_*/ckpt`` (also carries ``global_step`` / ``completed_epochs`` so it is
+    a valid training-resume source, not inference-only).
 
 EMA weights are what the trainer validates with and what should be deployed.
 A plain ``Checkpoint(model=model).restore(...)`` only reads ``model/``, so it
-silently loads RAW weights from a periodic checkpoint (wrong) but EMA weights
-from a best_ checkpoint (right) — same call, opposite correctness.
+silently loads the RAW (non-averaged) weights from either checkpoint — the worse
+inference state.
 
 ``restore_eval_weights`` removes that footgun: it detects whether the checkpoint
 carries EMA shadows and, if so, restores the EMA wrapper and swaps the shadows
