@@ -45,6 +45,30 @@ class TestConfigLoading(unittest.TestCase):
             cfg.trainer.train_steps,
         )
 
+    def test_validation_batch_size_consistent_across_tiers(self):
+        """All three tiers must use the same validation batch size.
+
+        bbox/poly previously shipped validation_data.global_batch_size=2 while
+        poly_dist used 64, so the lower tiers ran ~32x more validation forward
+        passes per epoch over the same val set — a large, silent per-epoch tax.
+        """
+        sizes = {
+            tier: load_config(
+                os.path.join(_EXP_DIR, f"yolov8_{tier}.yaml")
+            ).task.validation_data.global_batch_size
+            for tier in ("bbox", "poly", "poly_dist")
+        }
+        self.assertEqual(
+            sizes["bbox"], sizes["poly_dist"],
+            f"bbox val batch {sizes['bbox']} != poly_dist {sizes['poly_dist']}",
+        )
+        self.assertEqual(
+            sizes["poly"], sizes["poly_dist"],
+            f"poly val batch {sizes['poly']} != poly_dist {sizes['poly_dist']}",
+        )
+        # Pin the agreed value so a regression to 2 is caught.
+        self.assertEqual(sizes["poly_dist"], 64)
+
     def test_base_include_overrides_and_inherits(self):
         base = load_config(os.path.join(_EXP_DIR, "yolov8_poly_dist.yaml"))
         bf16 = load_config(os.path.join(_EXP_DIR, "yolov8_poly_dist_bf16.yaml"))

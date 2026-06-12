@@ -230,9 +230,14 @@ class DataConfig:
     drop_remainder: bool = True
     tfds_sampling_weights: Optional[List[float]] = None
     prob_copy_n_paste: float = 0.2
-    tfds_for_cnp: Optional[str] = "cleaner_copy_paste:1.0.0"
-    tfds_for_cnp_split: Optional[str] = "train_f"
-    seed: Optional[int] = 1000
+    # Defaults are None to match yaml_loader._build_data_config({}) — a bare
+    # DataConfig() must behave identically to an empty YAML. Non-None defaults
+    # here previously made direct construction silently enable copy-paste
+    # (truthy tfds_for_cnp) and seeded shuffling (seed=1000) while the YAML path
+    # left them off. The shipped experiment YAMLs set these explicitly.
+    tfds_for_cnp: Optional[str] = None
+    tfds_for_cnp_split: Optional[str] = None
+    seed: Optional[int] = None
     with_polygons: bool = True
     with_distance: bool = False
     poly_eval_gt_policy: str = "polyyolo"
