@@ -324,8 +324,11 @@ class V8ParserExtended(Parser):
         # Reshape polygons to [N, n_pairs, 2] (x, y); -1 auto-infers n_pairs.
         pts = tf.reshape(polygons, [N, -1, 2])
 
-        # Valid vertices: x >= 0 (both x and y are -1 for invalid pairs)
-        valid = pts[:, :, 0] >= 0.0  # [N, n_pairs]
+        # Valid vertices: x > -1.0 — the reserved polygon sentinel is exactly -1.0
+        # (design_register entry 10). A legitimately-negative canvas coordinate
+        # (mosaic overflow that survived clip-to-edge) is a REAL vertex, not padding,
+        # so it must contribute to the radial target. `>= 0.0` would silently drop it.
+        valid = pts[:, :, 0] > -1.0  # [N, n_pairs]
 
         # Relative positions from box center
         dx = pts[:, :, 0] - cx[:, tf.newaxis]  # [N, n_pairs]
@@ -456,7 +459,7 @@ class V8ParserExtended(Parser):
         # [N, max_vertices+2] flat (x, y) pairs, -1 padded for invalid vertices.
         n_inst = tf.shape(polygons)[0]
         pts    = tf.reshape(polygons, [n_inst, -1, 2])        # [N, P, 2] (x, y)
-        valid  = pts[:, :, 0] >= 0.0                           # [N, P]
+        valid  = pts[:, :, 0] > -1.0                           # [N, P] — sentinel is -1.0 (design_register entry 10)
         px = pts[:, :, 0] * new_w_f / w_out_f + pad_lft_f / w_out_f
         py = pts[:, :, 1] * new_h_f / h_out_f + pad_top_f / h_out_f
         neg1 = tf.fill(tf.shape(px), -1.0)

@@ -116,7 +116,13 @@ def _scale_box_poly_to_canvas(
     N = tf.shape(polys)[0]
     max_v = tf.shape(polys)[1]
     pts = tf.reshape(polys, [N, max_v // 2, 2])
-    valid = pts[:, :, 0] >= 0.0
+    # Source validity: -1.0 is the reserved polygon sentinel (design_register entry
+    # 10). A vertex with x strictly > -1.0 is a REAL vertex even when negative — a
+    # mosaic-cell placement can legitimately map an in-view object's vertex to a
+    # slightly-negative input-normalized coordinate. Using `> -1.0` (not `>= 0.0`)
+    # carries that vertex into the canvas instead of overwriting it with -1.0; the
+    # subsequent random_perspective clips it to the output edge.
+    valid = pts[:, :, 0] > -1.0
     x_c = (pts[:, :, 0] * nw_f + padw_f) / W2_f
     y_c = (pts[:, :, 1] * nh_f + padh_f) / H2_f
     neg1 = tf.fill(tf.shape(x_c), -1.0)

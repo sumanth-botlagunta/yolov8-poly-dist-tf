@@ -403,8 +403,10 @@ def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
         dummy_distance=p.get("dummy_distance", True),
         with_polygons=p.get("with_polygons", True),
         albumentations_frequency=p.get("albumentations_frequency", 1.0),
-        aug_rand_angle=p.get("aug_rand_angle", 0.0),
-        aug_rand_perspective=p.get("aug_rand_perspective", 0.0),
+        # NOTE: aug_rand_angle / aug_rand_perspective were dead config — parsed but
+        # never forwarded to V8ParserExtended nor applied (geometry lives in the
+        # mosaic-stage random_perspective: degrees/shear/translate). Removed; a stray
+        # key in an old YAML is silently ignored.
         jitter=p.get("jitter", 0.0),
         random_pad=p.get("random_pad", False),
         random_rotate=p.get("random_rotate", False),
