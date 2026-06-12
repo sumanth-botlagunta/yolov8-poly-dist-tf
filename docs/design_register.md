@@ -111,3 +111,19 @@ vertex; `== -1.0` means "no vertex here." Code that scans for valid vertices mus
 `> -1.0` test, **not** `>= 0.0` — a legitimately-negative canvas coordinate is a valid
 vertex, not a sentinel. The `-1.0` value is reserved and must not be produced by any
 transform as a real coordinate.
+
+## 11. ACSL config knob is parsed but not implemented (fails loud)
+
+`AcslConfig` (`configs/model_config.py`) and its YAML block (`acsl: { use_acsl, bg_*_ratio,
+common_cls, frequent_cls, rare_cls, threshold }`) describe an Adaptive Class Suppression
+Loss weighting scheme. The config is fully parsed (`configs/yaml_loader.py`), but the
+weighting math is **not implemented** in `TaskAlignedLossExtended._class_loss`. Choosing a
+specific ACSL formulation and re-calibrating `cls_gain` against it is a training-semantics
+decision, not a bug fix, so it is intentionally left unimplemented.
+
+To prevent the knob from silently lying (its previous behavior: `use_acsl: true` trained
+identically to `false`), `TaskAlignedLossExtended.__init__` now **raises
+NotImplementedError when `use_acsl=True`**, and `train/task.py:build_losses()` passes the
+config value through so the guard is actually reached. All shipped experiment YAMLs set
+`use_acsl: false`, so this changes no current training run. When ACSL is implemented,
+replace the raise with the weighting and update this entry.

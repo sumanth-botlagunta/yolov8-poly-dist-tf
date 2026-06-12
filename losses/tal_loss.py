@@ -148,8 +148,22 @@ class TaskAlignedLossExtended:
         self.use_acsl       = use_acsl
         self.num_vertices   = 360 // angle_step  # = 24
 
+        # ACSL (Adaptive Class Suppression Loss) is parsed from config (AcslConfig)
+        # but the weighting math is NOT implemented here. The flag used to be a
+        # silent no-op: a user could set `use_acsl: true` in YAML and train as if
+        # it had taken effect. Fail loud instead so the dead knob can never lie.
+        # See docs/design_register.md entry "ACSL config knob is not implemented".
+        if use_acsl:
+            raise NotImplementedError(
+                "use_acsl=True is not supported: the ACSL class-suppression "
+                "weighting is parsed from config (AcslConfig) but not implemented "
+                "in TaskAlignedLossExtended._class_loss. Set acsl.use_acsl=false "
+                "(the default) until the weighting is implemented. See "
+                "docs/design_register.md."
+            )
+
         self._assigner_fn = TaskAlignedAssigner(
-            topk=topk, alpha=tal_alpha, beta=tal_beta
+            topk=topk, alpha=tal_alpha, beta=tal_beta, angle_step=angle_step
         )
         # DFL bin indices: [0, 1, ..., reg_max-1]
         self._dfl_bins = tf.cast(tf.range(reg_max), tf.float32)
@@ -308,6 +322,7 @@ class TaskAlignedLossExtended:
         target_polygons: tf.Tensor,
         fg_mask: tf.Tensor,
         num_objs: tf.Tensor,
+        ignore_bg: tf.Tensor,
     ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Combined PolyYOLO polygon loss (angle + dist + conf).
 
@@ -317,6 +332,16 @@ class TaskAlignedLossExtended:
                    in [0, 1) on bins that hold a vertex, 0.0 elsewhere.
             conf:  1.0 if a valid vertex was assigned to this bin (the validity
                    mask used by the angle/dist losses).
+
+        ``ignore_bg`` ([B] int) marks distance-stream images (ignore_bg=1) that
+        carry NO polygon GT — their ``target_polygons`` is all-zero, so every
+        conf bin reads 0. The conf loss trains on ALL bins (negative signal on
+        empty bins), so without this guard a distance-stream foreground anchor
+        (a real object) would be trained to emit conf≈0 on every vertex, which
+        is wrong: those rows have no polygon label, not an empty polygon. We
+        therefore zero the polygon loss on ignore_bg=1 rows entirely (angle/dist
+        already contribute zero there since their vertex mask is empty, but conf
+        would not). This mirrors the ignore_bg guard in ``_class_loss``.
 
         All three normalize by num_objs. Angle and dist average over the VALID
         vertices only (masked by conf). Conf averages over ALL bins to provide a
@@ -335,14 +360,21 @@ class TaskAlignedLossExtended:
         conf         = target_polygons[:, :, 2::3]   # [B, A, 24] — per-bin validity
         vertex_mask  = conf                          # valid-vertex mask for angle/dist
 
+        # ignore_bg=1 rows (distance stream) carry no polygon GT: drop them from
+        # the foreground mask so the all-bins conf loss does not push their real
+        # objects' conf to 0. ignore_bg=0 rows keep their full fg_mask.
+        keep_row    = 1.0 - tf.cast(ignore_bg, tf.float32)[:, tf.newaxis]  # [B, 1]
+        poly_fg     = tf.cast(fg_mask, tf.float32) * keep_row              # [B, A] float
+        poly_fg_b   = poly_fg > 0.5                                        # [B, A] bool
+
         angle_loss = polygon_angle_loss(
-            pd_poly_angle, target_angle, vertex_mask, fg_mask, num_objs
+            pd_poly_angle, target_angle, vertex_mask, poly_fg_b, num_objs
         )
         dist_loss_val = polygon_dist_loss(
-            pd_poly_dist, target_dist, vertex_mask, fg_mask, num_objs
+            pd_poly_dist, target_dist, vertex_mask, poly_fg_b, num_objs
         )
         conf_loss_val = polygon_conf_loss(
-            pd_poly_conf, conf, vertex_mask, fg_mask, num_objs
+            pd_poly_conf, conf, vertex_mask, poly_fg_b, num_objs
         )
 
         poly_total = self.poly_gain * (
@@ -509,9 +541,9 @@ class TaskAlignedLossExtended:
             pd_box_raw, anc_strides, anc_points,
         )
 
+        ignore_bg = batch.get("ignore_bg", tf.zeros([B_val], dtype=tf.int64))
         cls_loss = self._class_loss(
-            pd_cls, target_scores, target_scores_sum, fg_mask,
-            batch.get("ignore_bg", tf.zeros([B_val], dtype=tf.int64)),
+            pd_cls, target_scores, target_scores_sum, fg_mask, ignore_bg,
         )
 
         dist_loss_val = tf.constant(0.0)
@@ -527,7 +559,7 @@ class TaskAlignedLossExtended:
         if self.with_polygons and pd_poly_angle is not None:
             poly_loss_val, poly_angle_l, poly_dist_l, poly_conf_l = self._polygon_loss(
                 pd_poly_angle, pd_poly_dist, pd_poly_conf,
-                target_polygons, fg_mask, num_objs,
+                target_polygons, fg_mask, num_objs, ignore_bg,
             )
 
         # ── 6. Apply gains and aggregate ──────────────────────────────
