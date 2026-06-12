@@ -288,7 +288,11 @@ class InputReader:
                 # shuffle (seed) and the cnp source shuffle (seed+1) so the three
                 # shuffle stages do not share an RNG stream (correlated permutations
                 # across stages would partially undo each other's decorrelation).
-                .shuffle(128, seed=self._seed + 2, reshuffle_each_iteration=True)
+                .shuffle(
+                    128,
+                    seed=None if self._seed is None else self._seed + 2,
+                    reshuffle_each_iteration=True,
+                )
             )
 
         if self._parser is not None:
@@ -417,7 +421,11 @@ class InputReader:
         # The cnp stream is zipped with the detection stream for copy-paste; sharing a
         # seed would lock the cnp permutation in lockstep with the detection one,
         # pairing the same background/paste-object indices every epoch.
-        ds = ds.shuffle(500, seed=self._seed + 1, reshuffle_each_iteration=True).repeat()
+        ds = ds.shuffle(
+            500,
+            seed=None if self._seed is None else self._seed + 1,
+            reshuffle_each_iteration=True,
+        ).repeat()
         if self._cnp_decoder is not None:
             ds = ds.map(self._cnp_decoder.decode, num_parallel_calls=_AUTOTUNE)
         return ds

@@ -127,12 +127,42 @@ class TestDistinctShuffleSeeds(unittest.TestCase):
         )
         with open(ir_path) as f:
             src = f.read()
-        # detection source shuffle: seed=self._seed (base)
+        # detection source shuffle: seed=self._seed (base, None-safe)
         self.assertIn("seed=self._seed, reshuffle_each_iteration=True", src)
-        # cnp source shuffle: seed=self._seed+1
-        self.assertIn("seed=self._seed + 1, reshuffle_each_iteration=True", src)
-        # post-unbatch shuffle: seed=self._seed+2
-        self.assertIn("seed=self._seed + 2, reshuffle_each_iteration=True", src)
+        # cnp source shuffle: seed=self._seed+1, GUARDED so seed=None stays None
+        # (bare `self._seed + 1` raises TypeError when seed is None).
+        self.assertIn("seed=None if self._seed is None else self._seed + 1", src)
+        # post-unbatch shuffle: seed=self._seed+2, likewise guarded.
+        self.assertIn("seed=None if self._seed is None else self._seed + 2", src)
+        # The unguarded arithmetic must NOT reappear (regression guard).
+        self.assertNotIn("seed=self._seed + 1,", src)
+        self.assertNotIn("seed=self._seed + 2,", src)
+
+
+class TestSeedNoneDerivationDoesNotCrash(unittest.TestCase):
+    """Behavioral pin for the seed=None TypeError. The constructor declares
+    `seed: Optional[int] = None`; the cnp/post-unbatch shuffle stages derive their
+    seed from it. The bare `self._seed + N` form crashes with TypeError when seed is
+    None. This replicates the exact guarded derivation used in input_reader so the
+    failure mode is exercised without importing tensorflow_datasets."""
+
+    @staticmethod
+    def _derive(seed, offset):
+        # Mirror of input_reader.py: `None if self._seed is None else self._seed + N`.
+        return None if seed is None else seed + offset
+
+    def test_seed_none_propagates_as_none(self):
+        self.assertIsNone(self._derive(None, 1))
+        self.assertIsNone(self._derive(None, 2))
+
+    def test_seed_set_offsets_remain_distinct(self):
+        self.assertEqual(self._derive(7, 1), 8)
+        self.assertEqual(self._derive(7, 2), 9)
+
+    def test_bare_arithmetic_would_crash_on_none(self):
+        # Documents the original failure: the unguarded form raises TypeError.
+        with self.assertRaises(TypeError):
+            _ = None + 1  # noqa: E711 — the exact crash the guard prevents
 
 
 class TestMosaicCenterDefault(unittest.TestCase):

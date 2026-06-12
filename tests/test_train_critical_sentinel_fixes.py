@@ -24,6 +24,7 @@ import tensorflow as tf
 
 from data_pipeline.yolo_parser import V8ParserExtended
 from data_pipeline.mosaic import _scale_box_poly_to_canvas
+from data_pipeline.augmentations import clip_polygon_coords
 from configs.model_config import ParserConfig
 from configs.yaml_loader import load_config_from_dict
 
@@ -92,6 +93,27 @@ def test_mosaic_canvas_carries_negative_vertex_not_sentinel():
     assert abs(pts[1, 0] - 0.25) < 1e-6, f"interior vertex wrong: {pts[1]}"
     # v2 sentinel stays -1.0.
     assert pts[2, 0] == -1.0 and pts[2, 1] == -1.0, f"sentinel changed: {pts[2]}"
+
+
+def test_clip_polygon_coords_clips_negative_mosaic_overflow_vertex():
+    """clip_polygon_coords keys validity off the -1.0 sentinel (`> -1.0`), NOT `>= 0.0`.
+
+    A real mosaic-overflow vertex at a slightly-negative coordinate (e.g. -0.05, which
+    is > -1.0) must be clipped into [0, 1], landing on the canvas edge (0.0). The old
+    `>= 0.0` check treated it as padding and left it at -0.05, where downstream stages
+    then misread it as a -1.0-style sentinel. The exact -1.0 sentinel must be preserved.
+    """
+    # cols: [x=-0.05 overflow, y=-0.10 overflow, x=0.30 interior, y=1.05 overflow,
+    #        x=-1.0 sentinel, y=-1.0 sentinel]
+    polygons = tf.constant([[-0.05, -0.10, 0.30, 1.05, -1.0, -1.0]], tf.float32)
+    out = clip_polygon_coords(polygons).numpy()[0]
+
+    assert out[0] == 0.0, f"negative-x overflow vertex not clipped to 0.0: {out[0]}"
+    assert out[1] == 0.0, f"negative-y overflow vertex not clipped to 0.0: {out[1]}"
+    assert abs(out[2] - 0.30) < 1e-6, f"interior vertex altered: {out[2]}"
+    assert out[3] == 1.0, f"over-1 overflow vertex not clipped to 1.0: {out[3]}"
+    # Padding sentinel must be untouched (-1.0 is NOT > -1.0).
+    assert out[4] == -1.0 and out[5] == -1.0, f"sentinel corrupted: {out[4]}, {out[5]}"
 
 
 def test_dead_aug_fields_removed_from_parser_config():
