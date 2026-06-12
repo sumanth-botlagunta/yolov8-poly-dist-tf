@@ -1,6 +1,9 @@
 # Experiment: yolov8_poly
 # Pipeline: bbox + cls + polygon (24-vertex PolyYOLO). NO distance head.
-# Derived from yolov8_poly_dist.yaml — only changed fields are listed.
+# Standalone, fully self-contained config (the loader does NOT apply `base:`
+# inheritance here — every field below is the live value). It parallels
+# yolov8_poly_dist.yaml with the distance head/stream disabled; diff the two files
+# to see what differs (with_distance, dist_gain, distance_data, etc.).
 
 task:
   init_checkpoint: initial_checkpoint_folder/ckpt-920304
