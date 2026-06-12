@@ -20,7 +20,6 @@ Dataclasses:
     OptimizerConfig
     EmaConfig
     LrScheduleConfig
-    WarmupConfig
     TrainerConfig
     TaskConfig
     ExperimentConfig
@@ -260,23 +259,18 @@ class LrScheduleConfig:
 
 
 @dataclasses.dataclass
-class WarmupConfig:
-    warmup_steps: int = 7164
-    warmup_learning_rate: float = 0.0
-
-
-@dataclasses.dataclass
 class OptimizerConfig:
     momentum: float = 0.937
     momentum_start: float = 0.8
     nesterov: bool = True
     weight_decay: float = 0.0005
+    # The sole warmup control. The legacy nested WarmupConfig (trainer.warmup.*) was
+    # never read — warmup is driven entirely by this field — and has been removed.
     warmup_steps: int = 7164
     weight_keys: List[str] = dataclasses.field(default_factory=lambda: ["kernel", "weight"])
     bias_keys: List[str] = dataclasses.field(default_factory=lambda: ["bias", "beta"])
     ema: EmaConfig = dataclasses.field(default_factory=EmaConfig)
     learning_rate: LrScheduleConfig = dataclasses.field(default_factory=LrScheduleConfig)
-    warmup: WarmupConfig = dataclasses.field(default_factory=WarmupConfig)
 
 
 @dataclasses.dataclass

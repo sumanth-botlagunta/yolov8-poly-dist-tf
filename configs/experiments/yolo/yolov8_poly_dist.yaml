@@ -168,6 +168,14 @@ task:
         mosaic_crop_mode: scale
         area_thresh: 0.5
         jitter: 0.0
+        # random_perspective (full-affine) strength applied after mosaic assembly
+        # AND to non-mosaic single images. degrees/shear in degrees; translate as a
+        # fraction of output size. These are the LIVE affine knobs (forwarded to
+        # Mosaic in data_pipeline/input_reader.py); aug_rand_translate above is NOT
+        # the affine translate. Shown here so they are visible/editable in config.
+        degrees: 10.0
+        shear: 2.0
+        translate: 0.1
     distance_data:
       tfds_name: "servingbot_polygon:1.0.1"
       tfds_split: train
@@ -288,12 +296,9 @@ trainer:
         clipvalue: null
         global_clipnorm: null
         decay: 0.0
-  warmup:
-    type: linear
-    linear:
-      name: linear
-      warmup_learning_rate: 0.0
-      warmup_steps: 6354   # 3 epochs × 2118 steps (was 7164 = 3 × stale 2388)
+        # warmup_steps above is the SOLE warmup control (read by task.py via
+        # OptimizerConfig.warmup_steps). The legacy trainer.warmup.* block was never
+        # read and has been removed.
 
 runtime:
   # Single H100: one_device avoids MirroredStrategy variable wrapping overhead.
