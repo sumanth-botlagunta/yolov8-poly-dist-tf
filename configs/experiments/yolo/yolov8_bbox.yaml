@@ -1,6 +1,9 @@
 # Experiment: yolov8_bbox
 # Pipeline: bbox + cls ONLY. No polygon heads. No distance head.
-# Derived from yolov8_poly.yaml — only changed fields are listed.
+# Standalone, fully self-contained config (the loader does NOT apply `base:`
+# inheritance here — every field below is the live value). It parallels
+# yolov8_poly.yaml with the polygon heads/loss disabled; diff the two files to see
+# what differs (with_polygons, poly_* gains, etc.).
 
 task:
   init_checkpoint: initial_checkpoint_folder/ckpt-920304
