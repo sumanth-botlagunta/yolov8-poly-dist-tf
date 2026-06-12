@@ -84,7 +84,9 @@ python scripts/run_train.py \
     --debug
 ```
 
-Checkpoints are saved to `output_dir/` every `checkpoint_interval` steps (default 2388).  
+Checkpoints are saved to `output_dir/` every `checkpoint_interval` steps (default 2118
+= 271,166 train examples // batch size 128 = one epoch; set `checkpoint_interval` in your
+YAML to override).  
 TensorBoard events are written to `output_dir/tb_events/`.
 
 ```bash
