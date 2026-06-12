@@ -155,6 +155,8 @@ class YoloV8Task:
             reg_max=16,
             with_polygons=task_cfg.with_polygons,
             with_distance=task_cfg.with_distance,
+            angle_step=task_cfg.model.angle_step,
+            use_acsl=loss_cfg.acsl.use_acsl,
         )
 
     # ------------------------------------------------------------------

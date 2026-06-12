@@ -27,11 +27,19 @@ class TaskAlignedAssigner:
         alpha: float = 0.5,
         beta: float = 6.0,
         eps: float = 1e-9,
+        angle_step: int = 15,
     ):
         self.topk  = topk
         self.alpha = alpha
         self.beta  = beta
         self.eps   = eps
+        # Polygon target width = (360 // angle_step) bins × 3 channels
+        # (dist, angle, conf). Used only in the no-GT fallback path below; the
+        # gather path infers width from gt_polys. Derived from angle_step so a
+        # non-15° config (e.g. 10° → 36 bins → 108) gets the right zero-target
+        # shape instead of a hardcoded 72.
+        self.angle_step = angle_step
+        self.poly_size  = (360 // angle_step) * 3
 
     # ------------------------------------------------------------------
 
@@ -153,7 +161,7 @@ class TaskAlignedAssigner:
         target_bboxes = tf.gather(gt_bboxes, target_gt_idx, batch_dims=1)   # [B, A, 4]
 
         # Polygon targets
-        poly_size = 72
+        poly_size = self.poly_size
         if gt_polys is not None:
             target_polygons = tf.gather(gt_polys, target_gt_idx, batch_dims=1)  # [B, A, 72]
         else:

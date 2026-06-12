@@ -212,7 +212,7 @@ class CopyAndPasteModule:
         else:
             n_pairs = max_v // 2
             pts = tf.reshape(obj_pts, [n_pairs, 2])       # [n_pairs, (x, y)]
-            valid = pts[:, 0] >= 0.0                      # [n_pairs]
+            valid = pts[:, 0] > -1.0                      # [n_pairs] — sentinel is -1.0 (design_register entry 10)
 
             # Transform: x_bg = (paste_x + x_obj * new_w) / W
             x_bg = (paste_x_f + pts[:, 0] * new_w_f) / W_f
