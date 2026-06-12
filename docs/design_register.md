@@ -111,3 +111,21 @@ vertex; `== -1.0` means "no vertex here." Code that scans for valid vertices mus
 `> -1.0` test, **not** `>= 0.0` — a legitimately-negative canvas coordinate is a valid
 vertex, not a sentinel. The `-1.0` value is reserved and must not be produced by any
 transform as a real coordinate.
+
+## 11. Exported SavedModel expects pre-normalized [0,1] input — no /255 baked in
+
+`tools/export_saved_model.py:serving_fn` accepts `float32 [0,1]` images and passes
+them straight to the model; the model has **no** internal `/255` layer
+(`models/yolo_v8.py`). Normalization is performed by `train.task.normalize_images`
+(uint8 [0,255] → float32 [0,1]) on every in-repo call path (`validation_step`,
+`tools/eval.py`, `tools/continuous_eval.py`), and the serving contract deliberately
+mirrors that: the SavedModel is **not** given an internal `/255` step. Reasons: (1)
+baking `/255` into the graph would silently double-normalize any caller that already
+follows the documented [0,1] contract (e.g. a pipeline reusing `normalize_images`),
+flooring all inputs near 0; (2) keeping the contract identical to eval avoids a
+train/serve skew where the exported model behaves differently from the validated one.
+The TensorSpec is named `images_normalized_0_1` and the contract is documented in the
+module docstring's *Input Schema* and at the `serving_fn` decorator. A consumer feeding
+raw uint8/[0,255] camera frames must divide by 255 first. Do **not** "fix" this by
+inserting `images / 255.0` in `serving_fn` without owning the double-normalization and
+train/serve-skew consequences above.
