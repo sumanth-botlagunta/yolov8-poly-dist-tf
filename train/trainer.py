@@ -694,30 +694,35 @@ class YoloV8Trainer:
         metric_val   = float(self._best_metric)
         best_dir     = os.path.join(self._output_dir, f'best_{metric_name}')
         os.makedirs(best_dir, exist_ok=True)
-        # try/finally: a write failure (e.g. disk full) must not leave EMA weights
-        # swapped in as the live weights.
-        self._optimizer.swap_in(self._model)
-        try:
-            # Save optimizer + step counters alongside the (EMA) weights so the
-            # best checkpoint is resumable, not inference-only. Without the
-            # optimizer, restoring this checkpoint to continue training would lose
-            # the SGD `iterations` variable — the cosine LR schedule reads it, so
-            # the LR would snap back to its initial value and the momentum/velocity
-            # slots would reset, corrupting the trajectory. `global_step` /
-            # `completed_epochs` keep resume bookkeeping consistent. The model
-            # weights saved here are the EMA (shadow) weights (swapped in above),
-            # which is the correct inference state; the optimizer still holds the
-            # raw-weight slots, so a training resume continues correctly.
-            best_ckpt = tf.train.Checkpoint(
-                model=self._model,
-                optimizer=self._optimizer,
-                global_step=self._global_step,
-                completed_epochs=self._epoch_var,
-                best_metric=self._best_metric,
-            )
-            best_ckpt.write(os.path.join(best_dir, 'ckpt'))
-        finally:
-            self._optimizer.swap_out(self._model)
+        # Save the RAW (live) model weights together with the optimizer + step
+        # counters, exactly like a periodic checkpoint — do NOT swap EMA weights
+        # into the model first.
+        #
+        # Why no swap_in: the EMA shadow weights are tf.Variables tracked inside
+        # the EMA wrapper (`optimizer=self._optimizer`), so they are already
+        # serialized to disk by this checkpoint and recovered on resume via
+        # `ema.swap_in(model)` (eval/export use tools/ckpt_loading.py for exactly
+        # this). If we instead swapped EMA into `model/`, a *training* resume from
+        # this checkpoint would load EMA weights into the model while the SGD
+        # velocity slots restored from `optimizer/` were computed against the RAW
+        # (pre-EMA) weights — an incoherent (weights, momentum) pair that corrupts
+        # the subsequent trajectory and the EMA shadow update. Saving raw weights
+        # keeps the model/optimizer pair coherent for resume; the EMA shadows in
+        # `optimizer/` give eval/export the correct inference state.
+        #
+        # Saving the optimizer + counters (vs. a model-only inference checkpoint)
+        # is required for resume: without the SGD `iterations` variable the cosine
+        # LR schedule reads, the LR would snap back to its initial value and the
+        # momentum/velocity slots would reset, corrupting the trajectory.
+        # `global_step` / `completed_epochs` keep resume bookkeeping consistent.
+        best_ckpt = tf.train.Checkpoint(
+            model=self._model,
+            optimizer=self._optimizer,
+            global_step=self._global_step,
+            completed_epochs=self._epoch_var,
+            best_metric=self._best_metric,
+        )
+        best_ckpt.write(os.path.join(best_dir, 'ckpt'))
 
         # Write a human-readable metadata file alongside the checkpoint.
         meta_path = os.path.join(best_dir, 'best_info.yaml')
