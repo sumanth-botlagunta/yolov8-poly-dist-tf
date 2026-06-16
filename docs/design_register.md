@@ -146,6 +146,18 @@ raw uint8/[0,255] camera frames must divide by 255 first. Do **not** "fix" this 
 inserting `images / 255.0` in `serving_fn` without owning the double-normalization and
 train/serve-skew consequences above.
 
+**Exception — the on-device DLC export DOES bake `/255` (deliberately).**
+`tools/export_device_dlc.py` is a *separate* export path that reproduces the legacy
+Qualcomm SNPE DLC contract for drop-in replacement (see `docs/device_export.md`). The
+on-device raw-image generator feeds **raw [0,255]** float32 (`IMAGE_NROM_FLAG=False`),
+so that graph divides by 255 internally (`--normalize`, default on) to match the
+[0,1] the model was trained on. This does **not** contradict entry 12 for
+`export_saved_model.py`: it is a different tool for a different consumer (the device
+pipeline, not an in-repo `normalize_images` caller), it emits **raw head logits** as
+six concatenated nodes (`box/cls/poly_angle/poly_dist/poly_conf/dist`, `[1, N, C]`,
+levels 3→4→5) instead of the deploy/NMS dict, and it runs in **float32** (not the
+training `mixed_bfloat16`) for a clean SNPE graph. Keep the two contracts distinct.
+
 ## 12. `jitter` config knob is reserved (parsed, defaulted to 0.0, not wired)
 
 `MosaicConfig.jitter` and `ParserConfig.jitter` (`configs/model_config.py`, parsed by
