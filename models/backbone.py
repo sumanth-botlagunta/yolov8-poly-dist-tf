@@ -138,13 +138,19 @@ class C2f(tf.keras.layers.Layer):
     def call(self, x: tf.Tensor, training: bool = False) -> tf.Tensor:
         y = self.cv1(x, training=training)      # [B, H, W, filters]
         c = self._c
-        # Split the channels into two halves of size c. Use explicit 4-D slicing
-        # (NOT ``y[..., :c]``): the ellipsis form emits a StridedSlice with
-        # ellipsis_mask set, which the Qualcomm SNPE tensorflow-to-dlc converter
-        # rejects ("unsupported masks ellipsis mask and new axis mask"). Explicit
-        # per-axis slices emit a plain StridedSlice (begin/end masks only, which SNPE
-        # supports) and are byte-identical for the 4-D NHWC feature maps here.
-        chunks = [y[:, :, :, :c], y[:, :, :, c:]]   # two halves of size c
+        # Split the channels into two halves using tf.split (emits a Split op), NOT
+        # tensor indexing. ``y[..., :c]`` emits a StridedSlice with ellipsis_mask, and
+        # even explicit ``y[:, :, :, :c]`` emits a StridedSlice — the Qualcomm SNPE
+        # tensorflow-to-dlc converter rejects strided slices ("unsupported masks
+        # ellipsis mask and new axis mask"). tf.split is the canonical channel-split op
+        # SNPE supports, with no StridedSlice at all. cv1 outputs 2*c channels, so a
+        # static [c, total-c] split is byte-identical to the old halves.
+        total = y.shape[-1]
+        if total is not None and int(total) == 2 * c:
+            chunks = list(tf.split(y, 2, axis=-1))                 # even -> basic Split op
+        else:                                                      # odd fallback -> SplitV
+            size_second = (int(total) - c) if total is not None else c
+            chunks = list(tf.split(y, [c, size_second], axis=-1))
         for bn in self.bottlenecks:
             chunks.append(bn(chunks[-1], training=training))
         return self.cv2(tf.concat(chunks, axis=-1), training=training)

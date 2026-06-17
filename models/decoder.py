@@ -26,6 +26,25 @@ import tensorflow as tf
 from configs.registry import DECODERS
 from models.backbone import C2f, _ConvBnAct
 
+
+def _resize_nn(src: tf.Tensor, ref: tf.Tensor) -> tf.Tensor:
+    """Nearest-neighbour upsample ``src`` to ``ref``'s spatial size.
+
+    Prefers a STATIC target size: ``tf.image.resize(src, tf.shape(ref)[1:3])`` emits a
+    Shape→StridedSlice subgraph to read the size at runtime, and the Qualcomm SNPE
+    tensorflow-to-dlc converter's StridedSliceLayerBuilder rejects those slices. When
+    ``ref``'s H,W are known at trace time — which they are whenever the model is built
+    with a concrete input size (training at 672×672, export at 672×416) — we pass the
+    size as Python ints, so the graph is a clean ResizeNearestNeighbor with no
+    StridedSlice. Falls back to the dynamic form only for a genuinely unknown size
+    (e.g. multi-scale training). Numerically identical: the static size equals the
+    dynamic one whenever both are defined.
+    """
+    s = ref.shape
+    if s.rank == 4 and s[1] is not None and s[2] is not None:
+        return tf.image.resize(src, [int(s[1]), int(s[2])], method="nearest")
+    return tf.image.resize(src, tf.shape(ref)[1:3], method="nearest")
+
 # Bottleneck repetitions per decoder size variant
 _DECODER_DEPTH: Dict[str, int] = {
     "s": 1,
@@ -127,10 +146,10 @@ class YoloDecoder(tf.keras.Model):
         p5 = inputs["5"]   # [B, H/32, W/32, c5]
 
         # --- FPN: top-down ---
-        p5_up  = tf.image.resize(p5, tf.shape(p4)[1:3], method="nearest")             # upsample P5(c5) to P4 size
+        p5_up  = _resize_nn(p5, p4)                                                   # upsample P5(c5) to P4 size
         p4_fpn = self.fpn_c2f_p4(tf.concat([p5_up, p4], axis=-1), training=training)  # concat c5+c4 → C2f → c4
 
-        p4_up  = tf.image.resize(p4_fpn, tf.shape(p3)[1:3], method="nearest")         # upsample P4'(c4) to P3 size
+        p4_up  = _resize_nn(p4_fpn, p3)                                               # upsample P4'(c4) to P3 size
         p3_out = self.fpn_c2f_p3(tf.concat([p4_up, p3], axis=-1), training=training)  # concat c4+c3 → C2f → c3
 
         # --- PAN: bottom-up ---

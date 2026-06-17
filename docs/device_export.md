@@ -136,8 +136,15 @@ begin/end masks only — SNPE-supported), byte-identical numerically. `_concat_l
 also now emits a fully **static** reshape (the device input is fixed `1,H,W,3`), so the
 graph no longer contains the dynamic `Shape→StridedSlice→Pack→Reshape` subgraph.
 
-`test_graph_is_snpe_compatible` guards the exported GraphDef against both (no
-ellipsis/new-axis `StridedSlice`, no `Pack`/`Shape`). The remaining ops are all
+If the converter still fails in `StridedSliceLayerBuilder`, it is choking on the
+StridedSlice op itself (SNPE's builder is fragile regardless of mask), so the export
+now removes **every** StridedSlice: the C2f channel split uses `tf.split` (a `Split`
+op) instead of `y[..., :c]`/`y[:, :, :, :c]`, and the FPN upsample uses a static
+resize size instead of `tf.shape(ref)[1:3]` (which emitted Shape→StridedSlice). Both
+are numerically byte-identical and do not change training or checkpoints.
+
+`test_graph_is_snpe_compatible` guards the exported GraphDef: **no `StridedSlice` at
+all**, and no `Pack`/`Shape`. The remaining ops are all
 standard SNPE-supported: `Conv2D`, `BiasAdd`, `Relu`, `MaxPool`,
 `ResizeNearestNeighbor`, `Mul`/`Sub`/`Rsqrt`/`AddV2` (folded BatchNorm constants),
 `ConcatV2`, `Reshape`, `StridedSlice`, `Squeeze`, `RealDiv` (the baked `/255`).

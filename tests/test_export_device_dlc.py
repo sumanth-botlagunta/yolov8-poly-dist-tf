@@ -150,14 +150,16 @@ def test_graph_is_snpe_compatible(exported):
     from tensorflow.python.saved_model import loader_impl
     gd = loader_impl.parse_saved_model(out_dir).meta_graphs[0].graph_def
 
-    exotic = [n.name for n in gd.node
-              if n.op == "StridedSlice"
-              and (n.attr["ellipsis_mask"].i or n.attr["new_axis_mask"].i)]
-    assert not exotic, f"StridedSlice with ellipsis/new_axis mask (SNPE rejects): {exotic}"
-
-    ops = {n.op for n in gd.node}
-    assert "Pack" not in ops, "dynamic Shape/Pack reshape subgraph present — SNPE wants static shapes"
-    assert "Shape" not in ops, "dynamic Shape op present — reshape target should be static"
+    ops = [n.op for n in gd.node]
+    # SNPE's StridedSliceLayerBuilder rejects the strided slices this model used to
+    # emit (C2f channel split `y[..., :c]`; FPN dynamic-resize `tf.shape(ref)[1:3]`).
+    # The C2f split is now tf.split (Split op) and the resize size is static, so the
+    # exported graph must contain NO StridedSlice at all.
+    ss = [n.name for n in gd.node if n.op == "StridedSlice"]
+    assert not ss, f"StridedSlice present — SNPE StridedSliceLayerBuilder will fail: {ss}"
+    # And no dynamic Shape/Pack subgraph (the device input is fixed 1xHxWx3).
+    assert "Pack" not in ops, "dynamic Pack reshape subgraph present — SNPE wants static shapes"
+    assert "Shape" not in ops, "dynamic Shape op present — reshape/resize size should be static"
 
 
 def test_decode_equivalence(exported):
