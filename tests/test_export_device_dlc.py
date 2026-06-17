@@ -99,6 +99,36 @@ def test_normalization_baked_in(exported):
         np.testing.assert_allclose(out[name].numpy(), man, rtol=1e-5, atol=1e-4)
 
 
+def test_force_float32_policy_passes_when_clean():
+    """The float32 guard is a no-op under a float32 global policy."""
+    tf.keras.mixed_precision.set_global_policy("float32")
+    ed._force_float32_policy()
+    assert tf.keras.mixed_precision.global_policy().compute_dtype == "float32"
+
+
+def test_force_float32_policy_raises_on_leaked_bf16(monkeypatch):
+    """If a mixed_bfloat16 policy cannot be cleared, fail loudly at the source.
+
+    This is the root cause of the cryptic `--verify` cls tolerance failure: a leaked
+    bf16 policy makes the stems compute bf16 while the float32-pinned heads still
+    report float32 dtype, so the export silently diverges from the float32 SavedModel.
+    """
+    monkeypatch.setattr(tf.keras.mixed_precision, "set_global_policy", lambda *a, **k: None)
+    monkeypatch.setattr(tf.keras.mixed_precision, "global_policy",
+                        lambda: tf.keras.mixed_precision.Policy("mixed_bfloat16"))
+    with pytest.raises(RuntimeError, match="not 'float32'"):
+        ed._force_float32_policy()
+
+
+def test_assert_close_precision_hint():
+    """A large mismatch yields an actionable precision-asymmetry message."""
+    got = np.zeros([1, 100, 39], np.float32)
+    ref = got.copy()
+    ref[0, :80] = 0.02                                  # 80% of rows differ
+    with pytest.raises(AssertionError, match="PRECISION asymmetry"):
+        ed._assert_close("cls", got, ref, rtol=1e-5, atol=1e-4)
+
+
 def test_decode_equivalence(exported):
     """Splitting the concatenated nodes back to per-level and decoding reproduces
     the deploy path — proving the concat layout is the lossless one the on-device

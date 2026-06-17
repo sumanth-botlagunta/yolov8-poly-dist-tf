@@ -101,6 +101,55 @@ def _concat_levels(per_level: dict, channels: int) -> tf.Tensor:
     return tf.concat(parts, axis=1)
 
 
+def _force_float32_policy() -> None:
+    """Set — and verify — the global Keras policy is float32.
+
+    The SNPE device export must be a pure float32 graph. A leaked mixed_bfloat16
+    policy is *silent* here: the prediction heads are pinned float32 (models/head.py)
+    so head outputs still report float32 dtype, but their conv stems would compute in
+    bf16, so the values carry bf16 precision. That surfaces only much later as a
+    ``--verify`` tolerance failure (float32 SavedModel vs bf16-precision reference),
+    with matching shapes/dtypes and no clue to the cause. Re-set + assert here so the
+    contamination fails loudly at the source instead.
+    """
+    tf.keras.mixed_precision.set_global_policy('float32')
+    compute = tf.keras.mixed_precision.global_policy().compute_dtype
+    if compute != 'float32':
+        raise RuntimeError(
+            f"Global Keras compute policy is '{compute}', not 'float32', even after "
+            "set_global_policy('float32'). The SNPE export must be float32. Something "
+            "re-enabled mixed precision (e.g. tools.runtime_setup.apply_eval_precision_policy "
+            "or an earlier import). Run this exporter in a clean process / before any "
+            "bfloat16 policy is set."
+        )
+
+
+def _assert_close(name, got, ref, rtol, atol):
+    """assert_allclose with an actionable message on failure.
+
+    A large mismatch with MATCHING shapes/dtypes almost always means a precision
+    asymmetry (float32 SavedModel vs a bfloat16-precision reference model), which a
+    bare numpy error does not reveal — the prediction heads are pinned float32 so
+    both arrays report float32 even when the stems ran bf16. Surface the diagnosis.
+    """
+    import numpy as np
+    if np.allclose(got, ref, rtol=rtol, atol=atol):
+        return
+    diff   = np.abs(got.astype(np.float64) - ref.astype(np.float64))
+    mism   = float(np.mean(~np.isclose(got, ref, rtol=rtol, atol=atol)) * 100.0)
+    hint = ""
+    if mism > 5.0:
+        hint = ("\n  Large mismatch with matching shapes usually means a PRECISION "
+                "asymmetry: the float32 SavedModel vs a bfloat16-precision reference "
+                "model. Prediction heads are pinned float32 (so dtypes look equal) but "
+                "the stems compute bf16 under a leaked mixed_bfloat16 policy. Re-run the "
+                "export in a clean process; this tool now asserts float32 before build.")
+    raise AssertionError(
+        f"[{name}] device SavedModel != reference model: {mism:.1f}% of elements "
+        f"outside tolerance (rtol={rtol}, atol={atol}). "
+        f"max|diff|={diff.max():.3e}, got.dtype={got.dtype}, ref.dtype={ref.dtype}.{hint}")
+
+
 def main(_):
     from configs.yaml_loader import load_config
     from models.yolo_v8 import build_yolov8
@@ -119,6 +168,17 @@ def main(_):
     config    = load_config(FLAGS.config)
     model_cfg = config.task.model
 
+    # Re-assert float32 immediately before building the model. load_config (or an
+    # earlier import in a long-lived session/notebook) can leave a mixed_bfloat16
+    # global policy active — the base poly_dist YAML now trains in bfloat16. If the
+    # model layers are created under that policy their conv STEMS compute in bf16
+    # while the prediction heads stay pinned float32, so head outputs still REPORT
+    # float32 dtype but carry bf16-precision values. The SavedModel (frozen here in
+    # float32) then disagrees with the bf16 reference model by ~60-80% of elements
+    # with matching shapes/dtypes — exactly the cryptic `--verify` tolerance failure
+    # that motivated this guard. Fail fast with an actionable message instead.
+    _force_float32_policy()
+
     # Build at the device input size. The model is fully convolutional, so a
     # 672×672-trained checkpoint restores and runs at 672×416 unchanged (same as
     # the legacy export, which also ran 672×416).
@@ -132,6 +192,10 @@ def main(_):
     model = build_yolov8(model_cfg)
     model.deploy = False                 # raw head dict, NOT the NMS/deploy path
     model.build_and_init([H, W, 3])
+
+    # Belt-and-suspenders: confirm nothing inside build_* re-enabled a non-float32
+    # policy while the layers were being created.
+    _force_float32_policy()
 
     kind = restore_eval_weights(model, FLAGS.checkpoint)
     log.info("Checkpoint restored (%s weights): %s", kind, FLAGS.checkpoint)
@@ -268,7 +332,7 @@ def _verify(saved_model_dir, model, H, W, n_anchors, head_chan, do_norm):
                 training=False)
     n_classes = dict(head_chan)['cls']
     man = _concat_levels(raw['cls'], n_classes).numpy()
-    np.testing.assert_allclose(out['cls'].numpy(), man, rtol=1e-5, atol=1e-4)
+    _assert_close('cls', out['cls'].numpy(), man, rtol=1e-5, atol=1e-4)
     log.info("[ok] /255 + concat reproduces the raw model exactly")
 
     # 4) decode equivalence: split the concatenated nodes back into a per-level
@@ -292,8 +356,8 @@ def _verify(saved_model_dir, model, H, W, n_anchors, head_chan, do_norm):
         rebuilt = {name: _split(name, c) for name, c in head_chan}
         from_raw    = model.detection_generator(rebuilt)
         from_deploy = model.detection_generator(raw)
-        np.testing.assert_allclose(from_raw['bbox'].numpy(),
-                                   from_deploy['bbox'].numpy(), rtol=1e-4, atol=1e-4)
+        _assert_close('bbox', from_raw['bbox'].numpy(),
+                      from_deploy['bbox'].numpy(), rtol=1e-4, atol=1e-4)
         np.testing.assert_array_equal(from_raw['num_detections'].numpy(),
                                       from_deploy['num_detections'].numpy())
         log.info("[ok] decode(raw nodes) == decode(native per-level) — drop-in layout confirmed")

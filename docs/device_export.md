@@ -99,4 +99,17 @@ the concatenated nodes back to per-level and decoding with the in-repo
 `YoloV8Layer` (the faithful port of the on-device `YoloV8LayerModified`) reproduces the
 deploy path — i.e. the concatenation is the lossless layout the device decoder expects.
 
+### Troubleshooting `--verify`
+
+**`cls` ... `Not equal to tolerance`, ~60–80% mismatched elements (matching shapes/dtypes).**
+This is a **precision asymmetry**, not a layout bug. The SavedModel is frozen in
+float32, but the in-memory reference model was built under a leaked `mixed_bfloat16`
+global policy (the base `yolov8_poly_dist.yaml` trains in bfloat16, and
+`tools/runtime_setup.py` or an earlier import in a long-lived session can set that
+policy). The prediction heads are pinned float32, so their conv **stems** compute in
+bf16 while the head outputs still *report* float32 dtype — hence the mismatch with no
+dtype clue. The exporter now calls `set_global_policy('float32')` and **asserts** it
+stuck both before and after building the model, raising a clear error if a bf16 policy
+leaked. Fix: run the export in a clean process / before any bfloat16 policy is set.
+
 Tests: `tests/test_export_device_dlc.py`.
