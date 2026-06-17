@@ -140,6 +140,26 @@ def test_assert_close_flags_real_divergence():
         ed._assert_close("cls", got, ref)
 
 
+def test_graph_is_snpe_compatible(exported):
+    """The exported GraphDef must not contain ops the Qualcomm SNPE tensorflow-to-dlc
+    converter rejects: StridedSlice with ellipsis_mask/new_axis_mask (from `x[..., c]`
+    style indexing), nor a dynamic Shape→Pack reshape subgraph (the device input is
+    fixed 1xHxWx3, so reshapes must be static). Regression guard for the C2f channel
+    split and the static `_concat_levels` reshape."""
+    out_dir, _, _ = exported
+    from tensorflow.python.saved_model import loader_impl
+    gd = loader_impl.parse_saved_model(out_dir).meta_graphs[0].graph_def
+
+    exotic = [n.name for n in gd.node
+              if n.op == "StridedSlice"
+              and (n.attr["ellipsis_mask"].i or n.attr["new_axis_mask"].i)]
+    assert not exotic, f"StridedSlice with ellipsis/new_axis mask (SNPE rejects): {exotic}"
+
+    ops = {n.op for n in gd.node}
+    assert "Pack" not in ops, "dynamic Shape/Pack reshape subgraph present — SNPE wants static shapes"
+    assert "Shape" not in ops, "dynamic Shape op present — reshape target should be static"
+
+
 def test_decode_equivalence(exported):
     """Splitting the concatenated nodes back to per-level and decoding reproduces
     the deploy path — proving the concat layout is the lossless one the on-device

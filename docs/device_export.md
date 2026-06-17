@@ -126,4 +126,20 @@ The exporter also still forces and asserts a float32 policy before/after buildin
 model, so a leaked `mixed_bfloat16` policy (which would make conv stems compute bf16
 while float32-pinned heads hide it) fails fast at the source.
 
+### SNPE converter: "unsupported masks ellipsis mask and new axis mask"
+
+`snpe-tensorflow-to-dlc` rejects `StridedSlice` ops that set `ellipsis_mask` or
+`new_axis_mask`. Those came from the C2f channel split written as `y[..., :c]` (the
+ellipsis emits `ellipsis_mask=1`), reused 8× across the backbone/FPN/PAN → 16 ops. The
+split is now written with explicit per-axis slices `y[:, :, :, :c]` (plain StridedSlice,
+begin/end masks only — SNPE-supported), byte-identical numerically. `_concat_levels`
+also now emits a fully **static** reshape (the device input is fixed `1,H,W,3`), so the
+graph no longer contains the dynamic `Shape→StridedSlice→Pack→Reshape` subgraph.
+
+`test_graph_is_snpe_compatible` guards the exported GraphDef against both (no
+ellipsis/new-axis `StridedSlice`, no `Pack`/`Shape`). The remaining ops are all
+standard SNPE-supported: `Conv2D`, `BiasAdd`, `Relu`, `MaxPool`,
+`ResizeNearestNeighbor`, `Mul`/`Sub`/`Rsqrt`/`AddV2` (folded BatchNorm constants),
+`ConcatV2`, `Reshape`, `StridedSlice`, `Squeeze`, `RealDiv` (the baked `/255`).
+
 Tests: `tests/test_export_device_dlc.py`.

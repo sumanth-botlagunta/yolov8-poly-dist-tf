@@ -96,8 +96,19 @@ def _concat_levels(per_level: dict, channels: int) -> tf.Tensor:
     parts = []
     for lvl in _LEVELS:
         x = tf.cast(per_level[lvl], tf.float32)
-        b = tf.shape(x)[0]
-        parts.append(tf.reshape(x, [b, -1, channels]))
+        # Prefer a FULLY STATIC reshape target. The device export fixes the input
+        # (input_signature [1, H, W, 3] → SNPE --input_dim 1,H,W,3), so each level's
+        # [1, Hl, Wl, C] shape is known at trace time. A dynamic
+        # ``tf.reshape(x, [tf.shape(x)[0], -1, C])`` would emit Shape→StridedSlice→
+        # Pack→Reshape; the Pack/Shape subgraph is needless friction for the SNPE
+        # converter. With a static shape it is a single clean Reshape. Fall back to
+        # the dynamic form only if the spatial dims are unknown (non-export use).
+        s = x.shape
+        if s.rank == 4 and s[1] is not None and s[2] is not None:
+            b = -1 if s[0] is None else int(s[0])
+            parts.append(tf.reshape(x, [b, int(s[1]) * int(s[2]), channels]))
+        else:
+            parts.append(tf.reshape(x, [tf.shape(x)[0], -1, channels]))
     return tf.concat(parts, axis=1)
 
 
