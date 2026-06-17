@@ -85,26 +85,36 @@ def main(_):
     print(f"global policy            : {tf.keras.mixed_precision.global_policy().name} "
           f"(compute={tf.keras.mixed_precision.global_policy().compute_dtype})")
 
-    # Distinct per-layer dtype policies (reveals a per-layer bf16 a global check misses).
+    # Distinct per-layer dtype policies over ALL nested layers. Keras 3 does NOT
+    # expose attribute-stored sublayers via `.layers`, so a shallow walk sees only
+    # the top-level handful (19 of ~281 here) and would miss a bf16 policy buried in
+    # the backbone/decoder stems. `_flatten_layers` recurses into every tracked
+    # sublayer; fall back to a manual `.layers` walk if it is unavailable.
     def _all_layers(m):
-        seen = []
-        stack = list(getattr(m, 'layers', []) or
-                     [m.backbone, m.decoder, m.head])
-        while stack:
-            lyr = stack.pop()
-            seen.append(lyr)
-            stack.extend(getattr(lyr, 'layers', []) or [])
-        return seen
+        try:
+            return list(m._flatten_layers(include_self=False))
+        except Exception:
+            seen, stack = [], list(getattr(m, 'layers', []) or
+                                   [m.backbone, m.decoder, m.head])
+            while stack:
+                lyr = stack.pop()
+                seen.append(lyr)
+                stack.extend(getattr(lyr, 'layers', []) or [])
+            return seen
 
+    layers = _all_layers(model)
     pols = {}
-    try:
-        for lyr in _all_layers(model):
-            p = getattr(getattr(lyr, 'dtype_policy', None), 'name', None)
-            if p:
-                pols[p] = pols.get(p, 0) + 1
-    except Exception as e:  # pragma: no cover - introspection best-effort
-        pols = {f"<introspection failed: {e}>": 0}
+    for lyr in layers:
+        p = getattr(getattr(lyr, 'dtype_policy', None), 'name', None)
+        if p:
+            pols[p] = pols.get(p, 0) + 1
+    vd = {}
+    for v in model.variables:
+        dn = getattr(v.dtype, 'name', str(v.dtype))   # keras.Variable.dtype is a str
+        vd[dn] = vd.get(dn, 0) + 1
+    print(f"layers inspected         : {len(layers)}")
     print(f"layer dtype policies     : {pols}")
+    print(f"variable dtypes          : {vd}")
 
     rng = np.random.RandomState(0)
     img255 = rng.uniform(0, 255, size=[1, H, W, 3]).astype(np.float32)
