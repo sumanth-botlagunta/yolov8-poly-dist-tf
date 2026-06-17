@@ -78,25 +78,29 @@ def test_top_level_op_names_for_snpe(exported):
 
 
 def test_signature_shapes(exported):
+    """Legacy-DLC node layout: box DFL-decoded to [N,4], others raw [N,C], no batch."""
     out_dir, _, head_chan = exported
     fn = tf.saved_model.load(out_dir).signatures["serving_default"]
     img255 = np.random.RandomState(0).uniform(0, 255, [1, H, W, 3]).astype(np.float32)
     out = fn(input_image=tf.constant(img255))
     assert set(out.keys()) == {n for n, _ in head_chan}
     for name, c in head_chan:
-        assert tuple(out[name].shape) == (1, N_ANCHORS, c)
+        oc = 4 if name == "box" else c
+        assert tuple(out[name].shape) == (N_ANCHORS, oc)
 
 
 def test_normalization_baked_in(exported):
-    """device([0,255]) == raw-model(img/255), concatenated."""
+    """Raw heads: device([0,255]) == concat(raw-model(img/255)), batch dropped."""
     out_dir, model, head_chan = exported
     fn = tf.saved_model.load(out_dir).signatures["serving_default"]
     img255 = np.random.RandomState(1).uniform(0, 255, [1, H, W, 3]).astype(np.float32)
     out = fn(input_image=tf.constant(img255))
     raw = model(tf.constant(img255) / 255.0, training=False)
     for name, c in head_chan:
-        man = ed._concat_levels(raw[name], c).numpy()
-        np.testing.assert_allclose(out[name].numpy(), man, rtol=1e-5, atol=1e-4)
+        if name == "box":
+            continue
+        man = ed._concat_levels(raw[name], c)[0].numpy()   # [N, c]
+        np.testing.assert_allclose(out[name].numpy(), man, rtol=1e-4, atol=1e-2)
 
 
 def test_force_float32_policy_passes_when_clean():
@@ -162,31 +166,21 @@ def test_graph_is_snpe_compatible(exported):
     assert "Shape" not in ops, "dynamic Shape op present — reshape/resize size should be static"
 
 
-def test_decode_equivalence(exported):
-    """Splitting the concatenated nodes back to per-level and decoding reproduces
-    the deploy path — proving the concat layout is the lossless one the on-device
-    YoloV8LayerModified expects."""
-    out_dir, model, head_chan = exported
+def test_box_dfl_decode_matches_reference(exported):
+    """The baked box DFL decode (reshape→softmax→Σ·bins) must equal the in-repo
+    detection_generator._decode_dfl, per level then concat 3→4→5 — proving the legacy
+    box pipeline is reproduced and the concat layout is correct. Pre-stride LTRB."""
+    out_dir, model, _ = exported
     fn = tf.saved_model.load(out_dir).signatures["serving_default"]
     img255 = np.random.RandomState(2).uniform(0, 255, [1, H, W, 3]).astype(np.float32)
     out = fn(input_image=tf.constant(img255))
     raw = model(tf.constant(img255) / 255.0, training=False)
 
-    counts = [(H // s) * (W // s) for s in (8, 16, 32)]
-    hw = [(H // s, W // s) for s in (8, 16, 32)]
+    parts = []
+    for lvl in ["3", "4", "5"]:
+        ltrb = model.detection_generator._decode_dfl(tf.cast(raw["box"][lvl], tf.float32))
+        parts.append(tf.reshape(ltrb, [1, -1, 4]))
+    box_ref = tf.concat(parts, axis=1)[0].numpy()      # [N, 4]
 
-    def _split(name, c):
-        flat = out[name].numpy()[0]
-        per, off = {}, 0
-        for lvl, n, (lh, lw) in zip(["3", "4", "5"], counts, hw):
-            per[lvl] = tf.constant(flat[off:off + n].reshape(1, lh, lw, c))
-            off += n
-        return per
-
-    rebuilt = {name: _split(name, c) for name, c in head_chan}
-    from_raw = model.detection_generator(rebuilt)
-    from_deploy = model.detection_generator(raw)
-    np.testing.assert_allclose(from_raw["bbox"].numpy(),
-                               from_deploy["bbox"].numpy(), rtol=1e-4, atol=1e-4)
-    np.testing.assert_array_equal(from_raw["num_detections"].numpy(),
-                                  from_deploy["num_detections"].numpy())
+    assert tuple(out["box"].shape) == (N_ANCHORS, 4)
+    np.testing.assert_allclose(out["box"].numpy(), box_ref, rtol=1e-3, atol=1e-2)

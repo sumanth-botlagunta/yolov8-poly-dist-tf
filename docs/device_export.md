@@ -18,21 +18,32 @@ the result-extraction script — see `prompts/dlc_conversion.txt`):
 | Input node | `input_image`  float32  `[1, 672, 416, 3]`  pixels in **[0, 255]** |
 | Output nodes | `box`, `cls`, `poly_angle`, `poly_dist`, `poly_conf`, `dist` |
 
-Each output is **one tensor per head** (one `.raw` file each), **RAW logits** (no
-sigmoid/softplus/exp, no DFL decode, no NMS — the on-device `YoloV8LayerModified` does all
-of that), with the FPN levels concatenated **3→4→5**, each `[1,H,W,C]→[1,H*W,C]`
-row-major, channels-last:
+Each output is **one tensor per head** (one `.raw` file each), FPN levels concatenated
+**3→4→5**, each `[1,H,W,C]→[1,H*W,C]` row-major, channels-last, **batch dim dropped**
+(`[N, C]`). `box` is **DFL-decoded** (the legacy DLC bakes it in); the others are **RAW**
+(no sigmoid/softplus/exp, no NMS — the on-device `YoloV8LayerModified` applies those, plus
+stride/anchor/NMS, including to `box`):
 
 | node | shape @ 672×416 | floats | meaning |
 |------|------|--------|---------|
-| `box`        | `[1, 5733, 64]` | 366 912 | raw DFL logits (4 sides × 16 bins) |
-| `cls`        | `[1, 5733, 39]` | 223 587 | raw class logits (pre-sigmoid) |
-| `poly_angle` | `[1, 5733, 24]` | 137 592 | raw per-vertex angle (pre-sigmoid sub-bin offset) |
-| `poly_dist`  | `[1, 5733, 24]` | 137 592 | raw per-vertex radial dist (pre-softplus) |
-| `poly_conf`  | `[1, 5733, 24]` | 137 592 | raw per-vertex confidence (pre-sigmoid) |
-| `dist`       | `[1, 5733,  1]` |   5 733 | raw log-distance (pre-exp) |
+| `box`        | `[5733, 4]`  |  22 932 | **DFL-decoded** LTRB distances, pre-stride |
+| `cls`        | `[5733, 39]` | 223 587 | raw class logits (pre-sigmoid) |
+| `poly_angle` | `[5733, 24]` | 137 592 | raw per-vertex angle (pre-sigmoid sub-bin offset) |
+| `poly_dist`  | `[5733, 24]` | 137 592 | raw per-vertex radial dist (pre-softplus) |
+| `poly_conf`  | `[5733, 24]` | 137 592 | raw per-vertex confidence (pre-sigmoid) |
+| `dist`       | `[5733,  1]` |   5 733 | raw log-distance (pre-exp) |
 
 `N = 5733 = 84·52 + 42·26 + 21·13` (strides 8/16/32 over 672×416).
+
+### Box DFL decode (baked, matches the legacy DLC)
+
+The legacy DLC does not emit raw box logits — it bakes the DFL "integral" decode, and so
+does this exporter (op-for-op): `[N,64] → reshape [N,4,16] → softmax over the 16 bins →
+Σ·[0,1,…,15]` (a 1×1 `conv2d`, weights `[1,1,16,1]`, bias 0) `→ [N,4]`. This is exactly
+`distance = Σ softmax(logits)·bin`, identical to `models/detection_generator.py::_decode_dfl`.
+The result is the per-side LTRB distance **in bin units (pre-stride)**; the on-device
+`YoloV8LayerModified` applies stride + anchor + xyxy + NMS. `--verify` asserts the baked
+decode matches the in-repo `_decode_dfl`.
 
 ## Two device-specific transforms vs the `[0,1]` host export
 

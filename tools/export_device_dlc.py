@@ -12,16 +12,21 @@ Legacy contract (reverse-engineered from the on-device tooling — see the
 ``prompts/dlc_conversion.txt`` / ``docs/device_export.md``):
 
     Input  node:  ``input_image``   float32  [1, 672, 416, 3]   pixels in [0, 255]
-    Output nodes (RAW head logits, one flat tensor per head, levels concatenated
-                  3→4→5, channels-last, NO activations / NO DFL decode / NO NMS —
-                  the on-device ``YoloV8LayerModified`` does all of that):
+    Output nodes (one flat tensor per head, levels concatenated 3→4→5, channels-last,
+                  batch dim dropped → [N, C]). ``box`` is DFL-DECODED (the legacy DLC
+                  bakes it in); the rest are RAW (the on-device ``YoloV8LayerModified``
+                  applies sigmoid/softplus/exp + stride/anchor/NMS, and stride/anchor to
+                  box):
 
-        box         float32 [1, N, 4*reg_max]  (= [1, 5733, 64])  raw DFL logits
-        cls         float32 [1, N, num_classes] (= [1, 5733, 39])  raw class logits
-        poly_angle  float32 [1, N, poly_size]   (= [1, 5733, 24])  raw (pre-sigmoid)
-        poly_dist   float32 [1, N, poly_size]   (= [1, 5733, 24])  raw (pre-softplus)
-        poly_conf   float32 [1, N, poly_size]   (= [1, 5733, 24])  raw (pre-sigmoid)
-        dist        float32 [1, N, 1]           (= [1, 5733,  1])  raw log-distance
+        box         float32 [N, 4]            (= [5733, 4])   DFL-decoded LTRB, pre-stride
+        cls         float32 [N, num_classes]  (= [5733, 39])  raw class logits
+        poly_angle  float32 [N, poly_size]    (= [5733, 24])  raw (pre-sigmoid)
+        poly_dist   float32 [N, poly_size]    (= [5733, 24])  raw (pre-softplus)
+        poly_conf   float32 [N, poly_size]    (= [5733, 24])  raw (pre-sigmoid)
+        dist        float32 [N, 1]            (= [5733,  1])  raw log-distance
+
+    ``box`` decode (matches the legacy DLC and detection_generator._decode_dfl):
+        [N, 64] → reshape [N, 4, 16] → softmax over bins → Σ·[0..15] (1×1 conv) → [N, 4].
 
     N = total anchors over the 3 FPN levels for the given input size
         (672×416 → 84·52 + 42·26 + 21·13 = 5733).
@@ -233,7 +238,7 @@ def main(_):
     if with_dist:
         head_chan += [('dist', 1)]
     head_names = [n for n, _ in head_chan]
-    serving_fn = build_serving_fn(model, H, W, head_chan, do_norm)
+    serving_fn = build_serving_fn(model, H, W, head_chan, do_norm, reg_max)
 
     # The on-device SNPE pipeline resolves ``--out_node box`` to tensor ``box:0`` and
     # dumps ``box:0.raw``, so the GraphDef must contain TOP-LEVEL ops literally named
@@ -251,26 +256,55 @@ def main(_):
     log.info("Anchors N = %d  (levels: %s)", n_anchors,
              " + ".join(f"{(H//s)}x{(W//s)}" for s in (8, 16, 32)))
     for name, c in head_chan:
-        log.info("  out_node %-11s [1, %d, %d]  (%d floats)", name, n_anchors, c, n_anchors * c)
+        oc = 4 if name == 'box' else c   # box is DFL-decoded to 4 LTRB distances
+        kind = "DFL-decoded LTRB" if name == 'box' else "raw"
+        log.info("  out_node %-11s [%d, %d]  (%d floats, %s)", name, n_anchors, oc,
+                 n_anchors * oc, kind)
 
     if FLAGS.verify:
         _verify(FLAGS.output_dir, model, H, W, n_anchors, head_chan, do_norm)
 
 
-def build_serving_fn(model, H, W, head_chan, normalize):
-    """Build the device serving tf.function.
+def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16):
+    """Build the device serving tf.function (legacy-DLC contract).
 
-    Bakes /255 (when ``normalize``), runs the raw (deploy=False) model, and emits
-    one ``tf.identity``-tagged tensor per head — levels concatenated 3→4→5,
-    channels-last, raw logits — named exactly box/cls/poly_*/dist.
+    Bakes /255 (when ``normalize``), runs the raw (deploy=False) model, concatenates
+    each head across FPN levels 3→4→5 (row-major), and emits one ``tf.identity``-tagged
+    tensor per head named exactly box/cls/poly_*/dist — with the batch dim dropped so
+    shapes are ``[N, C]`` (matching the legacy DLC nodes).
+
+    The ``box`` head additionally bakes the DFL "integral" decode the legacy DLC
+    contains: reshape ``[1,N,64]→[1,N,4,16]`` → ``softmax`` over the 16 bins → a 1×1
+    ``conv2d`` with constant weights ``[0,1,…,15]`` (shape [1,1,16,1], bias 0) → reshape
+    ``[N,4]``. So ``box`` is the 4 LTRB distances (pre-stride), NOT the raw [N,64]
+    logits. This is exactly ``distance = Σ softmax(logits)·bin`` and matches
+    ``models/detection_generator.py::_decode_dfl``. cls/poly_*/dist stay RAW — the
+    on-device YoloV8LayerModified applies sigmoid/softplus/exp and the stride/anchor/NMS
+    decode (including box) to them.
     """
+    import numpy as np
+    N = sum((H // s) * (W // s) for s in (8, 16, 32))
+    # DFL integral weights: a 1×1 conv over the 16-bin axis, filter = bin indices.
+    bin_w = tf.constant(np.arange(reg_max, dtype=np.float32).reshape(1, 1, reg_max, 1))
+
     @tf.function(input_signature=[
         tf.TensorSpec(shape=[1, H, W, 3], dtype=tf.float32, name='input_image')
     ])
     def serving_fn(input_image):
         images = input_image / 255.0 if normalize else input_image
         raw = model(images, training=False)
-        return {n: tf.identity(_concat_levels(raw[n], c), name=n) for n, c in head_chan}
+        out = {}
+        for n, c in head_chan:
+            x = _concat_levels(raw[n], c)                   # [1, N, c]
+            if n == 'box':
+                b = tf.reshape(x, [1, N, 4, reg_max])       # [1, N, 4, 16]
+                p = tf.nn.softmax(b, axis=-1)               # softmax over the 16 bins
+                d = tf.nn.conv2d(p, bin_w, strides=[1, 1, 1, 1], padding='VALID')  # [1,N,4,1]
+                x = tf.reshape(d, [N, 4])                   # [N, 4] LTRB (batch dropped)
+            else:
+                x = tf.reshape(x, [N, c])                   # [N, c] raw (batch dropped)
+            out[n] = tf.identity(x, name=n)
+        return out
 
     return serving_fn
 
@@ -343,61 +377,37 @@ def _verify(saved_model_dir, model, H, W, n_anchors, head_chan, do_norm):
     assert set(head_names) <= got, f"missing output nodes: {set(head_names) - got} (got {got})"
     log.info("[ok] signature output nodes present: %s", sorted(got))
 
-    # 2) shapes / element counts
+    # 2) shapes / element counts. box is DFL-decoded to [N, 4]; the rest are raw
+    #    [N, C]; all have the batch dim dropped (legacy-DLC node layout).
     for name, c in head_chan:
+        oc  = 4 if name == 'box' else c
         shp = tuple(out[name].shape)
-        assert shp == (1, n_anchors, c), f"{name}: expected (1,{n_anchors},{c}), got {shp}"
-    log.info("[ok] all node shapes == [1, %d, C]", n_anchors)
+        assert shp == (n_anchors, oc), f"{name}: expected ({n_anchors},{oc}), got {shp}"
+    log.info("[ok] node shapes match legacy layout (box [N,4], others [N,C], no batch dim)")
 
-    # 3) /255 equivalence: device([0,255]) == raw-model(img/255) concatenated.
+    # 3) /255 equivalence for the RAW heads: device([0,255]) == concat(raw-model(img/255)),
+    #    batch dropped. Covers cls/poly_*/dist (box is decoded, checked in 4).
     raw = model(tf.constant(img255) / 255.0 if do_norm else tf.constant(img255),
                 training=False)
-    n_classes = dict(head_chan)['cls']
-    man = _concat_levels(raw['cls'], n_classes).numpy()
-    _assert_close('cls', out['cls'].numpy(), man)
-    log.info("[ok] /255 + concat reproduces the raw model (within float32 graph accumulation)")
+    for name, c in head_chan:
+        if name == 'box':
+            continue
+        ref = _concat_levels(raw[name], c)[0].numpy()   # [N, c]
+        _assert_close(name, out[name].numpy(), ref)
+    log.info("[ok] raw heads reproduce /255 + concat (within float32 graph accumulation)")
 
-    # 4) decode equivalence: split the concatenated nodes back into a per-level
-    #    dict and run the in-repo YoloV8Layer (the port of the on-device
-    #    YoloV8LayerModified). Its detections must match the deploy path that
-    #    consumes the native per-level dict — proving the concatenation is the
-    #    correct, lossless layout the device decoder expects.
-    if model.detection_generator is not None:
-        counts = [(H // s) * (W // s) for s in (8, 16, 32)]
-        hw     = [(H // s, W // s) for s in (8, 16, 32)]
-
-        def _split(name, c):
-            flat = out[name].numpy()[0]               # [N, c]
-            per = {}
-            off = 0
-            for lvl, n, (lh, lw) in zip(_LEVELS, counts, hw):
-                per[lvl] = tf.constant(flat[off:off + n].reshape(1, lh, lw, c))
-                off += n
-            return per
-
-        # Layout check (robust): splitting each concatenated node back to per-level
-        # must reproduce the native per-level tensors the deploy path consumes. This
-        # validates the concat layout directly and tolerates the benign float32 graph
-        # accumulation, without the NMS discontinuity of comparing post-decode boxes.
-        for name, c in head_chan:
-            for lvl in _LEVELS:
-                _assert_close(f'{name}[{lvl}] layout',
-                              _split(name, c)[lvl].numpy(), raw[name][lvl].numpy())
-
-        # Decode sanity: detections from the rebuilt per-level dict should match the
-        # deploy path. NMS is discontinuous, so a near-threshold box can legitimately
-        # flip given the tiny graph-accumulation difference — compare leniently and
-        # only warn (never hard-fail) on a small num_detections delta.
-        rebuilt     = {name: _split(name, c) for name, c in head_chan}
-        from_raw    = model.detection_generator(rebuilt)
-        from_deploy = model.detection_generator(raw)
-        nd_raw = int(from_raw['num_detections'].numpy().sum())
-        nd_dep = int(from_deploy['num_detections'].numpy().sum())
-        if nd_raw != nd_dep:
-            log.warning("decode num_detections differ by %d (raw=%d deploy=%d) — expected "
-                        "near an NMS score threshold; not a layout fault.",
-                        abs(nd_raw - nd_dep), nd_raw, nd_dep)
-        log.info("[ok] concat split reproduces native per-level layout — drop-in layout confirmed")
+    # 4) box DFL decode equivalence: the baked reshape→softmax→Σ·bins must match the
+    #    in-repo DFL decode (detection_generator._decode_dfl), per level then concat
+    #    3→4→5. This also confirms the box concat layout. Pre-stride LTRB distances.
+    dg = model.detection_generator
+    if dg is not None:
+        parts = []
+        for lvl in _LEVELS:
+            ltrb = dg._decode_dfl(tf.cast(raw['box'][lvl], tf.float32))   # [1,Hl,Wl,4]
+            parts.append(tf.reshape(ltrb, [1, -1, 4]))
+        box_ref = tf.concat(parts, axis=1)[0].numpy()                     # [N, 4]
+        _assert_close('box (DFL)', out['box'].numpy(), box_ref)
+        log.info("[ok] box reproduces the in-repo DFL decode (softmax + Σ·bins, pre-stride)")
 
     log.info("---- verification PASSED ----")
 
