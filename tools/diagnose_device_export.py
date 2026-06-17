@@ -49,8 +49,16 @@ def _stats(name, a, b):
     if a.shape != b.shape:
         return f"{name:18s} SHAPE DIFF {a.shape} vs {b.shape}"
     mism = float(np.mean(~np.isclose(a, b, rtol=1e-5, atol=1e-4)) * 100.0)
-    return (f"{name:18s} mism={mism:6.2f}%  max|d|={np.abs(a - b).max():.3e}  "
-            f"max|val|={np.abs(a).max():.3e}")
+    maxd = float(np.abs(a - b).max())
+    maxv = float(np.abs(a).max())
+    rel  = maxd / (maxv + 1e-9)
+    # Verdict: a deep float32 graph differs from eager by benign accumulation
+    # (fused vs unfused ops). The strict rtol=1e-5 flags that as a high mism% even
+    # when the ABSOLUTE difference is negligible — and SNPE then quantizes to int8/
+    # int16, swamping anything below ~1% relative. Only a large relative diff is real.
+    verdict = "BENIGN(accum)" if rel < 1e-2 else ("borderline" if rel < 1e-1 else "REAL-DIVERGENCE")
+    return (f"{name:18s} mism={mism:6.2f}%  max|d|={maxd:.3e}  "
+            f"max|val|={maxv:.3e}  rel={rel:.2e}  -> {verdict}")
 
 
 def main(_):
