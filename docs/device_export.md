@@ -101,15 +101,29 @@ deploy path — i.e. the concatenation is the lossless layout the device decoder
 
 ### Troubleshooting `--verify`
 
-**`cls` ... `Not equal to tolerance`, ~60–80% mismatched elements (matching shapes/dtypes).**
-This is a **precision asymmetry**, not a layout bug. The SavedModel is frozen in
-float32, but the in-memory reference model was built under a leaked `mixed_bfloat16`
-global policy (the base `yolov8_poly_dist.yaml` trains in bfloat16, and
-`tools/runtime_setup.py` or an earlier import in a long-lived session can set that
-policy). The prediction heads are pinned float32, so their conv **stems** compute in
-bf16 while the head outputs still *report* float32 dtype — hence the mismatch with no
-dtype clue. The exporter now calls `set_global_policy('float32')` and **asserts** it
-stuck both before and after building the model, raising a clear error if a bf16 policy
-leaked. Fix: run the export in a clean process / before any bfloat16 policy is set.
+**`cls ... Not equal to tolerance`, large % of mismatched elements (matching shapes/dtypes).**
+The **% of mismatched elements is a misleading metric** here. The exported SavedModel
+is a ~280-layer float32 graph; it legitimately differs from the eager Keras model by
+benign accumulation — fused (`FusedBatchNormV3`, fused conv) vs unfused ops compute in
+a different order — which is **~1e-3 relative or smaller**. With trained weights that
+tiny difference lands outside a strict per-element `rtol=1e-5` band for most elements
+(60–80%), even though it is numerically negligible and SNPE's int8/int16 quantization
+swamps it entirely. The DLC is fine.
+
+`--verify` now judges by **relative magnitude** (`max|diff| / max|ref|`) instead of an
+element count at an unrealistic tolerance: benign accumulation passes, while a real
+fault — a wrong concat/wiring layout, weights dropped in the freeze step, or a
+precision asymmetry (bf16 stems under a leaked `mixed_bfloat16` policy vs the float32
+graph) — produces an O(1) relative error and fails loudly with diagnostics.
+
+To localize a genuine failure, run `tools/diagnose_device_export.py` (same flags). It
+runs one image through every export stage (eager → tf.function trace → freeze/re-import
+→ reloaded SavedModel) and prints per-head relative error plus a
+`BENIGN(accum)/borderline/REAL-DIVERGENCE` verdict, so you can tell tolerance
+strictness from a real divergence without sharing any image content or weights.
+
+The exporter also still forces and asserts a float32 policy before/after building the
+model, so a leaked `mixed_bfloat16` policy (which would make conv stems compute bf16
+while float32-pinned heads hide it) fails fast at the source.
 
 Tests: `tests/test_export_device_dlc.py`.

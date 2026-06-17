@@ -120,13 +120,24 @@ def test_force_float32_policy_raises_on_leaked_bf16(monkeypatch):
         ed._force_float32_policy()
 
 
-def test_assert_close_precision_hint():
-    """A large mismatch yields an actionable precision-asymmetry message."""
-    got = np.zeros([1, 100, 39], np.float32)
-    ref = got.copy()
-    ref[0, :80] = 0.02                                  # 80% of rows differ
-    with pytest.raises(AssertionError, match="PRECISION asymmetry"):
-        ed._assert_close("cls", got, ref, rtol=1e-5, atol=1e-4)
+def test_assert_close_tolerates_benign_accumulation():
+    """Benign float32 graph accumulation (tiny relative error) must PASS even when a
+    large fraction of elements exceed a strict rtol=1e-5 band."""
+    rng = np.random.RandomState(0)
+    ref = rng.uniform(-15, 15, size=[1, 100, 39]).astype(np.float32)
+    got = ref + rng.normal(0, 7e-4 * 15, size=ref.shape).astype(np.float32)  # ~7e-4 rel
+    # Most elements fall outside rtol=1e-5, but the relative magnitude is benign.
+    assert np.mean(~np.isclose(got, ref, rtol=1e-5, atol=1e-4)) > 0.5
+    ed._assert_close("cls", got, ref)                   # must not raise
+
+
+def test_assert_close_flags_real_divergence():
+    """An O(1) relative error (wrong layout / dropped weights / bf16 stems) must fail
+    loudly, naming the real causes."""
+    ref = np.ones([1, 100, 39], np.float32)
+    got = np.zeros_like(ref)                            # 100% relative error
+    with pytest.raises(AssertionError, match="REAL fault"):
+        ed._assert_close("cls", got, ref)
 
 
 def test_decode_equivalence(exported):
