@@ -218,6 +218,11 @@ def main(_):
 
     model = build_yolov8(model_cfg)
     model.deploy = False                 # raw head dict, NOT the NMS/deploy path
+    # Fixed-size export: use compile-time-constant FPN upsample sizes so the graph has
+    # no Shape→StridedSlice (SNPE-clean). Safe because the export builds/traces at one
+    # size; training/eval keep the dynamic (robust) path. Numerically identical here.
+    if getattr(model, 'decoder', None) is not None:
+        model.decoder.static_resize = True
     model.build_and_init([H, W, 3])
 
     # Belt-and-suspenders: confirm nothing inside build_* re-enabled a non-float32

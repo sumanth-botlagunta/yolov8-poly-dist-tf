@@ -150,8 +150,12 @@ graph no longer contains the dynamic `Shape→StridedSlice→Pack→Reshape` sub
 If the converter still fails in `StridedSliceLayerBuilder`, it is choking on the
 StridedSlice op itself (SNPE's builder is fragile regardless of mask), so the export
 now removes **every** StridedSlice: the C2f channel split uses `tf.split` (a `Split`
-op) instead of `y[..., :c]`/`y[:, :, :, :c]`, and the FPN upsample uses a static
-resize size instead of `tf.shape(ref)[1:3]` (which emitted Shape→StridedSlice). Both
+op) instead of `y[..., :c]`/`y[:, :, :, :c]`, and the FPN upsample size is made a
+compile-time constant **for the export only** (`decoder.static_resize`, set by the
+exporter) instead of `tf.shape(ref)[1:3]` (which emitted Shape→StridedSlice). Training
+and eval keep the **dynamic** resize (`tf.image.resize` to the runtime size), which is
+robust to any input size or build-vs-run mismatch — a static size baked into the model
+would mismatch the concat when the model is built at one size and run at another. Both
 are numerically byte-identical and do not change training or checkpoints.
 
 `test_graph_is_snpe_compatible` guards the exported GraphDef: **no `StridedSlice` at

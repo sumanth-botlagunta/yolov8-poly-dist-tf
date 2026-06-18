@@ -30,6 +30,8 @@ def full_model():
     cfg.input_size = [H, W, 3]
     model = build_yolov8(cfg)
     model.deploy = False
+    if getattr(model, "decoder", None) is not None:
+        model.decoder.static_resize = True   # mirror the exporter (fixed-size, SNPE-clean)
     model.build_and_init([H, W, 3])
     return model, cfg
 
