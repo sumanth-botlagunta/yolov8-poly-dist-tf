@@ -28,15 +28,15 @@ def _check_sources():
     print("  models.decoder :", d.__file__)
     bsrc = inspect.getsource(b)
     dsrc = inspect.getsource(d)
-    # Fix markers (inspect the actual call bodies, not comments): the C2f forward must
-    # use tf.split for the channel split; the decoder must route the FPN upsample
-    # through _resize_nn (static size, no Shape/StridedSlice).
-    # tf.split appears only in the patched C2f.call (old code used tensor indexing);
-    # _resize_nn appears only in the patched decoder (old code used tf.shape(...)[1:3]).
+    # Fix markers (positive, unique to the patched code):
+    #   backbone C2f.call: tf.split for the channel split (old code used tensor indexing).
+    #   decoder: the static_resize mechanism — dynamic FPN upsample in the model, made a
+    #     compile-time-constant size for the export (old code used a plain
+    #     tf.image.resize(..., tf.shape(ref)[1:3]) / the reverted _resize_nn helper).
     b_ok = "tf.split(" in inspect.getsource(b.C2f.call)
-    d_ok = "def _resize_nn" in dsrc
+    d_ok = "static_resize" in dsrc and "def _upsample" in dsrc
     print("  backbone C2f uses tf.split (no ellipsis slice):", "YES" if b_ok else "NO  <-- OLD CODE")
-    print("  decoder uses _resize_nn (static resize):       ", "YES" if d_ok else "NO  <-- OLD CODE")
+    print("  decoder has static_resize/_upsample (SNPE-clean):", "YES" if d_ok else "NO  <-- OLD CODE")
     return b_ok and d_ok
 
 
