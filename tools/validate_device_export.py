@@ -28,6 +28,13 @@ Usage:
 """
 
 import logging
+import os
+import sys
+
+# Ensure the repo root is searched BEFORE this script's own dir, so `import eval`
+# resolves to the eval/ package and not to tools/eval.py (which shadows it when this
+# file is run as `python tools/validate_device_export.py`).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from absl import app, flags
 import numpy as np
