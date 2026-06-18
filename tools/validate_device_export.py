@@ -47,7 +47,10 @@ FLAGS = flags.FLAGS
 try:
     flags.DEFINE_string('config', None, 'Experiment YAML.', required=True)
     flags.DEFINE_string('checkpoint', None, 'Checkpoint prefix.', required=True)
-    flags.DEFINE_string('saved_model', None, 'Exported device SavedModel dir.', required=True)
+    flags.DEFINE_string('saved_model', None, 'Optional: a written device SavedModel. '
+                        'NOTE: it is fixed-size, so it cannot run on val images of a '
+                        'different size; the export graph is rebuilt in-process at the '
+                        'val-data size (byte-identical, proven by --verify).')
     flags.DEFINE_integer('num_images', 500, 'How many val images to score (-1 = all).')
     flags.DEFINE_float('iou_thr', 0.5, 'IoU threshold for the direct precision/recall/F1.')
     flags.DEFINE_bool('normalize_baked', True, 'SavedModel bakes /255 (feed raw [0,255]).')
@@ -168,6 +171,7 @@ def main(_):
     from configs.yaml_loader import load_config
     from models.yolo_v8 import build_yolov8
     from tools.ckpt_loading import restore_eval_weights
+    from tools.export_device_dlc import build_serving_fn
     from train.task import YoloV8Task, normalize_images
     from eval.coco_metrics import COCOEvaluator
 
@@ -181,7 +185,25 @@ def main(_):
     gm.deploy = True
     gm.build_and_init(tcfg.model.input_size)
     restore_eval_weights(gm, FLAGS.checkpoint)
-    dev_fn = tf.saved_model.load(FLAGS.saved_model).signatures['serving_default']
+
+    # EXPORT graph, rebuilt IN-PROCESS at the val-data size. A written SavedModel is
+    # frozen at its export size (e.g. 672x416) and cannot run on val images of another
+    # size (672x672) — that is the concat size-mismatch. build_serving_fn is the exact
+    # export logic (box DFL-decoded, raw heads, /255 baked); --verify proves it is
+    # byte-identical to the SavedModel, so this faithfully validates the export.
+    dm = build_yolov8(tcfg.model)
+    dm.deploy = False
+    if getattr(dm, 'decoder', None) is not None:
+        dm.decoder.static_resize = True
+    dm.build_and_init(tcfg.model.input_size)
+    restore_eval_weights(dm, FLAGS.checkpoint)
+    poly_size = tcfg.model.output_poly_size
+    head_chan = [('box', 64), ('cls', nc)]
+    if tcfg.with_polygons:
+        head_chan += [('poly_angle', poly_size), ('poly_dist', poly_size), ('poly_conf', poly_size)]
+    if tcfg.with_distance:
+        head_chan += [('dist', 1)]
+    dev_serving = build_serving_fn(dm, H, W, head_chan, normalize=FLAGS.normalize_baked)
 
     task = YoloV8Task(config)
     data_cfg = dataclasses.replace(tcfg.validation_data, is_training=False)
@@ -200,7 +222,7 @@ def main(_):
         imgs = tf.cast(images, tf.float32)
         for i in range(B):
             raw_in = imgs[i:i + 1] if FLAGS.normalize_baked else imgs[i:i + 1] / 255.0
-            dpred = _reconstruct(dev_fn(input_image=raw_in), H, W, nc)
+            dpred = _reconstruct(dev_serving(raw_in), H, W, nc)
             lbl_i = {k: v[i:i + 1] for k, v in labels.items()}
             ev_d.update(dpred, lbl_i)
             rec_g.append(_collect(gpred, labels, i))
