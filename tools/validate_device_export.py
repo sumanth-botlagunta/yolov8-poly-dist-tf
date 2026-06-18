@@ -46,15 +46,10 @@ import tensorflow as tf
 FLAGS = flags.FLAGS
 try:
     flags.DEFINE_string('config', None, 'Experiment YAML.', required=True)
-    flags.DEFINE_string('checkpoint', None, 'Checkpoint prefix.', required=True)
-    flags.DEFINE_string('saved_model', None, 'Optional: a written device SavedModel. '
-                        'NOTE: it is fixed-size, so it cannot run on val images of a '
-                        'different size; the export graph is rebuilt in-process at the '
-                        'val-data size (byte-identical, proven by --verify).')
-    flags.DEFINE_string('input_size', '672,416',
-                        'H,W to validate at. Default 672,416 = the DLC/device runtime '
-                        'size, so the score reflects on-device behavior (images are '
-                        'letterboxed to this size, exactly like the device raw images).')
+    flags.DEFINE_string('checkpoint', None, 'Checkpoint prefix (for the GOLDEN reference).', required=True)
+    flags.DEFINE_string('saved_model', None, 'The exported device SavedModel — the exact '
+                        'artifact that becomes the DLC. Scored at its own native size.',
+                        required=True)
     flags.DEFINE_integer('num_images', 500, 'How many val images to score (-1 = all).')
     flags.DEFINE_float('iou_thr', 0.5, 'IoU threshold for the direct precision/recall/F1.')
     flags.DEFINE_bool('normalize_baked', True, 'SavedModel bakes /255 (feed raw [0,255]).')
@@ -182,45 +177,30 @@ def main(_):
     from configs.yaml_loader import load_config
     from models.yolo_v8 import build_yolov8
     from tools.ckpt_loading import restore_eval_weights
-    from tools.export_device_dlc import build_serving_fn
     from train.task import YoloV8Task, normalize_images
     from eval.coco_metrics import COCOEvaluator
 
     tf.keras.mixed_precision.set_global_policy('float32')
     config = load_config(FLAGS.config)
     tcfg = config.task
-    # Validate at the DLC/device size (default 672x416). Overriding model.input_size
-    # makes the eval parser letterbox images to this size (input_reader reads
-    # task.model.input_size), and builds golden + the export graph + anchors at it — so
-    # the whole comparison reflects how the model runs on-device.
-    H, W = (int(x) for x in FLAGS.input_size.split(','))
-    tcfg.model.input_size = [H, W, 3]
     nc = tcfg.num_classes
-    log.info("Validating at %dx%d (DLC/device runtime size)", H, W)
+
+    # Score the ACTUAL exported SavedModel (the exact artifact that becomes the DLC),
+    # at its own native input size from the signature (e.g. 672x416). Overriding
+    # model.input_size makes the eval parser letterbox images to exactly that size, and
+    # builds golden + anchors at it — so the comparison reflects the real DLC at the real
+    # device size, no rebuild, no size mismatch.
+    loaded = tf.saved_model.load(FLAGS.saved_model)
+    dev_serving = loaded.signatures['serving_default']
+    in_shape = dev_serving.inputs[0].shape          # [1, H, W, 3]
+    H, W = int(in_shape[1]), int(in_shape[2])
+    tcfg.model.input_size = [H, W, 3]
+    log.info("Scoring SavedModel %s — native %dx%d (the DLC's size)", FLAGS.saved_model, H, W)
 
     gm = build_yolov8(tcfg.model)
     gm.deploy = True
     gm.build_and_init(tcfg.model.input_size)
     restore_eval_weights(gm, FLAGS.checkpoint)
-
-    # EXPORT graph, rebuilt IN-PROCESS at the val-data size. A written SavedModel is
-    # frozen at its export size (e.g. 672x416) and cannot run on val images of another
-    # size (672x672) — that is the concat size-mismatch. build_serving_fn is the exact
-    # export logic (box DFL-decoded, raw heads, /255 baked); --verify proves it is
-    # byte-identical to the SavedModel, so this faithfully validates the export.
-    dm = build_yolov8(tcfg.model)
-    dm.deploy = False
-    if getattr(dm, 'decoder', None) is not None:
-        dm.decoder.static_resize = True
-    dm.build_and_init(tcfg.model.input_size)
-    restore_eval_weights(dm, FLAGS.checkpoint)
-    poly_size = tcfg.model.output_poly_size
-    head_chan = [('box', 64), ('cls', nc)]
-    if tcfg.with_polygons:
-        head_chan += [('poly_angle', poly_size), ('poly_dist', poly_size), ('poly_conf', poly_size)]
-    if tcfg.with_distance:
-        head_chan += [('dist', 1)]
-    dev_serving = build_serving_fn(dm, H, W, head_chan, normalize=FLAGS.normalize_baked)
 
     task = YoloV8Task(config)
     data_cfg = dataclasses.replace(tcfg.validation_data, is_training=False)
@@ -239,7 +219,7 @@ def main(_):
         imgs = tf.cast(images, tf.float32)
         for i in range(B):
             raw_in = imgs[i:i + 1] if FLAGS.normalize_baked else imgs[i:i + 1] / 255.0
-            dpred = _reconstruct(dev_serving(raw_in), H, W, nc)
+            dpred = _reconstruct(dev_serving(input_image=raw_in), H, W, nc)
             lbl_i = {k: v[i:i + 1] for k, v in labels.items()}
             ev_d.update(dpred, lbl_i)
             rec_g.append(_collect(gpred, labels, i))

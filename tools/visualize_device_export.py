@@ -7,11 +7,15 @@ N random validation images, reconstructs detections exactly as the on-device dec
 (LTRB→stride→anchor→xyxy, sigmoid cls, top-1, per-class NMS; polygons sigmoid/softplus),
 and writes one annotated PNG per image (predictions in class colors; GT boxes in white).
 
+Runs the ACTUAL exported SavedModel (the exact artifact converted to the DLC), at its
+own native input size (read from the signature, e.g. 672×416), so the picture reflects
+exactly what the DLC consumes — no in-process rebuild.
+
 Usage:
     python -m tools.visualize_device_export \
         --config configs/experiments/yolo/yolov8_poly_dist.yaml \
-        --checkpoint /path/to/ckpt-N \
-        --num_images 20 --input_size 672,416 --output_dir /tmp/dlc_viz
+        --saved_model /path/to/device/saved_model \
+        --num_images 20 --output_dir /tmp/dlc_viz
 """
 
 import logging
@@ -26,10 +30,10 @@ import tensorflow as tf
 
 FLAGS = flags.FLAGS
 try:
-    flags.DEFINE_string('config', None, 'Experiment YAML.', required=True)
-    flags.DEFINE_string('checkpoint', None, 'Checkpoint prefix.', required=True)
+    flags.DEFINE_string('config', None, 'Experiment YAML (for the val data + class names).', required=True)
+    flags.DEFINE_string('saved_model', None, 'The exported device SavedModel — the exact '
+                        'artifact that gets converted to the DLC.', required=True)
     flags.DEFINE_integer('num_images', 20, 'How many random val images to render.')
-    flags.DEFINE_string('input_size', '672,416', 'H,W (the DLC/device runtime size).')
     flags.DEFINE_string('output_dir', '/tmp/dlc_viz', 'Where to write annotated PNGs.')
     flags.DEFINE_float('score_thresh', 0.25, 'Only draw detections with score >= this.')
     flags.DEFINE_bool('draw_gt', True, 'Overlay ground-truth boxes (white).')
@@ -122,9 +126,6 @@ def _reconstruct_full(dev_out, H, W, nc, poly_size, max_boxes=300,
 def main(_):
     import dataclasses
     from configs.yaml_loader import load_config
-    from models.yolo_v8 import build_yolov8
-    from tools.ckpt_loading import restore_eval_weights
-    from tools.export_device_dlc import build_serving_fn
     from train.task import YoloV8Task
     from train.viz_utils import render_summary_images, _draw_box
     try:
@@ -136,25 +137,20 @@ def main(_):
     tf.keras.mixed_precision.set_global_policy('float32')
     config = load_config(FLAGS.config)
     tcfg = config.task
-    H, W = (int(x) for x in FLAGS.input_size.split(','))
-    tcfg.model.input_size = [H, W, 3]
     nc = tcfg.num_classes
     poly_size = tcfg.model.output_poly_size
-    os.makedirs(FLAGS.output_dir, exist_ok=True)
-    log.info("Rendering %d images at %dx%d → %s", FLAGS.num_images, H, W, FLAGS.output_dir)
 
-    dm = build_yolov8(tcfg.model)
-    dm.deploy = False
-    if getattr(dm, 'decoder', None) is not None:
-        dm.decoder.static_resize = True
-    dm.build_and_init(tcfg.model.input_size)
-    restore_eval_weights(dm, FLAGS.checkpoint)
-    head_chan = [('box', 64), ('cls', nc)]
-    if tcfg.with_polygons:
-        head_chan += [('poly_angle', poly_size), ('poly_dist', poly_size), ('poly_conf', poly_size)]
-    if tcfg.with_distance:
-        head_chan += [('dist', 1)]
-    serving = build_serving_fn(dm, H, W, head_chan, normalize=True)
+    # Load the ACTUAL exported SavedModel — the exact graph that becomes the DLC — and
+    # take its native input size from the signature, so the val images are letterboxed to
+    # exactly what the SavedModel/DLC consumes (no rebuild, no size mismatch).
+    loaded = tf.saved_model.load(FLAGS.saved_model)
+    serving = loaded.signatures['serving_default']
+    in_shape = serving.inputs[0].shape          # [1, H, W, 3]
+    H, W = int(in_shape[1]), int(in_shape[2])
+    tcfg.model.input_size = [H, W, 3]
+    os.makedirs(FLAGS.output_dir, exist_ok=True)
+    log.info("Loaded SavedModel %s — native input %dx%d (the DLC's size). Rendering %d images → %s",
+             FLAGS.saved_model, H, W, FLAGS.num_images, FLAGS.output_dir)
 
     task = YoloV8Task(config)
     data_cfg = dataclasses.replace(tcfg.validation_data, is_training=False)
@@ -166,7 +162,7 @@ def main(_):
         B = int(images.shape[0])
         imgs = tf.cast(images, tf.float32)
         for i in range(B):
-            out = serving(imgs[i:i + 1])                 # raw [0,255] in
+            out = serving(input_image=imgs[i:i + 1])     # the real SavedModel, raw [0,255] in
             pred = _reconstruct_full(out, H, W, nc, poly_size)
             # display threshold (NMS already ran at 0.05; filter for a clean overlay)
             keep = pred['confidence'] >= FLAGS.score_thresh
