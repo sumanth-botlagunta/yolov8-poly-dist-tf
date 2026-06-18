@@ -1,0 +1,200 @@
+"""Visualize the device-export model's detections on random val images (at 672×416).
+
+Eyeball check that the DLC graph is producing sensible boxes/polygons: it builds the
+exact export graph in-process at the device size (box DFL-decoded LTRB, raw heads, /255
+baked — byte-identical to the written SavedModel, proven by export --verify), runs it on
+N random validation images, reconstructs detections exactly as the on-device decoder must
+(LTRB→stride→anchor→xyxy, sigmoid cls, top-1, per-class NMS; polygons sigmoid/softplus),
+and writes one annotated PNG per image (predictions in class colors; GT boxes in white).
+
+Usage:
+    python -m tools.visualize_device_export \
+        --config configs/experiments/yolo/yolov8_poly_dist.yaml \
+        --checkpoint /path/to/ckpt-N \
+        --num_images 20 --input_size 672,416 --output_dir /tmp/dlc_viz
+"""
+
+import logging
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from absl import app, flags
+import numpy as np
+import tensorflow as tf
+
+FLAGS = flags.FLAGS
+try:
+    flags.DEFINE_string('config', None, 'Experiment YAML.', required=True)
+    flags.DEFINE_string('checkpoint', None, 'Checkpoint prefix.', required=True)
+    flags.DEFINE_integer('num_images', 20, 'How many random val images to render.')
+    flags.DEFINE_string('input_size', '672,416', 'H,W (the DLC/device runtime size).')
+    flags.DEFINE_string('output_dir', '/tmp/dlc_viz', 'Where to write annotated PNGs.')
+    flags.DEFINE_float('score_thresh', 0.25, 'Only draw detections with score >= this.')
+    flags.DEFINE_bool('draw_gt', True, 'Overlay ground-truth boxes (white).')
+    flags.DEFINE_bool('draw_poly', True, 'Overlay predicted polygon contours.')
+    flags.DEFINE_integer('seed', 0, 'Shuffle seed for image selection.')
+except flags.DuplicateFlagError:
+    pass
+log = logging.getLogger(__name__)
+
+_STRIDES = [8, 16, 32]
+
+
+def _sigmoid(x):
+    out = np.empty_like(x, dtype=np.float32)
+    p = x >= 0
+    out[p] = 1.0 / (1.0 + np.exp(-x[p]))
+    e = np.exp(x[~p])
+    out[~p] = e / (1.0 + e)
+    return out
+
+
+def _softplus(x):
+    return np.logaddexp(0.0, x).astype(np.float32)   # stable log(1+exp(x))
+
+
+def _anchor_grid(Hl, Wl, s):
+    ys = (np.arange(Hl) + 0.5) * s
+    xs = (np.arange(Wl) + 0.5) * s
+    gx, gy = np.meshgrid(xs, ys)
+    return gx.reshape(-1), gy.reshape(-1)
+
+
+def _reconstruct_full(dev_out, H, W, nc, poly_size, max_boxes=300,
+                      score_thresh=0.05, nms_thresh=0.65):
+    """Full deploy-dict (boxes + activated polygons) from device outputs, carrying the
+    polygon heads through the same top-1 / per-class NMS the on-device decoder uses."""
+    box = dev_out['box'].numpy()
+    cls = dev_out['cls'].numpy()
+    pa = dev_out['poly_angle'].numpy() if 'poly_angle' in dev_out else None
+    pd = dev_out['poly_dist'].numpy() if 'poly_dist' in dev_out else None
+    pc = dev_out['poly_conf'].numpy() if 'poly_conf' in dev_out else None
+    has_poly = pa is not None
+
+    boxes, off = [], 0
+    for s in _STRIDES:
+        Hl, Wl = H // s, W // s
+        n = Hl * Wl
+        seg = box[off:off + n] * s
+        cx, cy = _anchor_grid(Hl, Wl, s)
+        l, t, r, b = seg[:, 0], seg[:, 1], seg[:, 2], seg[:, 3]
+        boxes.append(np.stack([(cy - t) / H, (cx - l) / W, (cy + b) / H, (cx + r) / W], 1))
+        off += n
+    boxes = np.clip(np.concatenate(boxes, 0), 0.0, 1.0).astype(np.float32)
+    scores = _sigmoid(cls)
+    top = scores.argmax(1)
+    top_s = scores[np.arange(len(scores)), top]
+
+    sel_global, sel_cls = [], []
+    for c in range(nc):
+        m = np.where(top == c)[0]
+        if m.size == 0:
+            continue
+        idx = tf.image.non_max_suppression(boxes[m], top_s[m], max_boxes,
+                                           nms_thresh, score_thresh).numpy()
+        sel_global.append(m[idx])
+        sel_cls.append(np.full(len(idx), c, np.int64))
+    if sel_global:
+        gi = np.concatenate(sel_global)
+        gc = np.concatenate(sel_cls)
+        order = np.argsort(-top_s[gi])[:max_boxes]
+        gi, gc = gi[order], gc[order]
+    else:
+        gi = np.zeros([0], int); gc = np.zeros([0], np.int64)
+    k = len(gi)
+
+    polys = np.zeros([k, poly_size, 3], np.float32)
+    if has_poly and k:
+        polys[:, :, 0] = _sigmoid(pc[gi])     # conf
+        polys[:, :, 1] = _softplus(pd[gi])    # dist
+        polys[:, :, 2] = _sigmoid(pa[gi])     # angle
+    return {
+        'bbox': boxes[gi],
+        'classes': gc,
+        'confidence': top_s[gi],
+        'num_detections': k,
+        'polygons': polys,
+    }
+
+
+def main(_):
+    import dataclasses
+    from configs.yaml_loader import load_config
+    from models.yolo_v8 import build_yolov8
+    from tools.ckpt_loading import restore_eval_weights
+    from tools.export_device_dlc import build_serving_fn
+    from train.task import YoloV8Task
+    from train.viz_utils import render_summary_images, _draw_box
+    try:
+        from configs.class_map import DETECTION_CLASSES
+        class_names = [DETECTION_CLASSES[i] for i in range(len(DETECTION_CLASSES))]
+    except Exception:
+        class_names = None
+
+    tf.keras.mixed_precision.set_global_policy('float32')
+    config = load_config(FLAGS.config)
+    tcfg = config.task
+    H, W = (int(x) for x in FLAGS.input_size.split(','))
+    tcfg.model.input_size = [H, W, 3]
+    nc = tcfg.num_classes
+    poly_size = tcfg.model.output_poly_size
+    os.makedirs(FLAGS.output_dir, exist_ok=True)
+    log.info("Rendering %d images at %dx%d → %s", FLAGS.num_images, H, W, FLAGS.output_dir)
+
+    dm = build_yolov8(tcfg.model)
+    dm.deploy = False
+    if getattr(dm, 'decoder', None) is not None:
+        dm.decoder.static_resize = True
+    dm.build_and_init(tcfg.model.input_size)
+    restore_eval_weights(dm, FLAGS.checkpoint)
+    head_chan = [('box', 64), ('cls', nc)]
+    if tcfg.with_polygons:
+        head_chan += [('poly_angle', poly_size), ('poly_dist', poly_size), ('poly_conf', poly_size)]
+    if tcfg.with_distance:
+        head_chan += [('dist', 1)]
+    serving = build_serving_fn(dm, H, W, head_chan, normalize=True)
+
+    task = YoloV8Task(config)
+    data_cfg = dataclasses.replace(tcfg.validation_data, is_training=False)
+    val_ds = task.build_inputs(data_cfg).shuffle(256, seed=FLAGS.seed)
+
+    import cv2
+    written = 0
+    for images, labels in val_ds:
+        B = int(images.shape[0])
+        imgs = tf.cast(images, tf.float32)
+        for i in range(B):
+            out = serving(imgs[i:i + 1])                 # raw [0,255] in
+            pred = _reconstruct_full(out, H, W, nc, poly_size)
+            # display threshold (NMS already ran at 0.05; filter for a clean overlay)
+            keep = pred['confidence'] >= FLAGS.score_thresh
+            pred = {'bbox': pred['bbox'][keep], 'classes': pred['classes'][keep],
+                    'confidence': pred['confidence'][keep],
+                    'num_detections': int(keep.sum()), 'polygons': pred['polygons'][keep]}
+
+            img01 = (imgs[i].numpy() / 255.0)
+            canvas = render_summary_images([img01], [pred], draw_box=True,
+                                           draw_poly=FLAGS.draw_poly and tcfg.with_polygons,
+                                           class_names=class_names)[0]
+            if FLAGS.draw_gt:
+                ng = int(labels['n_gt'][i])
+                gb = labels['bbox'].numpy()[i, :ng]
+                for j in range(ng):
+                    _draw_box(canvas, gb[j, 0], gb[j, 1], gb[j, 2], gb[j, 3],
+                              (255, 255, 255), 'gt')
+            path = os.path.join(FLAGS.output_dir, f'val_{written:03d}.png')
+            cv2.imwrite(path, cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR))
+            written += 1
+            if written >= FLAGS.num_images:
+                break
+        if written >= FLAGS.num_images:
+            break
+    log.info("Wrote %d annotated images to %s (predictions=class colors, GT=white).",
+             written, FLAGS.output_dir)
+
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
+    app.run(main)
