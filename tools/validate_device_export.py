@@ -51,6 +51,10 @@ try:
                         'NOTE: it is fixed-size, so it cannot run on val images of a '
                         'different size; the export graph is rebuilt in-process at the '
                         'val-data size (byte-identical, proven by --verify).')
+    flags.DEFINE_string('input_size', '672,416',
+                        'H,W to validate at. Default 672,416 = the DLC/device runtime '
+                        'size, so the score reflects on-device behavior (images are '
+                        'letterboxed to this size, exactly like the device raw images).')
     flags.DEFINE_integer('num_images', 500, 'How many val images to score (-1 = all).')
     flags.DEFINE_float('iou_thr', 0.5, 'IoU threshold for the direct precision/recall/F1.')
     flags.DEFINE_bool('normalize_baked', True, 'SavedModel bakes /255 (feed raw [0,255]).')
@@ -178,8 +182,14 @@ def main(_):
     tf.keras.mixed_precision.set_global_policy('float32')
     config = load_config(FLAGS.config)
     tcfg = config.task
-    H, W = tcfg.model.input_size[:2]
+    # Validate at the DLC/device size (default 672x416). Overriding model.input_size
+    # makes the eval parser letterbox images to this size (input_reader reads
+    # task.model.input_size), and builds golden + the export graph + anchors at it — so
+    # the whole comparison reflects how the model runs on-device.
+    H, W = (int(x) for x in FLAGS.input_size.split(','))
+    tcfg.model.input_size = [H, W, 3]
     nc = tcfg.num_classes
+    log.info("Validating at %dx%d (DLC/device runtime size)", H, W)
 
     gm = build_yolov8(tcfg.model)
     gm.deploy = True
