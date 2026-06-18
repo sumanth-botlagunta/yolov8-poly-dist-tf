@@ -89,7 +89,10 @@ def _reconstruct(dev_out, H, W, num_classes, max_boxes=300,
                                (cy + b) / H, (cx + r) / W], 1))
         off += n
     boxes = np.clip(np.concatenate(boxes, 0), 0.0, 1.0).astype(np.float32)
-    scores = 1.0 / (1.0 + np.exp(-cls))
+    # Numerically-stable sigmoid: a naive 1/(1+exp(-x)) overflows exp() for very
+    # negative logits (harmless — it saturates to 0 — but it spams an overflow warning).
+    scores = np.where(cls >= 0, 1.0 / (1.0 + np.exp(-cls)),
+                      np.exp(cls) / (1.0 + np.exp(cls)))
     top = scores.argmax(1)
     top_s = scores[np.arange(len(scores)), top]
     sel_b, sel_s, sel_c = [], [], []
