@@ -81,6 +81,11 @@ try:
     flags.DEFINE_bool  ('verify', False,
                         'After export, load the SavedModel back and assert node names, '
                         'shapes, /255 equivalence, and decode equivalence vs the deploy path.')
+    flags.DEFINE_bool  ('debug_taps', False,
+                        'Also emit intermediate tensors as top-level nodes (tap_input, '
+                        'tap_feat3/4/5 = /255 output + backbone P3/P4/P5) so the conversion '
+                        'can be bisected SavedModel-vs-DLC to find the first diverging layer. '
+                        'Add the matching --out_node tap_* to snpe-tensorflow-to-dlc.')
 except flags.DuplicateFlagError:
     pass
 
@@ -243,7 +248,12 @@ def main(_):
     if with_dist:
         head_chan += [('dist', 1)]
     head_names = [n for n, _ in head_chan]
-    serving_fn = build_serving_fn(model, H, W, head_chan, do_norm, reg_max)
+    if FLAGS.debug_taps:
+        head_names = head_names + ['tap_input', 'tap_feat3', 'tap_feat4', 'tap_feat5']
+        log.info("debug_taps ON — also emitting %s (add matching --out_node to the converter)",
+                 ['tap_input', 'tap_feat3', 'tap_feat4', 'tap_feat5'])
+    serving_fn = build_serving_fn(model, H, W, head_chan, do_norm, reg_max,
+                                  debug_taps=FLAGS.debug_taps)
 
     # The on-device SNPE pipeline resolves ``--out_node box`` to tensor ``box:0`` and
     # dumps ``box:0.raw``, so the GraphDef must contain TOP-LEVEL ops literally named
@@ -270,7 +280,7 @@ def main(_):
         _verify(FLAGS.output_dir, model, H, W, n_anchors, head_chan, do_norm)
 
 
-def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16):
+def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16, debug_taps=False):
     """Build the device serving tf.function (legacy-DLC contract).
 
     Bakes /255 (when ``normalize``), runs the raw (deploy=False) model, concatenates
@@ -297,7 +307,11 @@ def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16):
     ])
     def serving_fn(input_image):
         images = input_image / 255.0 if normalize else input_image
-        raw = model(images, training=False)
+        # Call sub-modules explicitly so intermediate tensors can be tapped (taps run
+        # the same backbone/decoder/head as model(images)).
+        feats   = model.backbone(images, training=False)
+        decoded = model.decoder(feats, training=False)
+        raw     = model.head(decoded, training=False)
         out = {}
         for n, c in head_chan:
             x = _concat_levels(raw[n], c)                   # [1, N, c]
@@ -309,6 +323,14 @@ def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16):
             else:
                 x = tf.reshape(x, [N, c])                   # [N, c] raw (batch dropped)
             out[n] = tf.identity(x, name=n)
+        if debug_taps:
+            # Bisection taps: /255 output + backbone P3/P4/P5, flattened. Compare these
+            # SavedModel-vs-DLC: tap_input matching but tap_feat3 differing localizes the
+            # break to the backbone convs (e.g. SAME-padding). Each level narrows further.
+            out['tap_input'] = tf.identity(tf.reshape(images, [1, -1]), name='tap_input')
+            for lvl in ('3', '4', '5'):
+                out[f'tap_feat{lvl}'] = tf.identity(
+                    tf.reshape(tf.cast(feats[lvl], tf.float32), [1, -1]), name=f'tap_feat{lvl}')
         return out
 
     return serving_fn
