@@ -49,11 +49,27 @@ class _ConvBnAct(tf.keras.layers.Layer):
         **kwargs,
     ):
         super().__init__(**kwargs)
+        # Stride>1 convs: make the padding EXPLICIT (ZeroPadding2D + 'valid') instead of
+        # 'same'. TF 'same' for a stride-2 conv pads ASYMMETRICALLY (e.g. k=3 on an even
+        # input -> (0 before, 1 after)); the Qualcomm SNPE converter mishandles that
+        # implicit asymmetric padding (it drops/symmetrizes it), shifting every feature
+        # map by ~half a pixel -> all heads degrade on content while flat regions match.
+        # The legacy on-device DLC carried these as explicit Pad ops; the new export
+        # didn't. Explicit ZeroPadding2D emits a real Pad node SNPE converts correctly and
+        # is byte-identical to 'same' for the model's even, /32-divisible input sizes
+        # (training 672x672, export 672x416). Stride-1 'same' is symmetric and converts
+        # fine, so it is left unchanged.
+        self._pad = None
+        if strides > 1 and kernel_size > 1:
+            total = max(kernel_size - strides, 0)          # TF SAME total pad (input // stride)
+            before = total // 2
+            after = total - before                          # k=3,s=2 -> (before=0, after=1)
+            self._pad = tf.keras.layers.ZeroPadding2D(((before, after), (before, after)))
         self.conv = tf.keras.layers.Conv2D(
             filters,
             kernel_size,
             strides=strides,
-            padding="same",
+            padding="valid" if self._pad is not None else "same",
             use_bias=False,
         )
         # Keras 3 / TF 2.16 removed tf.keras.layers.experimental.SyncBatchNormalization;
@@ -64,6 +80,8 @@ class _ConvBnAct(tf.keras.layers.Layer):
         self.act = tf.keras.layers.Activation(activation)
 
     def call(self, x: tf.Tensor, training: bool = False) -> tf.Tensor:
+        if self._pad is not None:
+            x = self._pad(x)
         return self.act(self.bn(self.conv(x), training=training))
 
 
