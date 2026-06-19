@@ -25,16 +25,33 @@ pd_bboxes = stack([acx-ltrb0(x1), acy-ltrb1(y1), acx+ltrb2(x2), acy+ltrb3(y2)]) 
 ```
 So the old yx convention is simply **discarded** with the old head; the new head freely learns the new xy convention. **There is no conflict to reconcile** — the conventions never meet, because the only place the old convention existed (old head) is not transferred.
 
-### 3. The /255 input distribution MATCHES → features transfer cleanly
-The old model trained on `[0,1]` (`÷255`); the new training also feeds `[0,1]` (`÷255`). So the warm-started backbone sees inputs in **the same distribution it was trained on** → its features are in-distribution and immediately useful → faster convergence and a better starting point. (If the old model had used a *different* normalization — e.g. ImageNet mean/std — the features would be mismatched until retrained. It's the same `/255`, so no issue.)
+### 3. Input scale ([0,255] vs [0,1]) does NOT affect the warm start — the stem is scale-invariant
+The new pipeline feeds `[0,1]` (`÷255`, verified: `normalize_images`/`batch_color_aug`). The old
+model's input scale is whatever it was (you said "255 distribution"). **It does not matter**, because
+the backbone stem is **bias-free `Conv2D` → `BatchNorm`** (`_ConvBnAct`, `use_bias=False`), which is
+invariant to a constant input scale:
+```
+conv (no bias):  z_new = W·(x/255) = z_old/255
+BN (train mode): (z_new − mean(z_new))/std(z_new) = (z_old − mean(z_old))/std(z_old)   # 255 cancels
+```
+After the first BatchNorm the activations are identical whether the input was `[0,255]` or `[0,1]`;
+the scale is absorbed. The carried-over BN **moving** mean/variance sit at the old scale, but in
+**training mode** BN uses the current *batch* statistics (forward is correct from step 1) and the
+moving stats re-adapt within a few steps — negligible. So the warm-started features transfer
+regardless of the `÷255` convention.
+
+Caveat: this holds because the stem is `conv(no-bias)+BN`. It would only break if the old backbone
+had a **bias before its first BN** or **no BN at all** — not the case for CSPDarknetV8. (A *non-linear*
+input transform, e.g. ImageNet mean/std standardization, would NOT be absorbed and would matter — but
+that's not in play here; both sides are a linear `÷255` or raw scale.)
 
 ### 4. Caveat — the weights only transfer where the structure matches
 Migration is **structural** (role + shape, not name; `tools/checkpoint_migration.py`). If the old and new backbone/decoder are the same architecture (CSPDarknetV8-S), they load fully. Any structural difference is **reported and skipped** (`unmatched_old`, `clean=False` warning) — never silently mis-copied; those parts just start from random init. The head always retrains regardless.
 
 ### Bottom line
-Starting the new xy training from the old yx + /255 checkpoint is **correct and beneficial**:
+Starting the new xy training from the old yx checkpoint is **correct and beneficial**:
 - yx vs xy: **irrelevant** to the warm start — only the convention-agnostic backbone+decoder are loaded; the head relearns the convention.
-- /255 vs /255: **matches** — transferred features are immediately in-distribution.
+- input scale (`[0,255]` vs `[0,1]`): **does not matter** — the bias-free `conv+BN` stem is scale-invariant, so the features transfer either way (BN moving stats re-adapt in a few steps).
 - The model then trains fully (300 epochs), so the final box convention is the new xy one (which is why the export still needs the `[l,t,r,b]→[t,l,b,r]` reorder for the legacy device decoder).
 
 > Note: the export-side box reorder (`--legacy_box_order`) is a *separate* concern from training. Training is xy; the reorder only happens at export so the **deployed yx decoder** can read the xy model. It does not change how you train or warm-start.
