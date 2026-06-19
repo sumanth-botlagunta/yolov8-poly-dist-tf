@@ -160,20 +160,25 @@ def _to_original(xyxy_px, entry, H, W):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--raw_root', required=True,
-                    help='net-run output dir containing Result_0, Result_1, ... (or one Result dir)')
+                    help='base path. With --splits: <raw_root>/<split>/Result_<j>/. '
+                         'Without: <raw_root>/Result_0,Result_1,...')
     ap.add_argument('--transform_pkl', required=True)
     ap.add_argument('--output_json', required=True)
+    ap.add_argument('--splits', default='',
+                    help="comma list like '000000-000999,001000-001999' — mirrors "
+                         "01.gen_pred_json.py exactly (i_key=split_start+j). Omit for flat Result_*.")
     ap.add_argument('--input_size', default='672,416', help='H,W')
     ap.add_argument('--num_classes', type=int, default=39)
     ap.add_argument('--conf_threshold', type=float, default=0.001)
     ap.add_argument('--nms_iou', type=float, default=0.65)
     ap.add_argument('--category_offset', type=int, default=0,
-                    help='added to the 0-based class index for category_id')
-    ap.add_argument('--image_id_field', default='file_stem',
-                    choices=['file_stem', 'file_name', 'fname_idx'],
-                    help='what to use as image_id in each JSON entry')
+                    help='added to the 0-based class index for category_id (0-based confirmed)')
+    ap.add_argument('--image_id_field', default='file_name',
+                    choices=['file_name', 'file_stem', 'fname_idx'],
+                    help="image_id per entry. 01.gen_pred_json.py uses the original "
+                         "file_name (with extension).")
     ap.add_argument('--start_index', type=int, default=0,
-                    help='fname_idx of the first Result folder (default 0)')
+                    help='flat mode only: fname_idx of the first Result folder')
     a = ap.parse_args()
     H, W = (int(x) for x in a.input_size.split(','))
 
@@ -184,54 +189,63 @@ def main():
     print(f"example entry keys: {list(ex.keys())}")
     print(f"  info_ratio={ex.get('info_ratio')}  info_tblr={ex.get('info_tblr')}")
 
-    # Locate per-image result folders.
-    results = sorted(glob.glob(os.path.join(a.raw_root, 'Result_*')),
-                     key=lambda p: int(p.rsplit('_', 1)[-1]))
-    if not results:
-        # maybe raw_root itself is a single Result dir
-        if _find_raw(a.raw_root, 'box'):
+    # Build the (i_global, result_dir) work list — exactly like 01.gen_pred_json.py.
+    work = []
+    if a.splits:
+        for sp in a.splits.split(','):
+            st = int(sp.split('-')[0]); ed = int(sp.split('-')[1]) + 1
+            for j in range(0, ed - st):
+                work.append((st + j, os.path.join(a.raw_root, sp, 'Result_%d' % j)))
+    else:
+        results = sorted(glob.glob(os.path.join(a.raw_root, 'Result_*')),
+                         key=lambda p: int(p.rsplit('_', 1)[-1]))
+        if not results and _find_raw(a.raw_root, 'box'):
             results = [a.raw_root]
-    if not results:
-        raise SystemExit(f"no Result_* folders or box raw found under {a.raw_root}")
-    print(f"found {len(results)} result folder(s)")
+        if not results:
+            raise SystemExit(f"no Result_* folders or box raw under {a.raw_root}")
+        for ri, rdir in enumerate(results):
+            work.append((a.start_index + (ri if len(results) > 1 else 0), rdir))
+    print(f"work list: {len(work)} images")
 
     preds = []
     N = sum((H // s) * (W // s) for s in _STRIDES)
-    missing_tf = 0
-    for ri, rdir in enumerate(results):
-        idx = a.start_index + (ri if len(results) > 1 else 0)
+    missing_tf = miss_raw = done = 0
+    for idx, rdir in work:
         key = '%06d' % idx
-        if key not in tinfo:
+        entry = tinfo.get(key)
+        if entry is None:
             missing_tf += 1
             continue
-        entry = tinfo[key]
         pb, pc = _find_raw(rdir, 'box'), _find_raw(rdir, 'cls')
         if not pb or not pc:
+            miss_raw += 1
             continue
         box = np.fromfile(pb, np.float32).reshape(N, 4)
         cls = np.fromfile(pc, np.float32).reshape(N, a.num_classes)
         xyxy, score, klass = _decode(box, cls, H, W, a.conf_threshold, a.nms_iou, a.num_classes)
+        done += 1
         if len(xyxy) == 0:
             continue
         xywh = _to_original(xyxy, entry, H, W)
         stem = os.path.splitext(entry['file_name'])[0]
-        image_id = {'file_stem': stem, 'file_name': entry['file_name'], 'fname_idx': key}[a.image_id_field]
+        image_id = {'file_name': entry['file_name'], 'file_stem': stem, 'fname_idx': key}[a.image_id_field]
         for j in range(len(xywh)):
             preds.append({
                 'image_id': image_id,
-                'category_id': int(klass[j]) + a.category_offset,
                 'bbox': [round(float(v), 3) for v in xywh[j]],
+                'category_id': int(klass[j]) + a.category_offset,
                 'score': round(float(score[j]), 5),
             })
 
     with open(a.output_json, 'w') as f:
         json.dump(preds, f)
-    print(f"\nwrote {len(preds)} detections over {len(results) - missing_tf} images -> {a.output_json}")
+    print(f"\nwrote {len(preds)} detections over {done} images -> {a.output_json}")
     if missing_tf:
-        print(f"WARNING: {missing_tf} result folder(s) had no matching transform key "
-              f"(check --start_index / flat-vs-nested dirs).")
-    print("Entry schema: {image_id, category_id, bbox:[x,y,w,h original px], score}. "
-          "If your 01.gen_pred_json.py differs, send me one entry and I'll match it exactly.")
+        print(f"WARNING: {missing_tf} index(es) had no transform key (check --splits/--start_index).")
+    if miss_raw:
+        print(f"WARNING: {miss_raw} result folder(s) had no box/cls raw.")
+    print("Entry: {image_id: <file_name>, bbox: [x,y,w,h original px], category_id: <0-based>, "
+          "score}. Matches 01.gen_pred_json.py's schema.")
 
 
 if __name__ == '__main__':
