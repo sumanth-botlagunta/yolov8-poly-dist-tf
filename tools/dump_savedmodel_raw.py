@@ -54,14 +54,31 @@ def main():
     out = fn(input_image=tf.constant(img))
     rd = os.path.join(a.out_dir, 'Result_0')
     os.makedirs(rd, exist_ok=True)
-    for k in out:
+
+    # Stable, readable node order: forward-path taps first, then the 6 heads.
+    order = ['tap_norm', 'tap_backbone_3', 'tap_backbone_4', 'tap_backbone_5',
+             'tap_neck_3', 'tap_neck_4', 'tap_neck_5',
+             'box', 'cls', 'poly_angle', 'poly_dist', 'poly_conf', 'dist']
+    keys = [k for k in order if k in out] + [k for k in out if k not in order]
+
+    print("\n" + "=" * 92)
+    print(f" SAVEDMODEL NODE REPORT   input={os.path.basename(a.raw_image)}   {H}x{W}")
+    print("=" * 92)
+    print(f"{'node':16s}{'count':>11s}{'min':>11s}{'max':>11s}{'mean':>11s}{'std':>11s}  first values")
+    print("-" * 92)
+    for k in keys:
         arr = np.ascontiguousarray(out[k].numpy().astype(np.float32))
         arr.tofile(os.path.join(rd, f'{k}:0.raw'))
-        print(f"  wrote {k}:0.raw  shape {arr.shape}  ({arr.size} floats)")
-    print(f"\nDone -> {rd}")
-    print(f"Now diff against the DLC:\n"
-          f"  python tools/compare_dlc_raw.py --legacy {rd} "
-          f"--new <dlc .../Result_N> --input_size {H},{W}")
+        flat = arr.reshape(-1)
+        s = min(5, flat.size)
+        sample = np.array2string(flat[:s], precision=3, suppress_small=True, max_line_width=60)
+        print(f"{k:16s}{flat.size:>11d}{flat.min():>11.4f}{flat.max():>11.4f}"
+              f"{flat.mean():>11.4f}{flat.std():>11.4f}  {sample}")
+    print("-" * 92)
+    print(f"wrote {len(keys)} <node>:0.raw files -> {rd}")
+    print(f"\nNow diff against the DLC net-run result for the SAME image:")
+    print(f"  python tools/compare_dlc_raw.py --a {rd} "
+          f"--b <dlc .../Result_N> --input_size {H},{W}")
 
 
 if __name__ == '__main__':

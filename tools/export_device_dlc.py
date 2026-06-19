@@ -249,9 +249,12 @@ def main(_):
         head_chan += [('dist', 1)]
     head_names = [n for n, _ in head_chan]
     if FLAGS.debug_taps:
-        head_names = head_names + ['tap_input', 'tap_feat3', 'tap_feat4', 'tap_feat5']
+        tap_names = ['tap_norm',
+                     'tap_backbone_3', 'tap_backbone_4', 'tap_backbone_5',
+                     'tap_neck_3', 'tap_neck_4', 'tap_neck_5']
+        head_names = head_names + tap_names
         log.info("debug_taps ON — also emitting %s (add matching --out_node to the converter)",
-                 ['tap_input', 'tap_feat3', 'tap_feat4', 'tap_feat5'])
+                 tap_names)
     serving_fn = build_serving_fn(model, H, W, head_chan, do_norm, reg_max,
                                   debug_taps=FLAGS.debug_taps)
 
@@ -324,13 +327,24 @@ def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16, debug_taps=F
                 x = tf.reshape(x, [N, c])                   # [N, c] raw (batch dropped)
             out[n] = tf.identity(x, name=n)
         if debug_taps:
-            # Bisection taps: /255 output + backbone P3/P4/P5, flattened. Compare these
-            # SavedModel-vs-DLC: tap_input matching but tap_feat3 differing localizes the
-            # break to the backbone convs (e.g. SAME-padding). Each level narrows further.
-            out['tap_input'] = tf.identity(tf.reshape(images, [1, -1]), name='tap_input')
+            # Bisection taps along the whole forward path, each flattened to [1, -1].
+            # Compare these SavedModel-vs-DLC node by node: the FIRST tap that diverges
+            # localizes the break.
+            #   tap_norm           = input_image/255 (the tensor actually fed to the model)
+            #   tap_backbone_3/4/5 = backbone P3/P4/P5 (strides 8/16/32) — catches the
+            #                        SAME-padding / stem issue (and a wrong W shows as a
+            #                        different element count here)
+            #   tap_neck_3/4/5     = decoder (FPN-PAN) outputs that feed the heads
+            # tap_norm matches but tap_backbone_3 differs  -> backbone (padding/convs).
+            # backbone matches but tap_neck_* differs      -> decoder (FPN resize/concat).
+            # neck matches but a head differs              -> that head.
+            out['tap_norm'] = tf.identity(tf.reshape(images, [1, -1]), name='tap_norm')
             for lvl in ('3', '4', '5'):
-                out[f'tap_feat{lvl}'] = tf.identity(
-                    tf.reshape(tf.cast(feats[lvl], tf.float32), [1, -1]), name=f'tap_feat{lvl}')
+                out[f'tap_backbone_{lvl}'] = tf.identity(
+                    tf.reshape(tf.cast(feats[lvl], tf.float32), [1, -1]), name=f'tap_backbone_{lvl}')
+            for lvl in ('3', '4', '5'):
+                out[f'tap_neck_{lvl}'] = tf.identity(
+                    tf.reshape(tf.cast(decoded[lvl], tf.float32), [1, -1]), name=f'tap_neck_{lvl}')
         return out
 
     return serving_fn

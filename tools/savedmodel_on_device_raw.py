@@ -130,6 +130,21 @@ def main():
         feed = img if a.normalize_baked == 'true' else img / 255.0
         out = fn(input_image=tf.constant(feed.astype(np.float32)))
 
+        # Per-node stats table (so the head outputs are readable / reportable).
+        order_nodes = ['box', 'cls', 'poly_angle', 'poly_dist', 'poly_conf', 'dist']
+        keys = [k for k in order_nodes if k in out] + [k for k in out if k not in order_nodes]
+        print("\n" + "=" * 88)
+        print(f" {os.path.basename(f)}   node outputs   (swap_rb={a.swap_rb})")
+        print("=" * 88)
+        print(f"{'node':12s}{'shape':>16s}{'min':>11s}{'max':>11s}{'mean':>11s}{'std':>11s}")
+        print("-" * 88)
+        for k in keys:
+            v = out[k].numpy().astype(np.float32)
+            fl = v.reshape(-1)
+            print(f"{k:12s}{str(list(v.shape)):>16s}{fl.min():>11.4f}{fl.max():>11.4f}"
+                  f"{fl.mean():>11.4f}{fl.std():>11.4f}")
+        print("-" * 88)
+
         pred = _reconstruct(out, H, W, a.num_classes, score_thresh=0.01)
         nd = int(pred['num_detections'][0])
         boxes = pred['bbox'].numpy()[0, :nd]
