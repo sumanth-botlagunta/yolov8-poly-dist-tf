@@ -32,9 +32,16 @@ that resolves each variable into confident / suggested / ambiguous tiers and
 copies only shape-verified pairs — this runtime resolver backs the ``"map"``
 strategy. Separately, ``tools/shared/legacy_weight_map_frozen.py`` holds the committed,
 hand-verified EXACT map used by the ``"frozen"`` strategy. ``"auto"`` (default)
-selects ``"frozen"`` for legacy object checkpoints (``layer_with_weights`` /
-``_head/`` keys) and ``"structural"`` otherwise; it never auto-selects the
-unverified ``"map"`` resolver (see :func:`_detect_strategy`).
+selects ``"native"`` for a checkpoint produced by THIS codebase (warm-starting a new
+run — EMA markers / ``model/{backbone,decoder,head}`` root), ``"frozen"`` for legacy
+object checkpoints (``layer_with_weights`` / ``_head/`` keys), and ``"structural"``
+otherwise; it never auto-selects the unverified ``"map"`` resolver
+(see :func:`_detect_strategy`).
+
+Warm-starting from this codebase's own checkpoint (``"native"``) is handled specially
+because the trainer stores the *complete* weights only in the EMA shadows — the plain
+``model/`` object graph omits the list-tracked C2f block variables — so it loads via the
+EMA path (:func:`migrate_native`, reusing ``tools.shared.ckpt_loading``).
 
 Module rule (39-class): a 39-class model migrates ALL modules (backbone +
 decoder + head); any other class count migrates backbone + decoder only (the
@@ -649,11 +656,48 @@ def _diagnose_new_paths(new_recs) -> None:
         )
 
 
+def _is_native_checkpoint(keys) -> bool:
+    """True if *keys* look like a checkpoint written by THIS codebase.
+
+    Two layouts both count as native:
+
+    * **Trainer checkpoint (periodic ``ckpt-N`` / ``best_*``)** — saved with the EMA
+      optimizer (``train/trainer.py``). The model variables are deduped into
+      ``optimizer/_model_vars`` with EMA shadows under ``optimizer/_shadows`` (so there is
+      no separate ``model/`` subtree). The EMA shadows are the *complete* weight source —
+      see :func:`migrate_native`. Markers: ``optimizer/_shadows`` / ``optimizer/_ema_step``
+      / ``optimizer/_model_vars``.
+    * **Model-only checkpoint** — ``tf.train.Checkpoint(model=YoloV8).write``: weights rooted
+      at ``model/{backbone,decoder,head}/``.
+
+    The legacy object checkpoint instead roots weights at bare ``backbone/`` / ``head/`` and
+    carries ``layer_with_weights`` / ``_head/`` segments (caught by the frozen check before
+    this one), so the cases are unambiguous.
+    """
+    if any(
+        ("optimizer/_shadows" in k) or ("optimizer/_ema_step" in k)
+        or ("optimizer/_model_vars" in k)
+        for k in keys
+    ):
+        return True
+    return any(
+        k.startswith(("model/backbone/", "model/decoder/", "model/head/")) for k in keys
+    )
+
+
 def _detect_strategy(reader) -> str:
-    """Pick 'frozen' for legacy object checkpoints, else 'structural'."""
-    for key in reader.get_variable_to_shape_map():
+    """Pick the migration strategy from the checkpoint's key layout.
+
+    'frozen' for legacy object checkpoints (``layer_with_weights`` / ``_head/``), 'native'
+    for a checkpoint produced by this codebase (``model/{backbone,decoder,head}/`` root),
+    else 'structural'.
+    """
+    keys = list(reader.get_variable_to_shape_map())
+    for key in keys:
         if "layer_with_weights" in key or "_head/" in key:
             return "frozen"
+    if _is_native_checkpoint(keys):
+        return "native"
     return "structural"
 
 
@@ -759,6 +803,94 @@ def migrate_with_frozen(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tf.train.Checkpoint(model=new_model).write(output_ckpt_path)
     log.info("Migrated checkpoint saved to: %s", output_ckpt_path)
+    return stats
+
+
+def migrate_native(
+    old_ckpt_path: str,
+    new_model,
+    output_ckpt_path: str,
+    modules: Optional[List[str]] = None,
+) -> Dict[str, int]:
+    """Warm-start ``new_model`` from a checkpoint produced by THIS codebase.
+
+    Subtlety this handles: a checkpoint written by the trainer stores the *complete*
+    weights only in the **EMA shadows**. The plain ``model/`` object graph omits the
+    list-tracked C2f block variables (a known Keras quirk — the same reason
+    :func:`flatten_model_structure` enumerates the new side via ``module.variables`` rather
+    than the object graph), so ``tf.train.Checkpoint(model=...).restore`` alone recovers
+    only a subset. The complete, EMA-averaged weights are exactly what
+    :func:`tools.shared.ckpt_loading.restore_eval_weights` already loads (in place) for
+    eval/export by reconstructing the EMA wrapper and swapping its shadows in — so native
+    warm-start reuses it rather than re-implementing the object-graph walk.
+
+    The weights are assigned **in place** into ``new_model`` (the same contract the other
+    strategies use — the live model is what training starts from; the written checkpoint is
+    a re-serialisation). Only the requested modules are warm-started: any excluded module
+    (e.g. ``head`` when ``modules=[backbone, decoder]``) is snapshotted before the load and
+    restored to its fresh init afterwards.
+    """
+    import tensorflow as tf
+    from tools.shared.ckpt_loading import restore_eval_weights
+
+    resolved_modules, reason = select_modules_39(new_model, modules)
+    log.info("Module selection: %s", reason)
+    resolved = set(resolved_modules)
+
+    # Snapshot modules we will NOT warm-start so we can restore their fresh init after the
+    # full-model EMA load (restore_eval_weights swaps shadows into EVERY model variable).
+    excluded = [
+        m for m in _WEIGHT_MODULES
+        if getattr(new_model, m, None) is not None and m not in resolved
+    ]
+    snapshots = {
+        m: [v.numpy().copy() for v in getattr(new_model, m).variables]
+        for m in excluded
+    }
+
+    mode = restore_eval_weights(new_model, old_ckpt_path)  # assigns complete weights in place
+    if mode == "raw":
+        log.warning(
+            "Native warm-start loaded RAW model/ weights (no EMA shadows in %s). For this "
+            "architecture the list-tracked C2f block weights live only in the EMA shadows, "
+            "so a model-only checkpoint cannot fully warm-start those blocks — they stay at "
+            "fresh init. Prefer a periodic ckpt-N or best_* checkpoint (both carry EMA).",
+            old_ckpt_path,
+        )
+
+    for m, vals in snapshots.items():
+        for v, val in zip(getattr(new_model, m).variables, vals):
+            v.assign(val)
+        log.info("Native warm-start: kept module '%s' at fresh init (not requested)", m)
+
+    loaded_by_module = {
+        m: len(getattr(new_model, m).variables)
+        for m in resolved_modules if getattr(new_model, m, None) is not None
+    }
+    stats = {
+        "loaded": sum(loaded_by_module.values()),
+        "skipped": 0,
+        "not_found": 0,
+        "loaded_by_module": loaded_by_module,
+        "modules": list(resolved_modules),
+        "mode": mode,
+    }
+
+    empty = [m for m, n in loaded_by_module.items() if n == 0]
+    if stats["loaded"] == 0 or empty:
+        raise RuntimeError(
+            "Native warm-start loaded no weights for "
+            f"{empty or 'any module'} (modules={list(resolved_modules)}). Refusing to write "
+            f"a partially-initialized checkpoint to {output_ckpt_path}."
+        )
+
+    output_path = Path(output_ckpt_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tf.train.Checkpoint(model=new_model).write(output_ckpt_path)
+    log.info(
+        "Native warm-start: loaded %s weights for %s -> %s",
+        mode, list(resolved_modules), output_ckpt_path,
+    )
     return stats
 
 
@@ -932,12 +1064,16 @@ def migrate_checkpoint(
         Only load variables belonging to these module names. When ``None``
         (default) the modules are auto-selected by comparing the old and new
         classification head widths (see :func:`resolve_modules`).
-    strategy : {"auto", "frozen", "map", "structural", "name"}
-        ``"auto"`` (default) inspects the checkpoint: legacy object checkpoints
-        (``layer_with_weights``/``_head``) use ``"frozen"``; otherwise
-        ``"structural"`` (see :func:`_detect_strategy`). ``"auto"`` never selects
-        the unverified ``"map"`` resolver. ``"frozen"`` assigns via the committed
-        hand-verified frozen map. ``"map"`` (opt-in only) uses the curated
+    strategy : {"auto", "native", "frozen", "map", "structural", "name"}
+        ``"auto"`` (default) inspects the checkpoint: a checkpoint produced by this
+        codebase (``model/{backbone,decoder,head}/`` root) uses ``"native"``; legacy
+        object checkpoints (``layer_with_weights``/``_head``) use ``"frozen"``;
+        otherwise ``"structural"`` (see :func:`_detect_strategy`). ``"auto"`` never
+        selects the unverified ``"map"`` resolver. ``"native"`` restores via
+        ``tf.train.Checkpoint`` directly — exact and complete for a same-architecture
+        warm-start (the list-tracked C2f blocks restore in full), honouring the
+        selected modules and ignoring the source optimizer/step state. ``"frozen"``
+        assigns via the committed hand-verified frozen map. ``"map"`` (opt-in only) uses the curated
         structural weight map for the legacy→new migration
         (:mod:`tools.checkpoint_weight_map`) and the 39-class module rule
         (:func:`select_modules_39`); like ``"frozen"`` it now refuses to write if
@@ -955,6 +1091,11 @@ def migrate_checkpoint(
     if strategy == "auto":
         strategy = _detect_strategy(tf.train.load_checkpoint(old_ckpt_path))
         log.info("Auto-detected migration strategy: %s", strategy)
+
+    if strategy == "native":
+        return migrate_native(
+            old_ckpt_path, new_model, output_ckpt_path, modules=modules,
+        )
 
     if strategy == "frozen":
         return migrate_with_frozen(
@@ -1389,9 +1530,12 @@ def main() -> None:
                        help="Override modules (default: 39-class rule for map; "
                             "class-count auto for structural/name).")
     p_mig.add_argument(
-        "--strategy", choices=["auto", "frozen", "map", "structural", "name"], default="auto",
-        help="auto (default; frozen for legacy checkpoints, else structural), "
-             "frozen (committed hand-verified LEGACY_TO_NEW dict — recommended), "
+        "--strategy", choices=["auto", "native", "frozen", "map", "structural", "name"],
+        default="auto",
+        help="auto (default; native for this codebase's own checkpoints, frozen for legacy "
+             "checkpoints, else structural), native (exact tf.train.Checkpoint restore of a "
+             "checkpoint produced by this codebase — recommended for warm-starting a new run), "
+             "frozen (committed hand-verified LEGACY_TO_NEW dict), "
              "map (runtime curated parser), structural, or name (legacy fuzzy)."
     )
     p_mig.add_argument(
