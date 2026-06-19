@@ -84,6 +84,27 @@ python scripts/run_train.py \
     --debug
 ```
 
+### Recommended: supervised training (long runs)
+
+For real (multi-hour/day) runs, launch through the supervisor instead of calling
+`run_train.py` directly. It keeps training alive across crashes/OOM-kills, auto-resumes from
+the newest checkpoint, and detaches from the SSH session so a disconnect can't stall the run:
+
+```bash
+nohup bash tools/train_supervisor.sh \
+    --config configs/experiments/yolo/yolov8_poly_dist.yaml \
+    --output_dir /path/to/run_dir \
+    >> /path/to/run_dir/supervisor.log 2>&1 &
+```
+
+- **Stop on purpose:** `touch /path/to/run_dir/STOP` — the supervisor exits after the current
+  attempt instead of restarting (or send SIGTERM/Ctrl-C to write a resume checkpoint first).
+- **Crash-loop guard:** 5 consecutive exits within 120s abort the supervisor (a real bug, not
+  an OOM blip — check `train.log`).
+
+On a fresh cloud host, run `bash tools/cloud_diagnose.sh --config <yaml>` first to measure
+pipeline throughput / CPU throttling before committing to a full run.
+
 Checkpoints are saved to `output_dir/` every `checkpoint_interval` steps (default 2118
 = 271,166 train examples // batch size 128 = one epoch; set `checkpoint_interval` in your
 YAML to override).  
@@ -249,16 +270,19 @@ train/
 scripts/
   run_train.py             Training entry point (absl-py flags)
 
-tools/
-  checkpoint_migration.py  List / map / migrate old checkpoints (fuzzy name matching)
-  checkpoint_weight_map.py Generate/verify the frozen weight map (336 variables)
-  legacy_weight_map_frozen.py Frozen reference map for checkpoint migration
-  compare_checkpoints.py   Diff two checkpoints (weights / metrics)
-  trace_shapes.py          Trace tensor shapes through the pipeline
-  benchmark_pipeline.py    Data pipeline throughput benchmark
-  eval.py                  Standalone evaluation script (--per_category, --output_dir)
+tools/                     Core workflow tools (see docs/scripts.md)
+  eval.py                  Standalone evaluation (--per_category, --output_dir)
   export_saved_model.py    Export SavedModel + optional TFLite
-  continuous_eval.py       Watch output_dir for new checkpoints, auto-evaluate each
+  infer.py                 Run on arbitrary images, save box+polygon overlays
+  benchmark_pipeline.py    Data pipeline throughput benchmark
+  checkpoint_migration.py  Migrate legacy / warm-start same-codebase checkpoints
+  trace_shapes.py          Trace tensor shapes through the pipeline
+  continuous_eval.py       Watch a run dir, auto-evaluate each new checkpoint
+  train_supervisor.sh      Supervised training (auto-restart/resume) — recommended
+  cloud_diagnose.sh        One-shot cloud bring-up / throughput check
+  device/                  SNPE/DLC export + on-device diagnostics
+  shared/                  Utility modules (ckpt loading, weight maps, runtime setup)
+  pipeline/                Pipeline diagnostics + 672² dataset re-encoding + metrics export
 
 tests/
   unit/                    Per-component unit tests (124 collected)

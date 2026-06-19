@@ -13,16 +13,19 @@ tfds.load (SkipDecoding: images stay ENCODED bytes through shuffle)
    → pre-resize to 672² (uint8; preserves 'height'/'width' fields)
    → zip(cnp_dataset)  (cnp source shuffle seed = self._seed+1) → Copy-Paste
                            (copy_paste.py, prob 0.2)  ← BEFORE mosaic
-   → padded_batch(4, padding_values=…)  ← polygons pad with -1.0 (sentinel),
-                           not 0.0 (a valid vertex coord); every key explicit
-   → Mosaic                (mosaic.py): 4-in / 4-out — one group coin flip;
-                           mosaic branch = 4 mosaics of the same 4 images via
-                           rotated quadrant permutations (composed-affine, one
-                           warp per source, no 2× canvas); single branch = 4
-                           independent random_perspective warps. No decoded
-                           image is discarded.
-   → unbatch → shuffle(128, seed=self._seed+2)  (decorrelates 4-sample groups;
-                           distinct seed from the two source shuffles above)
+   → padded_batch(group_size, padding_values=…)  ← polygons pad with -1.0
+                           (sentinel), not 0.0 (a valid vertex coord); every key explicit
+   → Mosaic                (mosaic.py): G in → G // R out (G = group_size 32,
+                           R = decodes_per_output 4 → 8 outputs). Each output
+                           independently flips mosaic_frequency (per-output, not
+                           per-group); a mosaic draws 4 source images via a
+                           width-4 window (step R) of one per-group random
+                           permutation — R=4 tiles the permutation (4 distinct
+                           images, zero cross-output reuse = stock YOLO), R<4
+                           overlaps (reuse 4/R, varied partners). Each output runs
+                           one random_perspective warp.
+   → unbatch → shuffle(max(256, 4·group_size), seed=self._seed+2)  (disperses a
+                           group's outputs; distinct seed from the two source shuffles)
    → parser polygon preprocessing  (yolo_parser.py / distance_parser.py)
                            parsers emit uint8 images — colour aug moved to GPU
    → batch(global_batch_size) + prefetch(AUTOTUNE)
@@ -177,6 +180,6 @@ are train-semantics decisions (do not flip mid-run). See `docs/design_register.m
   resolution correction exact). Detection sets only — servingbot must stay full-resolution
   because the distance parser letterboxes (aspect-preserving), and copy_paste crops are RGBA.
   The pre-resize map skips already-672² images via `tf.cond`.
-- Use the `/benchmark` skill (`tools/benchmark_pipeline.py`) for end-to-end throughput and
+- Use `tools/benchmark_pipeline.py` for end-to-end throughput and
   `tools/pipeline/diagnose_pipeline.py` for stage-by-stage attribution (its stage order MUST mirror
   `InputReader._build_detection_dataset` — keep them in sync).

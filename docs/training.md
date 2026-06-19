@@ -1,7 +1,9 @@
 # Training
 
-Entry point: `scripts/run_train.py`. Configs are dataclasses (`configs/model_config.py`) loaded
-from YAML by the hand-rolled mapper in `configs/yaml_loader.py` (not dacite). Use the `/train` skill or:
+Entry point: `scripts/run_train.py` (for long runs, prefer `tools/train_supervisor.sh` — see
+[scripts.md](scripts.md)). Configs are dataclasses (`configs/model_config.py`) loaded from YAML
+by the hand-rolled mapper in `configs/yaml_loader.py` (not dacite); see
+[configuration.md](configuration.md). Run:
 
 ```bash
 python scripts/run_train.py \

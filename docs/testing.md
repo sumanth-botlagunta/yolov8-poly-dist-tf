@@ -68,8 +68,6 @@ TFDS_DATA_DIR=/path/to/tensorflow_datasets pytest tests/smoke -m smoke -q
 pytest tests/unit tests/integration --cov -q
 ```
 
-Or use the `/test` skill.
-
 ## Conventions for new tests
 - Unit/integration tests **must not** require TFDS — build synthetic tensors inline.
 - Write **discriminating** assertions (pin a value/relationship that fails on regression), not
