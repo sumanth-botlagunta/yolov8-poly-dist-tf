@@ -29,7 +29,7 @@ section "CPU THROTTLE COUNTERS (baseline)"
 cat /sys/fs/cgroup/cpu.stat 2>/dev/null || cat /sys/fs/cgroup/cpu/cpu.stat 2>/dev/null || echo n/a
 
 section "STAGE ATTRIBUTION (datasets, encodings, per-stage rates, threadpool sweep)"
-python tools/diagnose_pipeline.py --config "$CONFIG" --samples 768 --batches 10 \
+python tools/pipeline/diagnose_pipeline.py --config "$CONFIG" --samples 768 --batches 10 \
     --threadpool-sweep 0,13,26
 
 section "END-TO-END PIPELINE BENCHMARK run 1 (cold cache)"

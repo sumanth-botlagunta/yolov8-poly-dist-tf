@@ -147,7 +147,7 @@ inserting `images / 255.0` in `serving_fn` without owning the double-normalizati
 train/serve-skew consequences above.
 
 **Exception — the on-device DLC export DOES bake `/255` (deliberately).**
-`tools/export_device_dlc.py` is a *separate* export path that reproduces the legacy
+`tools/device/export_device_dlc.py` is a *separate* export path that reproduces the legacy
 Qualcomm SNPE DLC contract for drop-in replacement (see `docs/device_export.md`). The
 on-device raw-image generator feeds **raw [0,255]** float32 (`IMAGE_NROM_FLAG=False`),
 so that graph divides by 255 internally (`--normalize`, default on) to match the

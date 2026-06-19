@@ -10,10 +10,10 @@ is where the two graphs disagree — and decodes the box for a quick geometric s
 
 Typical use (expected-from-SavedModel  vs  actual-from-DLC):
     # 1) in the TF env, dump expected outputs from the SavedModel on ONE raw image:
-    python tools/dump_savedmodel_raw.py --saved_model <sm> --raw_image <img.raw> \
+    python tools/device/dump_savedmodel_raw.py --saved_model <sm> --raw_image <img.raw> \
         --out_dir /tmp/expected
     # 2) here, diff against the DLC net-run result for the SAME image:
-    python tools/compare_dlc_raw.py \
+    python tools/device/compare_dlc_raw.py \
         --a /tmp/expected/Result_0 \
         --b <dlc_netrun>/Result_0 \
         --input_size 672,416

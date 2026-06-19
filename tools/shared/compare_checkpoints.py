@@ -7,25 +7,25 @@ use --no-colour and redirect to a file for full names.
 Usage
 -----
 # Checkpoint vs checkpoint:
-python tools/compare_checkpoints.py \\
+python tools/shared/compare_checkpoints.py \\
     --ckpt1 initial_checkpoint_folder/ckpt-920304 \\
     --ckpt2 path/to/other/ckpt-1000
 
 # Checkpoint vs current model built from YAML:
-python tools/compare_checkpoints.py \\
+python tools/shared/compare_checkpoints.py \\
     --ckpt1 initial_checkpoint_folder/ckpt-920304 \\
     --config configs/experiments/yolo/yolov8_poly_dist.yaml
 
 # Filter to backbone + decoder only:
-python tools/compare_checkpoints.py \\
+python tools/shared/compare_checkpoints.py \\
     --ckpt1 A --config C.yaml --modules backbone decoder
 
 # Grep for a layer name substring:
-python tools/compare_checkpoints.py \\
+python tools/shared/compare_checkpoints.py \\
     --ckpt1 A --config C.yaml --grep cls_pred
 
 # Save full-width report to file:
-python tools/compare_checkpoints.py \\
+python tools/shared/compare_checkpoints.py \\
     --ckpt1 A --config C.yaml --no-colour > report.txt
 """
 
@@ -37,7 +37,10 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from _table import Table
+# Ensure the repo root is importable so ``tools.shared`` resolves when this file is
+# run directly as a script (python tools/shared/compare_checkpoints.py).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from tools.shared._table import Table
 
 
 # ---------------------------------------------------------------------------

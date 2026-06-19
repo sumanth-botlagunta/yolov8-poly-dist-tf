@@ -85,11 +85,11 @@ def main(_):
     # Activate the trainer's precision policy before building the model so the
     # exported SavedModel computes on the same dtype path the checkpoint was
     # trained/served on (bfloat16 backbone/decoder, float32 heads).
-    from tools.runtime_setup import apply_eval_precision_policy
+    from tools.shared.runtime_setup import apply_eval_precision_policy
     apply_eval_precision_policy(config)
 
     # ---- Build and restore ----
-    from tools.ckpt_loading import restore_eval_weights
+    from tools.shared.ckpt_loading import restore_eval_weights
 
     model = build_yolov8(model_cfg)
     model.deploy = True

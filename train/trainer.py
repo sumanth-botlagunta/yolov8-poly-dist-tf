@@ -773,7 +773,7 @@ class YoloV8Trainer:
         # Why no swap_in: the EMA shadow weights are tf.Variables tracked inside
         # the EMA wrapper (`optimizer=self._optimizer`), so they are already
         # serialized to disk by this checkpoint and recovered on resume via
-        # `ema.swap_in(model)` (eval/export use tools/ckpt_loading.py for exactly
+        # `ema.swap_in(model)` (eval/export use tools/shared/ckpt_loading.py for exactly
         # this). If we instead swapped EMA into `model/`, a *training* resume from
         # this checkpoint would load EMA weights into the model while the SGD
         # velocity slots restored from `optimizer/` were computed against the RAW

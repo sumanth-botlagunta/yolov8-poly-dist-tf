@@ -1,6 +1,6 @@
 """Run the device SavedModel on ONE raw input image and dump <node>:0.raw files, in the
 same layout SNPE net-run produces — so you can diff the SavedModel against the DLC with
-tools/compare_dlc_raw.py WITHOUT needing the legacy DLC.
+tools/device/compare_dlc_raw.py WITHOUT needing the legacy DLC.
 
 The SavedModel is proven faithful to the trained model (export --verify, box geometry to
 2e-7). So:
@@ -12,12 +12,12 @@ The SavedModel is proven faithful to the trained model (export --verify, box geo
 Run this in the environment where TensorFlow works (the one that gives host F1 0.71).
 
 Usage:
-    python tools/dump_savedmodel_raw.py \
+    python tools/device/dump_savedmodel_raw.py \
         --saved_model /path/to/device/saved_model \
         --raw_image   /path/to/one_672x416_image.raw   # the SAME raw fed to the DLC
         --out_dir     /tmp/expected
     # then:
-    python tools/compare_dlc_raw.py --legacy /tmp/expected/Result_0 \
+    python tools/device/compare_dlc_raw.py --legacy /tmp/expected/Result_0 \
         --new /path/to/dlc_dsp_result/Result_0 --input_size 672,416
 """
 
@@ -77,7 +77,7 @@ def main():
     print("-" * 92)
     print(f"wrote {len(keys)} <node>:0.raw files -> {rd}")
     print(f"\nNow diff against the DLC net-run result for the SAME image:")
-    print(f"  python tools/compare_dlc_raw.py --a {rd} "
+    print(f"  python tools/device/compare_dlc_raw.py --a {rd} "
           f"--b <dlc .../Result_N> --input_size {H},{W}")
 
 

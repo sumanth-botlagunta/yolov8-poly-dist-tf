@@ -39,7 +39,7 @@ your 01.gen_pred_json.py uses different names or a category offset, set --catego
 --image_id_field, or tell me the exact entry dict and I'll match it byte-for-byte.
 
 Usage:
-    python tools/gen_pred_json_from_dlc.py \
+    python tools/device/gen_pred_json_from_dlc.py \
         --raw_root     /path/to/netrun_output \
         --transform_pkl /path/to/cleaner_eval..._672x416_transform_info.pkl \
         --output_json  /tmp/pred_from_dlc.json \

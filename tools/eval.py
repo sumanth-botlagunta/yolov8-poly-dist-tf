@@ -46,7 +46,7 @@ log = logging.getLogger(__name__)
 def _load_model_from_checkpoint(config, ckpt_path: str) -> tf.keras.Model:
     """Build model and restore EMA weights (falls back to raw if none present)."""
     from models.yolo_v8 import build_yolov8
-    from tools.ckpt_loading import restore_eval_weights
+    from tools.shared.ckpt_loading import restore_eval_weights
 
     model = build_yolov8(config.task.model)
     model.deploy = True
@@ -71,7 +71,7 @@ def main(_):
     # Activate the same precision policy the trainer used so a bfloat16-trained
     # checkpoint is evaluated on the bfloat16 compute path (must run BEFORE the
     # model is built).
-    from tools.runtime_setup import apply_eval_precision_policy
+    from tools.shared.runtime_setup import apply_eval_precision_policy
     apply_eval_precision_policy(config)
 
     task   = YoloV8Task(config)

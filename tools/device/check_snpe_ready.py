@@ -13,7 +13,7 @@ This script prints, with zero ambiguity:
      (main graph + every nested function), with a PASS/FAIL verdict.
 
 Usage:
-    python tools/check_snpe_ready.py [path/to/exported/saved_model]
+    python tools/device/check_snpe_ready.py [path/to/exported/saved_model]
 """
 
 import inspect

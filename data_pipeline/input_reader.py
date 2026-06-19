@@ -221,7 +221,7 @@ class InputReader:
             def _pre_resize_for_mosaic(ex, H=_H, W=_W):
                 # Skip the (expensive, full-image float32) resize when the image
                 # is already exactly the target size — true for every record of
-                # a pre-resized dataset variant (tools/reencode_tfds_672.py) and
+                # a pre-resized dataset variant (tools/pipeline/reencode_tfds_672.py) and
                 # the occasional natively-sized capture. Runtime tf.cond because
                 # decoded shapes are dynamic; the identity branch is ~free.
                 img_in = ex['image']

@@ -48,6 +48,6 @@ python tools/trace_shapes.py \
 - Location of the migrated checkpoint
 
 **Notes:**
-- The migration uses a frozen hand-verified positional map (`tools/legacy_weight_map_frozen.py`). The old-to-new name mapping is stored in Claude project memory.
+- The migration uses a frozen hand-verified positional map (`tools/shared/legacy_weight_map_frozen.py`). The old-to-new name mapping is stored in Claude project memory.
 - Shape mismatches in HEAD variables are expected and benign — the head is always randomly initialized. Only backbone+decoder mismatches are a problem.
 - After migration, set `task.init_checkpoint` in the experiment YAML to point to the new checkpoint path.

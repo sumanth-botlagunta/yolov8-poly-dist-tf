@@ -176,9 +176,9 @@ def main() -> None:
         print(f"\n  WARNING: Throughput {actual:.0f} imgs/sec is below target "
               f"{target} imgs/sec.")
         print("  The training loop will be data-starved.")
-        print("  Run tools/diagnose_pipeline.py for stage-by-stage attribution; if")
+        print("  Run tools/pipeline/diagnose_pipeline.py for stage-by-stage attribution; if")
         print("  decode/pre-resize dominate, build the pre-resized dataset variants")
-        print("  once with tools/reencode_tfds_672.py (see the experiment YAML).")
+        print("  once with tools/pipeline/reencode_tfds_672.py (see the experiment YAML).")
     else:
         print(f"\n  OK: Throughput {actual:.0f} imgs/sec exceeds target {target} imgs/sec.")
 

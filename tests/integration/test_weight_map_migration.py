@@ -16,7 +16,7 @@ import tensorflow as tf
 
 from configs.model_config import ModelConfig
 from models.yolo_v8 import build_yolov8
-from tools import checkpoint_weight_map as wm
+from tools.shared import checkpoint_weight_map as wm
 from tools.checkpoint_migration import (
     apply_frozen_map,
     apply_weight_map,
@@ -303,12 +303,12 @@ def test_full_legacy_simulation_exact_all_modules():
 
 
 # ---------------------------------------------------------------------------
-# Frozen committed map (tools/legacy_weight_map_frozen.py)
+# Frozen committed map (tools/shared/legacy_weight_map_frozen.py)
 # ---------------------------------------------------------------------------
 
 def test_frozen_map_covers_model_one_to_one():
     """The committed LEGACY_TO_NEW dict maps to every model variable, 1:1."""
-    from tools.legacy_weight_map_frozen import LEGACY_TO_NEW
+    from tools.shared.legacy_weight_map_frozen import LEGACY_TO_NEW
 
     model = _build(num_classes=39)
     new_recs = wm.new_records(model)
@@ -325,7 +325,7 @@ def test_frozen_map_covers_model_one_to_one():
 
 def test_frozen_map_transfers_values_end_to_end():
     """apply_frozen_map copies stamped legacy tensors into the right variables."""
-    from tools.legacy_weight_map_frozen import LEGACY_TO_NEW
+    from tools.shared.legacy_weight_map_frozen import LEGACY_TO_NEW
 
     model = _build(num_classes=39)
     new_recs = wm.new_records(model)

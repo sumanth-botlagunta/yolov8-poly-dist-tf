@@ -118,7 +118,7 @@ class PolygonDecoder:
 
         shape = tf.shape(image)
         # Prefer explicitly-stored ORIGINAL dims when present (written by
-        # tools/reencode_tfds_672.py for pre-resized dataset variants): the
+        # tools/pipeline/reencode_tfds_672.py for pre-resized dataset variants): the
         # copy-paste resolution correction needs the original capture size,
         # which tf.shape() can no longer provide once images are stored small.
         try:

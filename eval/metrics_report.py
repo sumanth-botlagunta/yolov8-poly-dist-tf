@@ -15,7 +15,7 @@ without pandas/openpyxl. Numbers are written as real numeric cells (Excel can su
 Typical use:
   * During training the trainer calls :func:`build_report` + :func:`save_canonical`
     each validation to drop ``val_metrics/epoch_NNNN.json`` (+ ``.txt``) under the run dir.
-  * Offline, ``tools/export_val_metrics.py`` reads a JSON and calls
+  * Offline, ``tools/pipeline/export_val_metrics.py`` reads a JSON and calls
     :func:`write_csv` / :func:`write_xlsx` / :func:`write_txt`.
 """
 

@@ -1,4 +1,4 @@
-"""Tests for tools/export_device_dlc.py — the legacy-DLC drop-in device export.
+"""Tests for tools/device/export_device_dlc.py — the legacy-DLC drop-in device export.
 
 The device DLC contract (from the on-device SNPE tooling, see docs/device_export.md):
     input  node  input_image  float32 [1, 672, 416, 3]  pixels in [0,255]
@@ -17,7 +17,7 @@ import tensorflow as tf
 
 from configs.model_config import ModelConfig
 from models.yolo_v8 import build_yolov8
-from tools import export_device_dlc as ed
+from tools.device import export_device_dlc as ed
 
 H, W = 672, 416
 N_ANCHORS = sum((H // s) * (W // s) for s in (8, 16, 32))   # 5733

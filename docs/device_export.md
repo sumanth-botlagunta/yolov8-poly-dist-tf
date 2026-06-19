@@ -1,6 +1,6 @@
 # On-device export — Qualcomm SNPE DLC (drop-in replacement)
 
-`tools/export_device_dlc.py` exports a trained checkpoint to a TensorFlow SavedModel
+`tools/device/export_device_dlc.py` exports a trained checkpoint to a TensorFlow SavedModel
 laid out as a **drop-in replacement for the legacy on-device DLC**. The existing SNPE
 conversion → quantization → net-run → result-extraction pipeline keeps working
 **unchanged**; only the SavedModel path changes.
@@ -56,7 +56,7 @@ legacy decoder applies the left/right (x) offsets to the **y**-axis → every bo
 transposed → host 0.68 / device 0.19. The exporter therefore **reorders the box head
 `[l,t,r,b] → [t,l,b,r]` (`tf.gather [1,0,3,2]`)** by default, so the unchanged on-device
 decoder reads each offset on the correct axis. Set `--legacy_box_order=False` only if you
-decode with this repo or `tools/gen_pred_json_from_dlc.py` (both expect x-first).
+decode with this repo or `tools/device/gen_pred_json_from_dlc.py` (both expect x-first).
 
 ## Two device-specific transforms vs the `[0,1]` host export
 
@@ -84,7 +84,7 @@ graph. `--verify` asserts these names exist in the GraphDef.
 
 ```bash
 # 1. Export the SavedModel (prefers EMA weights; --verify runs all contract checks)
-python tools/export_device_dlc.py \
+python tools/device/export_device_dlc.py \
     --config     configs/experiments/yolo/yolov8_poly_dist.yaml \
     --checkpoint /path/to/ckpts/epochN \
     --output_dir /path/to/epochN_export/saved_model \
@@ -140,7 +140,7 @@ fault — a wrong concat/wiring layout, weights dropped in the freeze step, or a
 precision asymmetry (bf16 stems under a leaked `mixed_bfloat16` policy vs the float32
 graph) — produces an O(1) relative error and fails loudly with diagnostics.
 
-To localize a genuine failure, run `tools/diagnose_device_export.py` (same flags). It
+To localize a genuine failure, run `tools/device/diagnose_device_export.py` (same flags). It
 runs one image through every export stage (eager → tf.function trace → freeze/re-import
 → reloaded SavedModel) and prints per-head relative error plus a
 `BENIGN(accum)/borderline/REAL-DIVERGENCE` verdict, so you can tell tolerance

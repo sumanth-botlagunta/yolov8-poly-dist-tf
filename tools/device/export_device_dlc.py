@@ -45,7 +45,7 @@ the concatenated nodes and re-running the in-repo decoder (the faithful port of 
 on-device ``YoloV8LayerModified``) — its detections must match the deploy path.
 
 Usage:
-    python tools/export_device_dlc.py \
+    python tools/device/export_device_dlc.py \
         --config     configs/experiments/yolo/yolov8_poly_dist.yaml \
         --checkpoint /path/to/ckpt-or-epoch \
         --output_dir /path/to/saved_model \
@@ -94,7 +94,7 @@ try:
                         "model/repo-native order is [left,top,right,bottom] (x-first); without "
                         'this swap the legacy decode applies x-offsets on the y-axis and every '
                         'box is transposed (the host=0.68 / device=0.19 gap). Set False to keep '
-                        'the x-first order (decode with this repo or tools/gen_pred_json_from_dlc.py).')
+                        'the x-first order (decode with this repo or tools/device/gen_pred_json_from_dlc.py).')
 except flags.DuplicateFlagError:
     pass
 
@@ -187,14 +187,14 @@ def _assert_close(name, got, ref, rel_tol=2e-2, atol=2e-2):
         f"  rel ~ 1e-3 or below is benign float32 graph accumulation; this is far larger,\n"
         f"  so it indicates a REAL fault: a wrong concat/wiring layout, dropped weights in\n"
         f"  the freeze step, or a precision asymmetry (bf16 stems under a leaked\n"
-        f"  mixed_bfloat16 policy vs the float32 graph). Run tools/diagnose_device_export.py\n"
+        f"  mixed_bfloat16 policy vs the float32 graph). Run tools/device/diagnose_device_export.py\n"
         f"  to localize which export stage diverges.")
 
 
 def main(_):
     from configs.yaml_loader import load_config
     from models.yolo_v8 import build_yolov8
-    from tools.ckpt_loading import restore_eval_weights
+    from tools.shared.ckpt_loading import restore_eval_weights
 
     h_str, w_str = FLAGS.input_size.split(',')
     H, W = int(h_str), int(w_str)

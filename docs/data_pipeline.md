@@ -171,12 +171,12 @@ are train-semantics decisions (do not flip mid-run). See `docs/design_register.m
   stable-argsorts valid-first to compact the kept vertices to a prefix before evenly sampling;
   on decode-time prefix input the sort is a no-op and the output is byte-identical.
 
-- If decode + pre-resize still dominate (see `tools/diagnose_pipeline.py` stage table),
-  build pre-resized dataset variants ONCE with `tools/reencode_tfds_672.py`: stores 672²
+- If decode + pre-resize still dominate (see `tools/pipeline/diagnose_pipeline.py` stage table),
+  build pre-resized dataset variants ONCE with `tools/pipeline/reencode_tfds_672.py`: stores 672²
   JPEG + `orig_height`/`orig_width` (which `PolygonDecoder` prefers, keeping the copy-paste
   resolution correction exact). Detection sets only — servingbot must stay full-resolution
   because the distance parser letterboxes (aspect-preserving), and copy_paste crops are RGBA.
   The pre-resize map skips already-672² images via `tf.cond`.
 - Use the `/benchmark` skill (`tools/benchmark_pipeline.py`) for end-to-end throughput and
-  `tools/diagnose_pipeline.py` for stage-by-stage attribution (its stage order MUST mirror
+  `tools/pipeline/diagnose_pipeline.py` for stage-by-stage attribution (its stage order MUST mirror
   `InputReader._build_detection_dataset` — keep them in sync).

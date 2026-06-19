@@ -1,6 +1,6 @@
 """Localize WHERE the device-DLC export diverges from the in-repo model.
 
-`tools/export_device_dlc.py --verify` compares the final SavedModel against the
+`tools/device/export_device_dlc.py --verify` compares the final SavedModel against the
 in-memory model. When they disagree it cannot say *which* stage introduced the
 difference. This tool runs the SAME image through every stage and prints a compact,
 NON-CONFIDENTIAL report (policy names, dtypes, mismatch %, max abs diff — no image
@@ -20,7 +20,7 @@ It also dumps the set of distinct layer dtype policies and the model-output dtyp
 which reveals a per-layer bfloat16 policy that a global-policy check cannot see.
 
 Usage:
-    python tools/diagnose_device_export.py \
+    python tools/device/diagnose_device_export.py \
         --config configs/experiments/yolo/yolov8_poly_dist.yaml \
         --checkpoint /path/to/ckpt-N --input_size 672,416
 """
@@ -65,8 +65,8 @@ def main(_):
     import tempfile
     from configs.yaml_loader import load_config
     from models.yolo_v8 import build_yolov8
-    from tools.ckpt_loading import restore_eval_weights
-    from tools import export_device_dlc as ed
+    from tools.shared.ckpt_loading import restore_eval_weights
+    from tools.device import export_device_dlc as ed
 
     H, W = (int(x) for x in FLAGS.input_size.split(','))
     tf.keras.mixed_precision.set_global_policy('float32')

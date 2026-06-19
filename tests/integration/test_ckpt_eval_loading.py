@@ -17,7 +17,7 @@ from configs.model_config import ModelConfig
 from models.yolo_v8 import build_yolov8
 from optimizers.sgd_warmup import SGDTorch
 from optimizers.ema import ExponentialMovingAverage
-from tools.ckpt_loading import restore_eval_weights, _checkpoint_has_ema
+from tools.shared.ckpt_loading import restore_eval_weights, _checkpoint_has_ema
 
 
 _H = _W = 64

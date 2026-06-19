@@ -32,7 +32,7 @@ if _REPO_ROOT not in sys.path:
 
 tfds = pytest.importorskip("tensorflow_datasets")
 
-from tools.reencode_tfds_672 import reencode_one  # noqa: E402
+from tools.pipeline.reencode_tfds_672 import reencode_one  # noqa: E402
 
 _SIZE = 64                      # small target -> fast JPEG re-encode
 _N = 8

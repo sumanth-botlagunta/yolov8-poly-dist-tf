@@ -11,11 +11,11 @@ impact); this offline tool turns one or many of them into:
   * ``.csv``     — plain (two files: ``*_best_conf.csv`` / ``*_all_conf.csv``).
 
 Single epoch:
-    python tools/export_val_metrics.py --input <run>/val_metrics/epoch_0042.json \
+    python tools/pipeline/export_val_metrics.py --input <run>/val_metrics/epoch_0042.json \
         --out_dir /tmp/metrics --formats xlsx,csv
 
 Whole run aggregated (recommended for analysis — adds an ``epoch`` column):
-    python tools/export_val_metrics.py --input <run>/val_metrics --aggregate \
+    python tools/pipeline/export_val_metrics.py --input <run>/val_metrics --aggregate \
         --out_dir /tmp/metrics --formats parquet,xlsx
 
 Requires: pandas, openpyxl (xlsx), pyarrow (parquet). Install: pip install pandas openpyxl pyarrow

@@ -7,7 +7,7 @@ end-to-end number. Also prints TFDS dataset sizes and stored image encodings
 (PNG decode is several times more expensive than JPEG — this matters).
 
 Usage:
-    python tools/diagnose_pipeline.py \
+    python tools/pipeline/diagnose_pipeline.py \
         --config configs/experiments/yolo/yolov8_poly_dist.yaml \
         [--samples 768] [--batches 10] [--threadpool-sweep 0,13,26]
 
@@ -25,7 +25,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)

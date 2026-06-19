@@ -40,7 +40,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from _table import Table, coloured
+# Ensure the repo root is importable so ``tools.shared`` resolves when this file is
+# run directly as a script (python tools/trace_shapes.py).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from tools.shared._table import Table, coloured
 
 
 # ---------------------------------------------------------------------------

@@ -27,10 +27,10 @@ Curated legacy map (recommended for the ckpt-319992 legacy checkpoint)
 The legacy checkpoint names variables completely differently AND at different
 nesting levels (``backbone/layer_with_weights-N/...``,
 ``head/_head/{level}/cv3/...``), so neither name nor traversal-order matching is
-reliable. ``tools/checkpoint_weight_map.py`` holds a hand-curated structural map
+reliable. ``tools/shared/checkpoint_weight_map.py`` holds a hand-curated structural map
 that resolves each variable into confident / suggested / ambiguous tiers and
 copies only shape-verified pairs — this runtime resolver backs the ``"map"``
-strategy. Separately, ``tools/legacy_weight_map_frozen.py`` holds the committed,
+strategy. Separately, ``tools/shared/legacy_weight_map_frozen.py`` holds the committed,
 hand-verified EXACT map used by the ``"frozen"`` strategy. ``"auto"`` (default)
 selects ``"frozen"`` for legacy object checkpoints (``layer_with_weights`` /
 ``_head/`` keys) and ``"structural"`` otherwise; it never auto-selects the
@@ -667,8 +667,8 @@ def apply_frozen_map(reader, new_model, modules: Optional[List[str]] = None) -> 
     39-class module rule selects which modules to copy. Returns
     ``{loaded, skipped, not_found}``.
     """
-    from tools import checkpoint_weight_map as wm
-    from tools.legacy_weight_map_frozen import LEGACY_TO_NEW
+    from tools.shared import checkpoint_weight_map as wm
+    from tools.shared.legacy_weight_map_frozen import LEGACY_TO_NEW
 
     # Two legacy keys mapping to the same canonical id would silently overwrite
     # one new variable and leave another at random init. Catch that map typo
@@ -797,7 +797,7 @@ def migrate_with_map(
             f"skipped={stats['skipped']}, not_found={stats['not_found']}). All "
             "candidate pairs were ambiguous or shape-mismatched — run `report` to "
             "inspect and add entries to MANUAL_OVERRIDES in "
-            "tools/checkpoint_weight_map.py. Refusing to write a "
+            "tools/shared/checkpoint_weight_map.py. Refusing to write a "
             f"partially-initialized checkpoint to {output_ckpt_path}."
         )
 
@@ -821,7 +821,7 @@ def apply_weight_map(
     ``get_variable_to_shape_map()`` and ``get_tensor(key)``. Returns the
     ``{loaded, skipped, not_found}`` stats; does not save a checkpoint.
     """
-    from tools import checkpoint_weight_map as wm
+    from tools.shared import checkpoint_weight_map as wm
 
     resolved_modules, reason = select_modules_39(new_model, modules)
     log.info("Module selection: %s", reason)
@@ -860,7 +860,7 @@ def apply_weight_map(
         log.warning(
             "%d variables are AMBIGUOUS and were NOT copied. Run the `report` "
             "subcommand and add entries to MANUAL_OVERRIDES in "
-            "tools/checkpoint_weight_map.py.", len(resolution["ambiguous"]),
+            "tools/shared/checkpoint_weight_map.py.", len(resolution["ambiguous"]),
         )
 
     if mapping_json:
@@ -1188,10 +1188,10 @@ def _cmd_report(args: argparse.Namespace) -> None:
     """Debug report for the curated map: confident / suggested / ambiguous / unmatched.
 
     Use this against the REAL legacy checkpoint to see exactly what maps cleanly
-    and what needs a MANUAL_OVERRIDES entry in tools/checkpoint_weight_map.py.
+    and what needs a MANUAL_OVERRIDES entry in tools/shared/checkpoint_weight_map.py.
     """
     import tensorflow as tf
-    from tools import checkpoint_weight_map as wm
+    from tools.shared import checkpoint_weight_map as wm
 
     model, _ = _build_model_from_config(args.config)
     resolved_modules, reason = select_modules_39(model, args.modules)

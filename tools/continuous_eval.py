@@ -37,7 +37,7 @@ def _eval_checkpoint(config, ckpt_path: str) -> dict:
     # Prefer EMA weights (what the trainer validates with and tools/eval.py uses)
     # so the continuous-eval curve matches the official eval rather than the
     # noisier raw-weight curve.
-    from tools.ckpt_loading import restore_eval_weights
+    from tools.shared.ckpt_loading import restore_eval_weights
     kind = restore_eval_weights(model, ckpt_path)
     log.info("Loaded checkpoint (%s weights): %s", kind, ckpt_path)
 
@@ -67,7 +67,7 @@ def main(_):
     # Activate the trainer's precision policy once before any model is built so the
     # continuous-eval curve matches the trainer's own bfloat16 validation numerics
     # (the global policy persists for every checkpoint evaluated in the loop).
-    from tools.runtime_setup import apply_eval_precision_policy
+    from tools.shared.runtime_setup import apply_eval_precision_policy
     apply_eval_precision_policy(config)
 
     log_path    = os.path.join(FLAGS.watch_dir, 'eval_log.jsonl')

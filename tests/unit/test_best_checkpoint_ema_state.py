@@ -94,7 +94,7 @@ def test_best_checkpoint_stores_raw_weights_and_ema_shadows(tmp_path):
     )
 
     # 3. restore_eval_weights recovers the EMA weights for inference.
-    from tools.ckpt_loading import restore_eval_weights
+    from tools.shared.ckpt_loading import restore_eval_weights
 
     eval_model = tf.keras.Sequential([tf.keras.layers.Dense(1, input_shape=(1,))])
     eval_model.build((None, 1))

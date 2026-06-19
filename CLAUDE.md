@@ -155,11 +155,19 @@ configs/
   data/ model/ optimizer/ experiments/yolo/   # composable YAML fragments
 scripts/
   run_train.py         # entry point (config load, validation, strategy, runtime flags)
-tools/
-  benchmark_pipeline.py diagnose_pipeline.py cloud_diagnose.sh
-  reencode_tfds_672.py  # one-time 672² pre-resized dataset variants (+orig_height/width)
-  checkpoint_migration.py compare_checkpoints.py
-  eval.py export_saved_model.py trace_shapes.py continuous_eval.py
+tools/                 # core workflow tools (top level)
+  eval.py export_saved_model.py benchmark_pipeline.py
+  checkpoint_migration.py trace_shapes.py continuous_eval.py
+  cloud_diagnose.sh train_supervisor.sh
+  device/              # SNPE/DLC export + on-device diagnostics
+    export_device_dlc.py validate_device_export.py gen_pred_json_from_dlc.py
+    diagnose_device_export.py check_snpe_ready.py compare_dlc_raw.py
+    dump_savedmodel_raw.py savedmodel_on_device_raw.py visualize_device_export.py
+  shared/              # utility modules imported by the tools
+    runtime_setup.py ckpt_loading.py checkpoint_weight_map.py
+    legacy_weight_map_frozen.py _table.py compare_checkpoints.py
+  pipeline/            # data-pipeline diagnostics + dataset re-encoding
+    diagnose_pipeline.py reencode_tfds_672.py export_val_metrics.py
 tests/                 # unit/ integration/ smoke/ + component tests
 ```
 
@@ -210,7 +218,7 @@ Run with `/test` or `pytest tests/unit tests/smoke -v`.
 - **Warp scale gain uses explicit bounds**: `make_perspective_matrix(scale_min=, scale_max=)` draws from the configured `[aug_scale_min, aug_scale_max]` (poly_dist: [0.4, 1.9]). The symmetric-magnitude form is kept for back-compat but widened [0.4, 1.9] to [0.1, 1.9] — the mostly-gray-frame bug (since fixed).
 - **Polygon vertex resampling is ARC-LENGTH**: `parser.resample_points: 64` (poly_dist YAML, both streams; dataclass default 0). `resample_polygons` samples 64 points **uniformly along the closed contour, interpolating on edges** — NOT subsampling stored vertices. This is what makes the 24-bin radial target track shapes: a 4-corner rectangle previously kept only its 4 corners → ≤4 occupied bins (drawn as a diamond, long edges left conf=0); arc sampling fills every bin the boundary crosses (rectangle → 24 bins). Sampled points lie exactly on the original contour; dense contours match the old behavior within 1e-3. Train-semantics change — fresh-run only.
 - **Copy-paste polygon fit = even resample, not truncation**: the cnp source decoder does NOT resample, so a pasted object can carry far more polygon columns than the (resampled) background. When `cur_cols >= n_poly_cols`, copy-paste **evenly resamples** the valid vertices to the column budget (`resample_polygons`) instead of slicing the first N — slicing kept only a leading contour arc (~3% of the loop) and corrupted the radial target. `resample_polygons` itself stable-argsorts valid-first to **compact scattered sentinels** before sampling, because copy-paste invalidates out-of-bounds vertices in place (interleaved `-1`s); on decode-time prefix input the sort is a no-op (byte-identical). Both are **train-semantics** changes: they alter the polygon GT for copy-pasted objects, so do not merge into a live run mid-flight.
-- **Pre-resized dataset variants**: `tools/reencode_tfds_672.py` builds `<name>_672` TFDS copies (672² JPEG + `orig_height`/`orig_width`, which `PolygonDecoder` prefers). Detection sets only — the distance parser letterboxes (aspect-preserving) so servingbot must stay full-resolution. The YAML carries commented switch-over lines.
+- **Pre-resized dataset variants**: `tools/pipeline/reencode_tfds_672.py` builds `<name>_672` TFDS copies (672² JPEG + `orig_height`/`orig_width`, which `PolygonDecoder` prefers). Detection sets only — the distance parser letterboxes (aspect-preserving) so servingbot must stay full-resolution. The YAML carries commented switch-over lines.
 - **Polygon binning is a segment formulation**: `_preprocess_polygons_v2` uses `unsorted_segment_max` + first-winner `unsorted_segment_min` instead of a `[N, P, 24]` one-hot — exactly output-equivalent including argmax-first tie behavior (tests assert equality).
 - **Runtime defaults (poly_dist YAML)**: `one_device` on 1 GPU, `mixed_bfloat16` (heads pinned float32 in `models/head.py`, no loss scaling needed), thread-pool caps for cgroup-capped hosts (`runtime.inter_op_threads`/`intra_op_threads`, `train_data.private_threadpool_size`). The training stream sets `tf.data` `deterministic=False` (sample order is not seed-reproducible; augmentation randomness unaffected).
 - **Polygon sub-losses are logged separately**: TensorBoard tags `train/poly_angle_loss`, `train/poly_dist_loss`, and `train/poly_conf_loss` allow diagnosing which polygon component is not converging.

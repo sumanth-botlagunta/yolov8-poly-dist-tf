@@ -36,8 +36,8 @@ import os
 import sys
 
 # Repo root before this script's dir, so `import eval` finds the eval/ package and not
-# tools/eval.py (which shadows it when run as `python tools/validate_device_export.py`).
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# tools/eval.py (which shadows it when run as `python tools/device/validate_device_export.py`).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from absl import app, flags
 import numpy as np
@@ -176,7 +176,7 @@ def main(_):
     import dataclasses
     from configs.yaml_loader import load_config
     from models.yolo_v8 import build_yolov8
-    from tools.ckpt_loading import restore_eval_weights
+    from tools.shared.ckpt_loading import restore_eval_weights
     from train.task import YoloV8Task, normalize_images
     from eval.coco_metrics import COCOEvaluator
 

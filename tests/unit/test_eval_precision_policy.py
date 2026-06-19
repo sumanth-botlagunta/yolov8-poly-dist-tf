@@ -14,7 +14,7 @@ import unittest
 
 import tensorflow as tf
 
-from tools.runtime_setup import apply_eval_precision_policy
+from tools.shared.runtime_setup import apply_eval_precision_policy
 
 
 def _cfg(dtype):

@@ -26,7 +26,7 @@ the detections. The SavedModel is the known-good model (host 0.68). So:
 No DLC, no SNPE, no device — just TensorFlow + the .raw files you already feed net-run.
 
 Usage:
-    python tools/savedmodel_on_device_raw.py \
+    python tools/device/savedmodel_on_device_raw.py \
         --saved_model /path/to/device/saved_model \
         --raw         /path/to/raw_dir_or_one.raw \
         --out_dir     /tmp/sm_on_raw \
@@ -45,7 +45,7 @@ import tensorflow as tf
 # Reuse the exact reconstruction the device decoder must do (LTRB pre-stride -> stride +
 # anchor -> yxyx; sigmoid; top-1; per-class NMS) so the boxes here match what the harness
 # should produce from these same head tensors.
-from tools.validate_device_export import _reconstruct
+from tools.device.validate_device_export import _reconstruct
 
 _CLASS_NAMES = None  # filled from configs.class_map if importable
 
