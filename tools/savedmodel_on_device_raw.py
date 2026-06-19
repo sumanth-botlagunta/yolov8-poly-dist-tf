@@ -54,7 +54,13 @@ def _load_class_names():
     global _CLASS_NAMES
     try:
         from configs.class_map import DETECTION_CLASSES
-        _CLASS_NAMES = list(DETECTION_CLASSES)
+        # DETECTION_CLASSES is a {index: name} dict in this repo; list() of a dict
+        # yields its KEYS (ints), so map index->name explicitly. Also tolerate a
+        # plain list for forward-compat.
+        if isinstance(DETECTION_CLASSES, dict):
+            _CLASS_NAMES = [str(DETECTION_CLASSES[i]) for i in sorted(DETECTION_CLASSES)]
+        else:
+            _CLASS_NAMES = [str(x) for x in DETECTION_CLASSES]
     except Exception:
         _CLASS_NAMES = None
 
@@ -164,7 +170,7 @@ def main():
         for r in order:
             name = (_CLASS_NAMES[int(cls[r])] if (_CLASS_NAMES and int(cls[r]) < len(_CLASS_NAMES))
                     else str(int(cls[r])))
-            print(f"    {name:18s} score={scr[r]:.3f}  yxyx={np.round(boxes[r], 4)}")
+            print(f"    {str(name):18s} score={float(scr[r]):.3f}  yxyx={np.round(boxes[r], 4)}")
 
     print(f"\nOpen the PNGs in {a.out_dir}. If boxes land on objects, the device input "
           f"bytes are fine and the bug is conversion/decode. If they're garbage but good "
