@@ -141,6 +141,20 @@ def _validate_config(config, output_dir: str) -> None:
             f"must equal 360 // angle_step ({360 // task.model.angle_step})"
         )
 
+    # --- mosaic group / diversity ---
+    mosaic_cfg = getattr(getattr(task.train_data, "parser", None), "mosaic", None)
+    if mosaic_cfg is not None:
+        g, r = mosaic_cfg.group_size, mosaic_cfg.decodes_per_output
+        if g < 4:
+            errors.append(f"mosaic.group_size ({g}) must be >= 4")
+        if r < 1:
+            errors.append(f"mosaic.decodes_per_output ({r}) must be >= 1")
+        elif g % r != 0:
+            errors.append(
+                f"mosaic.group_size ({g}) must be a multiple of "
+                f"mosaic.decodes_per_output ({r})"
+            )
+
     # --- output directory writable ---
     try:
         os.makedirs(output_dir, exist_ok=True)

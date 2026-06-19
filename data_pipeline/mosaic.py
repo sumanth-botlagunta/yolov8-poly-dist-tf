@@ -7,25 +7,36 @@ scale + shear + translate) warps and crops the canvas back to the output size.
 The same ``random_perspective`` is applied to non-mosaic single images, so it is
 the one geometric transform in the pipeline (the parser no longer does affine).
 
-4-in / 4-out semantics (epoch accounting)
------------------------------------------
-``mosaic_fn`` maps a ``padded_batch(4)`` group to **four** emitted samples (one
-per decoded image), not one. The previous implementation emitted a single sample
-per group (``tf.cond(do_mosaic, _mosaic(4 imgs), _single(1 img))`` then
-``expand_dims(0)``), which in the non-mosaic branch silently *discarded three of
-the four decoded images*. That broke epoch accounting: 4 raw images were consumed
-per emitted sample, so an "epoch" only saw a quarter of the dataset (and the three
-dropped images never contributed gradients).
+Group / image-diversity semantics
+---------------------------------
+``mosaic_fn`` maps a ``padded_batch(group_size)`` group to
+``group_size // decodes_per_output`` emitted samples. ``decodes_per_output`` (R) is
+both the image-diversity knob and the data-pipeline decode multiplier: it is how many
+freshly-decoded images each emitted sample consumes.
 
-Now every decoded image yields exactly one emitted sample, and per-sample mosaic
-probability is still exactly ``mosaic_frequency``: one coin flip per group decides
-whether the group's 4 outputs are 4 mosaics (each built from a rotated quadrant
-permutation of the same 4 images) or 4 single-image warps. Downstream
-``.unbatch()`` then sees 4 elements (leading dim 4 instead of 1).
+  * **R = decodes_per_output** controls reuse. Each emitted mosaic composites 4 source
+    images drawn from the group via a windowed slice of one per-group random
+    permutation (window of 4, stepping by 4). At **R=4** (the default — stock YOLO) the
+    windows tile the permutation, so every output's 4 images are disjoint: zero reuse,
+    maximum unique-image throughput, ~4× decode work. At **R<4** the windows wrap, so
+    each image recurs in ``4/R`` outputs but paired with different partners each time —
+    less decode work, more reuse. R=1 is throughput-neutral (1 decode per output).
+  * **group_size** is the pool each window is drawn from; larger pools give more varied
+    4-image combinations at the same R. It must be a multiple of R and >= 4.
+  * The mosaic/single decision is a **per-output** coin flip (not per-group), so the
+    per-sample mosaic probability is exactly ``mosaic_frequency`` with no batch
+    clustering.
+
+Epoch accounting is unaffected: the trainer runs a fixed number of steps, and the
+final ``.batch(batch_size)`` is downstream, so the model still sees the same number of
+training samples per epoch (R only changes how many source images are decoded to build
+them).
 
 Configuration (parser.mosaic in the experiment YAML):
     mosaic_frequency: 0.5
     mixup_frequency: 0.0
+    group_size: 32           (mosaic source pool per group)
+    decodes_per_output: 4    (R: 4 = stock YOLO / no reuse; lower = more reuse, less decode)
     mosaic_center: 0.25      (half-range of the split point as a fraction; the
                               2× canvas split lands in [H(1-2c), H(1+2c)])
     aug_scale_min / aug_scale_max: per-image scale range AND the random_perspective
@@ -209,6 +220,8 @@ class Mosaic:
         shear: float = 2.0,
         perspective: float = 0.0,
         translate: float = 0.1,
+        group_size: int = 32,
+        decodes_per_output: int = 4,
     ):
         self._H = output_size[0]
         self._W = output_size[1]
@@ -225,63 +238,86 @@ class Mosaic:
         self._shear       = shear
         self._perspective = perspective
         self._translate   = translate
+        # Image-diversity controls (see module docstring). A group of `group_size`
+        # decoded images yields `outputs_per_group = group_size // decodes_per_output`
+        # emitted samples; each mosaic draws 4 source images from the group.
+        if group_size < 4:
+            raise ValueError(f"mosaic group_size must be >= 4, got {group_size}")
+        if group_size % decodes_per_output != 0:
+            raise ValueError(
+                f"mosaic group_size ({group_size}) must be a multiple of "
+                f"decodes_per_output ({decodes_per_output})"
+            )
+        self._group_size = group_size
+        self._decodes_per_output = decodes_per_output
+        self._outputs_per_group = group_size // decodes_per_output
 
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
 
     def mosaic_fn(self, is_training: bool = True) -> Callable:
-        """Return a function for tf.data.Dataset.map() over a ``padded_batch(4)`` group.
+        """Return a function for ``tf.data.Dataset.map()`` over a ``padded_batch(group_size)`` group.
 
-        Maps the 4-image group to FOUR emitted samples (leading dim 4), so every
-        decoded image yields exactly one output. One coin flip per group selects
-        the path; per-sample mosaic probability is still exactly ``mosaic_frequency``:
+        Maps a ``group_size``-image group to ``outputs_per_group = group_size //
+        decodes_per_output`` emitted samples (leading dim = outputs_per_group), so the
+        decode cost per emitted sample is exactly ``decodes_per_output`` (R) and the epoch
+        step count is unchanged (the trainer runs a fixed number of steps).
 
-          * mosaic branch: build 4 mosaics from the same 4 examples using rotated
-            quadrant permutations ``[(0,1,2,3),(1,2,3,0),(2,3,0,1),(3,0,1,2)]`` —
-            each image lands in each quadrant exactly once across the 4 mosaics.
-            Each ``_mosaic`` call draws its own split center / per-image scales /
-            ``random_perspective`` params (4 independent draws).
-          * single branch: ``_single`` on each of the 4 examples (4 independent
-            ``random_perspective`` draws).
+        Image diversity — each output independently:
+          * flips ``mosaic_frequency`` (a **per-output** coin flip — not per-group — so the
+            per-sample mosaic probability is exactly ``mosaic_frequency`` with no batch
+            clustering);
+          * if mosaic, draws **4 distinct** source images from the group via a windowed
+            slice of one per-group random permutation (window of 4 stepping by 4). At R=4
+            (``4 · outputs_per_group == group_size``) the windows tile the permutation, so
+            every output's 4 images are disjoint from every other output's — stock-YOLO,
+            zero reuse. At R<4 the windows wrap, so each image recurs in ``4/R`` outputs but
+            with different partners each time;
+          * if single, ``_single`` on the window's first image.
 
-        Both branches return the SAME dict structure with every value stacked on
-        axis 0 to ``[4, ...]`` (annotations zero/-1/False/0.0 padded to the group
-        max instance count before stacking). Downstream ``.unbatch()`` yields 4
-        single examples with static image shape ``[H, W, 3]``.
+        ``_mosaic`` / ``_single`` each draw their own split center / per-image scales /
+        ``random_perspective`` params, and every output runs ``random_perspective`` exactly
+        once. All outputs return the SAME dict structure; ``_stack_results`` pads the
+        per-instance fields to the group-max instance count and stacks to leading dim
+        ``outputs_per_group``. Downstream ``.unbatch()`` yields one example per output with
+        static image shape ``[H, W, 3]``.
 
-        Both the mosaic branch and the single-image branch run random_perspective,
-        so every training image gets the full geometric transform exactly once.
+        The ``is_training=False`` path single-warps every image in the group (no mixing),
+        but the eval dataset is built without mosaic, so it is unused in practice.
         """
+        G = self._group_size
+        P = self._outputs_per_group
 
         def _fn(batch: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
-            def _select(d: Dict, i: int) -> Dict:
-                return {k: v[i] for k, v in d.items()}
-
-            examples = [_select(batch, i) for i in range(4)]
+            def _select(d: Dict, i) -> Dict:
+                # i may be a Python int or a scalar tensor (dynamic gather by index).
+                return {k: tf.gather(v, i) for k, v in d.items()}
 
             if not is_training:
-                results = [self._single(ex) for ex in examples]
+                results = [self._single(_select(batch, i)) for i in range(G)]
                 return _stack_results(results)
 
-            do_mosaic = tf.random.uniform([]) < self._mosaic_freq
+            # One random permutation of the group per call. Output j takes a width-4 window
+            # starting at j·R (R = decodes_per_output): anchors are spaced R apart (so every
+            # output has a distinct anchor and at R=1 every image is emitted once), and each
+            # image recurs in 4/R windows. At R=4 the windows tile the permutation exactly
+            # (disjoint — stock YOLO, zero reuse); at R<4 they overlap with varied partners.
+            R = self._decodes_per_output
+            perm = tf.random.shuffle(tf.range(G))
 
-            def _mosaic_branch():
-                perms = [(0, 1, 2, 3), (1, 2, 3, 0), (2, 3, 0, 1), (3, 0, 1, 2)]
-                results = [
-                    self._mosaic(
-                        examples[p[0]], examples[p[1]],
-                        examples[p[2]], examples[p[3]],
-                    )
-                    for p in perms
-                ]
-                return _stack_results(results)
-
-            def _single_branch():
-                results = [self._single(ex) for ex in examples]
-                return _stack_results(results)
-
-            return tf.cond(do_mosaic, _mosaic_branch, _single_branch)
+            results = []
+            for j in range(P):
+                idx = [perm[(R * j + k) % G] for k in range(4)]
+                examples = [_select(batch, idx[k]) for k in range(4)]
+                do_mosaic = tf.random.uniform([]) < self._mosaic_freq
+                out_j = tf.cond(
+                    do_mosaic,
+                    lambda ex=examples: self._mosaic(ex[0], ex[1], ex[2], ex[3]),
+                    lambda ex=examples: self._single(ex[0]),
+                )
+                results.append(out_j)
+            return _stack_results(results)
 
         return _fn
 

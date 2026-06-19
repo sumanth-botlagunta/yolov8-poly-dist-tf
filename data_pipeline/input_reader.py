@@ -9,7 +9,7 @@ Pipeline order for training:
     tfds.load(names, SkipDecoding) → repeat each source → sample_from_datasets(weights)
     → shuffle (encoded records) → decode
     → zip(cnp_dataset) → copy_paste(prob)
-    → batch(4) → mosaic (4 in → 4 out) → unbatch → shuffle(small)
+    → padded_batch(group_size) → mosaic (G in → G//R out) → unbatch → shuffle
     → parser.parse_fn(is_training=True)
     → batch(global_batch_size)
     → prefetch(AUTOTUNE)
@@ -214,7 +214,7 @@ class InputReader:
         # object by (new/orig) per axis, so the object's RELATIVE size and
         # placement distribution are exactly what compositing at full resolution
         # then resizing would have produced. The resize is also required before
-        # padded_batch(4) anyway (variable spatial dims cannot be stacked).
+        # padded_batch anyway (variable spatial dims cannot be stacked).
         if self._mosaic_module is not None:
             _H, _W = self._mosaic_module._H, self._mosaic_module._W
 
@@ -250,7 +250,7 @@ class InputReader:
             copy_paste_fn = self._copy_paste_module.process_fn(is_training=True)
             ds = ds.map(copy_paste_fn, num_parallel_calls=_AUTOTUNE)
 
-        # Mosaic: batch(4) → combine (4 in → 4 out) → unbatch.
+        # Mosaic: padded_batch(group_size) → combine (G in → G//R out) → unbatch.
         if self._mosaic_module is not None:
             mosaic_fn = self._mosaic_module.mosaic_fn(is_training=True)
             # Explicit padding_values for EVERY key in the decoder element spec
@@ -275,21 +275,24 @@ class InputReader:
                 'groundtruth_dontcare': tf.constant(0, tf.int64),
                 'groundtruth_dists': tf.constant(0.0, tf.float32),
             }
+            group_size = self._mosaic_module._group_size
+            # Hold several groups' worth of outputs so the P outputs of any one group
+            # (which share that group's source images) disperse across many batches.
+            shuffle_buffer = max(256, 4 * group_size)
             ds = (
                 ds
-                .padded_batch(4, drop_remainder=True, padding_values=_padding_values)
+                .padded_batch(group_size, drop_remainder=True, padding_values=_padding_values)
                 .map(mosaic_fn, num_parallel_calls=_AUTOTUNE)
                 .unbatch()
-                # mosaic_fn emits 4 samples per 4-group (the 4 mosaics share
-                # source images, and the group coin flip makes mosaic/non-mosaic
-                # arrive in runs of 4) — a small shuffle breaks those clusters up
-                # before batching. ~128 × 1.4 MB decoded samples ≈ 180 MB buffer.
-                # seed=self._seed+2: a DISTINCT seed from the pre-decode source
-                # shuffle (seed) and the cnp source shuffle (seed+1) so the three
-                # shuffle stages do not share an RNG stream (correlated permutations
-                # across stages would partially undo each other's decorrelation).
+                # mosaic_fn emits group_size // decodes_per_output samples per group; the
+                # outputs of one group share its source images, so a shuffle disperses them
+                # across batches before batching. ~256 × 1.4 MB decoded samples ≈ 360 MB.
+                # seed=self._seed+2: a DISTINCT seed from the pre-decode source shuffle
+                # (seed) and the cnp source shuffle (seed+1) so the three shuffle stages do
+                # not share an RNG stream (correlated permutations across stages would
+                # partially undo each other's decorrelation).
                 .shuffle(
-                    128,
+                    shuffle_buffer,
                     seed=None if self._seed is None else self._seed + 2,
                     reshuffle_each_iteration=True,
                 )
@@ -537,6 +540,8 @@ def build_input_reader_from_config(
             shear=mosaic_cfg.shear,
             perspective=mosaic_cfg.perspective,
             translate=mosaic_cfg.translate,
+            group_size=mosaic_cfg.group_size,
+            decodes_per_output=mosaic_cfg.decodes_per_output,
         )
 
     # Copy-paste (training only, when a source dataset is configured).

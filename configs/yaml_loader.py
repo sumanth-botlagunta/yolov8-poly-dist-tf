@@ -380,6 +380,8 @@ def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
         mosaic_crop_mode=mosaic_raw.get("mosaic_crop_mode", "scale"),
         area_thresh=mosaic_raw.get("area_thresh", 0.5),
         jitter=mosaic_raw.get("jitter", 0.0),
+        group_size=mosaic_raw.get("group_size", 32),
+        decodes_per_output=mosaic_raw.get("decodes_per_output", 4),
         degrees=mosaic_raw.get("degrees", 10.0),
         shear=mosaic_raw.get("shear", 2.0),
         perspective=mosaic_raw.get("perspective", 0.0),

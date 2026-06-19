@@ -179,9 +179,11 @@ class TestMosaicOutputShape(unittest.TestCase):
         self.assertEqual(tuple(result['image'].shape), (_H, _W, 3))
 
     def test_mosaic_fn_output_shape(self):
-        """mosaic_fn() (the dataset-map callable) emits 4 samples → [4, H, W, 3]."""
+        """mosaic_fn() (the dataset-map callable) emits group_size // R samples → [P, H, W, 3]."""
         from data_pipeline.mosaic import Mosaic
-        mosaic = Mosaic(output_size=_OUT_SIZE, mosaic_frequency=1.0, with_polygons=True)
+        # group_size=4, R=1 -> P=4 outputs (one per decoded image).
+        mosaic = Mosaic(output_size=_OUT_SIZE, mosaic_frequency=1.0, with_polygons=True,
+                        group_size=4, decodes_per_output=1)
         fn = mosaic.mosaic_fn(is_training=True)
 
         exs = [self._make_pre_resized(_H, _W) for _ in range(4)]
@@ -189,13 +191,13 @@ class TestMosaicOutputShape(unittest.TestCase):
             k: tf.stack([ex[k] for ex in exs], axis=0) for k in exs[0]
         }
         result = fn(batch_dict)
-        # 4-in/4-out: every decoded image yields one emitted sample.
         self.assertEqual(tuple(result['image'].shape), (4, _H, _W, 3))
 
     def test_mosaic_passthrough_shape(self):
-        """When mosaic is skipped (freq=0.0), all 4 images still have [H, W, 3]."""
+        """When mosaic is skipped (freq=0.0), all P images still have [H, W, 3]."""
         from data_pipeline.mosaic import Mosaic
-        mosaic = Mosaic(output_size=_OUT_SIZE, mosaic_frequency=0.0, with_polygons=True)
+        mosaic = Mosaic(output_size=_OUT_SIZE, mosaic_frequency=0.0, with_polygons=True,
+                        group_size=4, decodes_per_output=1)
         fn = mosaic.mosaic_fn(is_training=True)
 
         exs = [self._make_pre_resized(_H, _W) for _ in range(4)]

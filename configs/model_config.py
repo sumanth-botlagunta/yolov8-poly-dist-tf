@@ -155,6 +155,16 @@ class MosaicConfig:
     mosaic_crop_mode: str = "scale"
     area_thresh: float = 0.5
     jitter: float = 0.0
+    # Mosaic image diversity (see data_pipeline/mosaic.py). A group of `group_size`
+    # decoded images is mapped to `group_size // decodes_per_output` outputs; each
+    # mosaic draws 4 source images from the group. `decodes_per_output` (R) is the
+    # number of freshly-decoded images each output consumes AND the data-pipeline
+    # decode multiplier: R=4 is stock-YOLO (4 distinct images per mosaic, no reuse);
+    # R=1 reuses each image 4× (throughput-neutral). Larger group_size = more varied
+    # combinations at the same R. group_size must be a multiple of decodes_per_output
+    # and >= 4 (validated in scripts/run_train.py:_validate_config).
+    group_size: int = 32
+    decodes_per_output: int = 4
     # Full-affine (random_perspective) params applied after mosaic assembly and to
     # non-mosaic single images. degrees/shear in degrees; translate as a fraction of
     # output size; perspective coefficient (0 disables). scale gain uses
