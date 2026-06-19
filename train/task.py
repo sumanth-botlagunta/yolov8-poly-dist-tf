@@ -53,6 +53,10 @@ class YoloV8Task:
         self._config = config
         self._model: Optional[tf.keras.Model] = None
         self._loss_fn = None
+        # Stashes the per-category F1 report from the last validation pass so the
+        # trainer (which owns the output dir + epoch) can persist it. None until a
+        # validation pass with a COCO evaluator has run.
+        self._last_val_report = None
 
     # ------------------------------------------------------------------
     # Build helpers
@@ -350,6 +354,17 @@ class YoloV8Task:
         poly_ev = aggregated_logs['poly']
 
         metrics = coco_ev.evaluate()
+
+        # Build the per-category F1/precision/recall report (best-conf + all-conf
+        # sweep) and stash it for the trainer to persist. Tiny + off the train
+        # step, so it does not affect training throughput. Never fatal.
+        try:
+            from eval.metrics_report import build_report
+            self._last_val_report = build_report(
+                coco_ev, step=int(global_step) if global_step is not None else None)
+        except Exception as e:               # pragma: no cover - defensive
+            log.warning("Could not build validation metrics report: %s", e)
+            self._last_val_report = None
         if dist_ev is not None:
             metrics.update(dist_ev.evaluate())
         if poly_ev is not None:

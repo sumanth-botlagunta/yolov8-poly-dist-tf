@@ -234,7 +234,7 @@ class YoloV8Trainer:
             val_start = time.time()
             self._optimizer.swap_in(self._model)
             try:
-                val_metrics = self._run_validation()
+                val_metrics = self._run_validation(epoch=epoch + 1)
             finally:
                 self._optimizer.swap_out(self._model)
             val_time = time.time() - val_start
@@ -530,7 +530,7 @@ class YoloV8Trainer:
     # Validation
     # ------------------------------------------------------------------
 
-    def _run_validation(self) -> dict:
+    def _run_validation(self, epoch: Optional[int] = None) -> dict:
         task_cfg       = self._config.task
         summary_types  = getattr(task_cfg, 'summary_types', 'scalar')
         do_img_summary = 'image' in summary_types
@@ -569,6 +569,22 @@ class YoloV8Trainer:
         val_metrics = self._task.reduce_aggregated_logs(
             logs, global_step=int(self._global_step)
         )
+
+        # Persist the per-category F1 report (best-conf + all-conf sweep) as a
+        # compact JSON + console TXT under <run>/val_metrics/. Once per validation,
+        # tiny, off the train step, never fatal → no training-throughput impact.
+        report = getattr(self._task, '_last_val_report', None)
+        if report is not None:
+            try:
+                from eval.metrics_report import save_canonical
+                if epoch is not None:
+                    report['epoch'] = int(epoch)
+                base = (f'epoch_{int(epoch):04d}' if epoch is not None
+                        else f'step_{int(self._global_step):07d}')
+                paths = save_canonical(report, os.path.join(self._output_dir, 'val_metrics'), base)
+                log.info("Saved validation metrics report -> %s", paths.get('json'))
+            except Exception as e:           # pragma: no cover - defensive
+                log.warning("Could not save validation metrics report: %s", e)
 
         if summary_images:
             self._log_image_summaries(summary_images, summary_preds, summary_gts)

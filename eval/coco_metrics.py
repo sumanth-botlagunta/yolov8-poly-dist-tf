@@ -199,11 +199,19 @@ class COCOEvaluator:
         f1_50, best_thresh = self._peak_f1(ev50)
         self._ev50 = ev50  # keep for per_category_ap50() / per_category_full_metrics()
 
+        # Mean precision/recall at each class's peak-F1 operating point (same point
+        # F1score50 is read from), so the logged scalars are mutually consistent.
+        best = self.per_category_best_f1()
+        prec_50 = float(np.mean([b['precision'] for b in best])) if best else 0.0
+        rec_50  = float(np.mean([b['recall']    for b in best])) if best else 0.0
+
         return {
             'mAP':              map_val,
             'mAP50':            map50_val,
             'AR100':            ar100_val,
             'F1score50':        f1_50,
+            'precision50':      prec_50,
+            'recall50':         rec_50,
             'best_conf_thresh': best_thresh,
         }
 
@@ -259,6 +267,125 @@ class COCOEvaluator:
                 'ar_l':  _mean(rec[:,  k, 3, 2]),       # AR large
             }
         return result
+
+    # ------------------------------------------------------------------
+    # Per-category F1 / precision / recall tables (for the saved report)
+    # ------------------------------------------------------------------
+
+    def _ev50_pr_arrays(self):
+        """(precision, scores, recThrs) at IoU=0.5, area='all', maxDets=100.
+
+        precision/scores are [R=101, K] (recall-point × class); recThrs is [101].
+        Same slice F1score50 is read from, so the report's mean F1 equals the
+        logged F1score50. Returns (None, None, None) if evaluate() hasn't run.
+        """
+        ev50 = getattr(self, '_ev50', None)
+        if ev50 is None or ev50.eval is None:
+            return None, None, None
+        prec = ev50.eval['precision'][0, :, :, 0, 2]            # [101, K]
+        sc   = ev50.eval.get('scores')
+        scores = sc[0, :, :, 0, 2] if sc is not None else None   # [101, K]
+        return prec, scores, ev50.params.recThrs
+
+    def _gt_counts(self) -> Dict[int, Dict[str, int]]:
+        """Per-category {num_gt, dontcare} from the accumulated GT annotations.
+        (iscrowd==1 marks dontcare here; raw crowd is filtered before accumulation.)"""
+        counts: Dict[int, Dict[str, int]] = {}
+        for a in self._gt_anns:
+            c = counts.setdefault(int(a['category_id']), {'num_gt': 0, 'dontcare': 0})
+            c['num_gt'] += 1
+            if a.get('iscrowd'):
+                c['dontcare'] += 1
+        return counts
+
+    def per_category_best_f1(self) -> List[Dict[str, float]]:
+        """Per-category peak F1 with its precision / recall / conf threshold. After evaluate()."""
+        prec, scores, rec = self._ev50_pr_arrays()
+        if prec is None:
+            return []
+        out = []
+        for k, cat in enumerate(self._ev50.params.catIds):
+            p = prec[:, k]
+            valid = p >= 0
+            if not valid.any():
+                out.append({'category': int(cat), 'f1': 0.0, 'precision': 0.0,
+                            'recall': 0.0, 'conf_threshold': 0.0})
+                continue
+            pv, rv = p[valid], rec[valid]
+            denom = pv + rv
+            with np.errstate(divide='ignore', invalid='ignore'):
+                f1 = np.where(denom > 0, 2 * pv * rv / denom, 0.0)
+            i = int(f1.argmax())
+            thr = 0.0
+            if scores is not None:
+                sv = scores[:, k][valid]
+                thr = float(sv[i]) if sv[i] >= 0 else 0.0
+            out.append({'category': int(cat), 'f1': float(f1[i]),
+                        'precision': float(pv[i]), 'recall': float(rv[i]),
+                        'conf_threshold': thr})
+        return out
+
+    def per_category_conf_sweep(self, conf_grid) -> List[Dict[str, float]]:
+        """Per-category F1/precision/recall at each confidence threshold. After evaluate().
+
+        For threshold t, includes all detections with score >= t: that is the
+        highest-recall PR point whose score is still >= t (scores decrease as recall
+        rises). Reads precision/recall there. Empty when t exceeds all scores.
+        """
+        prec, scores, rec = self._ev50_pr_arrays()
+        if prec is None or scores is None:
+            return []
+        out = []
+        for k, cat in enumerate(self._ev50.params.catIds):
+            p = prec[:, k]
+            s = scores[:, k]
+            valid = p >= 0
+            for t in conf_grid:
+                sel = valid & (s >= t)
+                if sel.any():
+                    idx = int(np.where(sel)[0].max())     # max-recall point with score >= t
+                    pp, rr = float(p[idx]), float(rec[idx])
+                else:
+                    pp, rr = 0.0, 0.0
+                f1 = (2 * pp * rr / (pp + rr)) if (pp + rr) > 0 else 0.0
+                out.append({'category': int(cat), 'thresh': round(float(t), 4),
+                            'f1': f1, 'precision': pp, 'recall': rr})
+        return out
+
+    def metrics_tables(self, conf_grid=None) -> Dict:
+        """Full per-category F1 report: averaged means + best-conf table + all-conf
+        sweep + per-category AP / GT counts. Numbers are full-precision floats; a
+        machine-readable structure callers serialize to JSON / csv / xlsx / txt.
+        """
+        if conf_grid is None:
+            conf_grid = [round(float(x), 2) for x in np.arange(0.05, 1.0, 0.05)]
+        best  = self.per_category_best_f1()
+        sweep = self.per_category_conf_sweep(conf_grid)
+        ap    = self.per_category_full_metrics()
+        gtc   = self._gt_counts()
+        per_cat_ap = [{
+            'category': k,
+            'ap':       ap.get(k, {}).get('ap', 0.0),
+            'ap50':     ap.get(k, {}).get('ap50', 0.0),
+            'num_gt':   gtc.get(k, {}).get('num_gt', 0),
+            'dontcare': gtc.get(k, {}).get('dontcare', 0),
+        } for k in sorted(ap)] if ap else []
+
+        def _mean(key):
+            vals = [b[key] for b in best]
+            return float(np.mean(vals)) if vals else 0.0
+
+        return {
+            'iou_thresh': 0.5,
+            'area':       'all',
+            'max_dets':   100,
+            'conf_grid':  list(conf_grid),
+            'mean':       {'f1': _mean('f1'), 'precision': _mean('precision'),
+                           'recall': _mean('recall')},
+            'best_conf':  best,
+            'all_conf':   sweep,
+            'per_category_ap': per_cat_ap,
+        }
 
     def reset(self) -> None:
         """Clear all accumulated predictions and GT."""
