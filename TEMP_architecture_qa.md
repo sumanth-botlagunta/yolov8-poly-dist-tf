@@ -143,3 +143,40 @@ Config: `ignore_dontcare: true`, `ignore_iscrowds: false`, `iscrowds_labels: [6,
 4. The **only** coupling: validation **metrics** are used to pick the *best* checkpoint (`best_checkpoint_eval_metric`). That selects which already-trained checkpoint to keep — it **does not feed gradients back** or alter optimization. (If you tune hyper-parameters by hand based on val metrics, that's indirect human-in-the-loop selection, not in-training leakage.)
 
 **Conclusion:** training parameters are a pure function of the training data + optimizer. Validation is read-only and isolated.
+
+---
+
+## Q6. How are precision / recall / F1 calculated, and is F1 averaged after per-category scores?
+
+**File:** `eval/coco_metrics.py` (`COCOEvaluator`), using **pycocotools `COCOeval`**.
+
+### Precision & recall (per class, IoU=0.5)
+A separate eval runs at IoU=0.5 only (`ev50.params.iouThrs=[0.5]`). pycocotools, per class:
+- sort detections by score desc; greedy-match each to a GT at **IoU ≥ 0.5** (one GT per det);
+- matched = TP, unmatched det = FP, unmatched GT = FN;
+- build the PR curve: `precision = TP/(TP+FP)`, interpolated, sampled at **101 recall points** `recThrs=[0,0.01,…,1.0]`.
+
+### F1score50 (`_peak_f1`)
+For **each class k**:
+```
+f1(r) = 2·p(r)·r / (p(r)+r)          # along the 101 PR points
+peak_f1[k] = max f1(r)               # best operating point for that class
+```
+Each class → its peak F1 (+ the confidence threshold at that peak → `best_conf_thresh`).
+
+### Averaging — MACRO (averaged AFTER per-category) ✅
+```python
+mean_f1 = np.mean(class_f1)          # unweighted mean of per-class peak F1
+```
+- Computed **per-category first, then averaged** — yes.
+- **Macro** average: every class weighted equally, regardless of instance count. A rare class
+  swings it as much as a common one. (Matches the per-category table + single `mean f1-score`.)
+- **Not** micro/instance-weighted; **not** a single global PR curve.
+
+### Others
+- `mAP` / `mAP50` / `AR100`: standard pycocotools (mAP over IoU 0.5:0.95; averaged over classes).
+- `per_category_full_metrics`: per-class AP/AP50/AP75/AP_s/m/l + AR1/10/100/s/m/l (per-class F1 is
+  computed internally but only the **mean** F1score50 is returned/logged).
+- Polygons (`eval/polygon_metrics.py`): `poly_mIoU` (mean mask IoU over matched pairs) and
+  `poly_recall50` (**recall only — no precision/F1**).
+- Distance: separate error metrics (`DistanceEvaluator`).
