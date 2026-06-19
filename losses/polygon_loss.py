@@ -7,7 +7,7 @@ Implements the three per-vertex loss components:
             VALID vertices of each anchor.
     conf:   binary cross-entropy on per-bin vertex validity, averaged over ALL
             bins (occupied → 1, empty → 0) — conf is the decode gate and must
-            see negatives; see polygon_conf_loss for the 2026-06-11 rationale
+            see negatives; see polygon_conf_loss for the rationale
             and the preserved masked form.
 
 All three normalize by num_objs (total GT object count in the batch) and are
@@ -113,14 +113,14 @@ def polygon_conf_loss(
     regression targets are undefined on empty bins), conf MUST see negatives:
     it is the gate that tells decode/viz which bins to keep.
 
-    Why all bins (2026-06-11): with the masked form, empty bins received zero
+    Why all bins: with the masked form, empty bins received zero
     gradient ever, so their conf output drifted with the shared features (bias
     init → sigmoid ≈ 0.5, above the 0.4 decode/viz threshold) while their dist
     was equally untrained — producing the "star/spiky polygon" artifacts
     observed in validation overlays (e.g. the doorway class). Training conf on
     all 24 bins restores the negative signal so empty bins are pushed to 0.
 
-    The previous (masked, 2026-06 legacy-aligned) form is preserved here;
+    The previous (masked, legacy-aligned) form is preserved here;
     restore it by swapping the per_anchor line:
 
         # MASKED FORM — mean over the valid vertices only (vertex_mask equals

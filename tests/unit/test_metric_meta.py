@@ -33,7 +33,7 @@ def test_unknown_key_returns_none():
 
 
 def test_poly_conf_description_matches_all_bins_convention():
-    # The conf loss averages over ALL 24 bins since 2026-06-11 (decode gate
+    # The conf loss averages over ALL 24 bins (decode gate
     # needs negative gradient on empty bins) — the tooltip must not claim the
     # old masked form.
     d = describe("poly_conf_loss")

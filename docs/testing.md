@@ -20,7 +20,7 @@ resolution-correction tests for compositing on pre-resized backgrounds),
 `test_loss_computation.py`, `test_loss_reference_parity.py`,
 `test_mosaic.py` (4-in/4-out semantics, composed-warp geometry/label/mask-partition tests,
 warp-scale-bounds distribution test), `test_parser.py`,
-`test_polygon_loss_conventions.py` (pins the 2026-06-11 all-bins conf convention),
+`test_polygon_loss_conventions.py` (pins the all-bins conf convention),
 `test_polygon_preprocessing.py` (includes segment-equivalence tests asserting exact output parity
 of the `unsorted_segment_max` / `segment_min` formulation vs the old one-hot reference).
 
@@ -78,7 +78,6 @@ Or use the `/test` skill.
 - Reuse `tests/conftest.py` fixtures (`tiny_model_cfg`, `synthetic_image`, `synthetic_labels`, …).
 - Match coordinate conventions (`yxyx` normalized GT vs `xyxy` pixels in the loss) — mismatches are
   the most common test bug.
-- The `tf-test-writer` subagent (`.claude/agents/`) knows these conventions.
 
 ## CI
 `.github/workflows/test.yml` installs `requirements.txt` and runs `pytest -m "not smoke"`

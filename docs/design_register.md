@@ -66,7 +66,7 @@ contribute to these denominators. This is a **settled normalizer convention** �
 distance rows are real batch elements and counting them keeps per-object loss scaling
 consistent across the merged batch. Do not re-scope the normalizers to detection-only.
 
-## 6. Polygon **conf** loss = BCE over all 24 bins (as of 2026-06-11)
+## 6. Polygon **conf** loss = BCE over all 24 bins
 
 `polygon_conf_loss` (`losses/polygon_loss.py`) averages binary cross-entropy over **all**
 24 angular bins (occupied → 1, empty → 0), not only the valid/occupied bins. Rationale:
@@ -182,9 +182,9 @@ throughput, own the train/checkpoint-distribution shift) — not as a "dead-knob
 If you instead remove it, drop the field from both dataclasses, the two `yaml_loader`
 parse sites, and the `jitter: 0.0` lines in all three tier YAMLs in one change.
 
-## Representational ceilings of the radial polygon format (2026-06-13 — do not re-flag)
+## Representational ceilings of the radial polygon format (do not re-flag)
 These are limits of the PolyYOLO radial format itself, identical in the legacy
-codebase, surveyed during the final pre-merge check. They are NOT bugs:
+codebase. They are NOT bugs:
 
 11. **Radial center = box center.** For concave shapes whose box center lies
     outside the polygon, a bin ray can cross the boundary twice; per-bin MAX
@@ -192,7 +192,7 @@ codebase, surveyed during the final pre-merge check. They are NOT bugs:
     concavities and would break checkpoint compatibility. Inherent.
 12. **Per-bin MAX distance = outer boundary only.** Holes and interior
     concavities are unrepresentable (would need a second radius channel — a
-    format change). The 2026-06-13 arc-length resampling already removes the
+    format change). The arc-length resampling already removes the
     worst practical symptom (empty bins along long edges).
 13. **Polygon conf gate 0.4 is a single module constant**
     (`eval/polygon_metrics.DEFAULT_POLY_CONF_THRESH`), shared by decode-viz and

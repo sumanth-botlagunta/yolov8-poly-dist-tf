@@ -2,8 +2,7 @@
 
 Developer documentation for the **YOLOv8 Polygon + Distance (TensorFlow)** codebase.
 For a quick start (setup, training/eval/export commands), see the top-level
-[README.md](../README.md). For the Claude-Code-oriented project summary, see
-[CLAUDE.md](../CLAUDE.md).
+[README.md](../README.md).
 
 ## Contents
 

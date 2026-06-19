@@ -50,7 +50,7 @@ METRIC_DESCRIPTIONS = {
     ),
     "poly_conf_loss": (
         "**Polygon Confidence Loss** (raw, pre-gain) — `BCE(sigmoid(pred), per-bin validity)`; "
-        "mean over **ALL 24 bins** (occupied → 1, empty → 0; 2026-06-11 — empty bins need "
+        "mean over **ALL 24 bins** (occupied → 1, empty → 0 — empty bins need "
         "the negative gradient), ÷ `num_objs`."
     ),
 

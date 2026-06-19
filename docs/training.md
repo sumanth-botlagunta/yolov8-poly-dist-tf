@@ -139,7 +139,7 @@ without HSV jitter or Albumentations applied.
 The three polygon loss components are logged separately:
 - `train/poly_angle_loss` — sub-bin angle-offset BCE (mean over the **valid** vertices per anchor)
 - `train/poly_dist_loss`  — radial distance L2 `(softplus(pred) − target)²` (mean over valid vertices)
-- `train/poly_conf_loss`  — vertex-validity BCE (mean over **ALL 24 bins**; empty bins get the negative signal — 2026-06-11)
+- `train/poly_conf_loss`  — vertex-validity BCE (mean over **ALL 24 bins**; empty bins get the negative signal)
 
 These are useful for diagnosing which polygon component is not converging.
 

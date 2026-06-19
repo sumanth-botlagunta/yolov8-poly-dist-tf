@@ -182,7 +182,7 @@ class TestPolygonEvaluator(unittest.TestCase):
 
 
 class TestConfGating(unittest.TestCase):
-    """Pins the 2026-06-11 conf-gating fix: only bins whose conf passes the
+    """Pins the conf-gating behavior: only bins whose conf passes the
     gate are rasterized (pred >= conf_thresh, GT conf > 0.5).
 
     Before the fix, empty GT bins (dist=0, conf=0) injected a vertex at the box

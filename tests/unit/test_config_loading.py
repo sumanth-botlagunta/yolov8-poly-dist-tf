@@ -29,7 +29,7 @@ class TestConfigLoading(unittest.TestCase):
     def test_derived_fields_filled(self):
         cfg = load_config(os.path.join(_EXP_DIR, "yolov8_poly_dist.yaml"))
         # steps_per_loop derives from whatever the YAML declares (271,166 verified
-        # against the actual TFDS builders 2026-06-10; batch 128 → 2118).
+        # against the actual TFDS builders; batch 128 → 2118).
         self.assertEqual(
             cfg.trainer.steps_per_loop,
             cfg.trainer.train_total_examples // cfg.task.train_data.global_batch_size,

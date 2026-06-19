@@ -170,7 +170,7 @@ class PolygonEvaluator:
     rasterized — pred bins need ``conf >= conf_thresh`` (the same 0.4 gate the
     decode/viz path uses), GT bins need ``conf > 0.5`` (the parser writes a
     binary validity). Empty GT bins encode ``dist = 0``; rasterizing them (the
-    pre-2026-06-11 behavior) injected a vertex at the box CENTER per empty bin,
+    earlier behavior) injected a vertex at the box CENTER per empty bin,
     turning any polygon that doesn't occupy all 24 bins into a center-spiked
     star — a 4-vertex GT lost ~90% of its mask area, so poly_mIoU measured
     star-vs-star similarity rather than the decoded polygons that ship.

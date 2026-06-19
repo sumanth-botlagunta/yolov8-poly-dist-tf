@@ -40,9 +40,9 @@ validity mask (`vertex_mask`); all normalize by `num_objs`:
 - `polygon_dist_loss` — `(target_radius − softplus(pred))²`; **mean over valid vertices**, ÷ `num_objs`.
 - `polygon_conf_loss` — BCE on per-bin vertex validity; **mean over ALL 24 bins** (occupied → 1,
   empty → 0), ÷ `num_objs`. Conf is the decode gate and must see negatives: the earlier masked
-  form (valid-bins-only, 2026-06) gave empty bins zero gradient ever, so their conf drifted above
+  form (valid-bins-only) gave empty bins zero gradient ever, so their conf drifted above
   the 0.4 decode/viz threshold while their dist stayed untrained — the star/spiky polygon
-  artifacts seen in val overlays. Changed 2026-06-11; the masked form is preserved verbatim in
+  artifacts seen in val overlays. The masked form is preserved verbatim in
   `polygon_conf_loss`'s docstring as a one-line swap. Angle/dist remain masked because their
   regression targets are undefined on empty bins.
 Combined in `tal_loss.py:_polygon_loss` with the component gains; the overall `poly_gain`
@@ -75,8 +75,8 @@ Consequences:
 - `dist_gain` and the poly gains divide by `num_objs` (not `target_scores_sum`), so they are on a
   different scale than the detection gains.
 - Angle/dist average over the **valid** vertex count per anchor (empty bins do not dilute the
-  mean); conf averages over all 24 bins so empty bins receive a negative signal (2026-06-11 —
-  see the Polygon section). The conf magnitude changed with that switch (negatives dominate the
+  mean); conf averages over all 24 bins so empty bins receive a negative signal (see the
+  Polygon section). The conf magnitude reflects that choice (negatives dominate the
   24-bin mean early in training); `poly_conf_gain=0.2` was deliberately kept. **Re-tune the poly
   gains if you change the masking or vertex count.**
 

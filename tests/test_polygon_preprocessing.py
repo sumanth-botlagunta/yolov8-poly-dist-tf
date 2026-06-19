@@ -112,7 +112,7 @@ def _min_dist_to_contour(p, verts):
 class TestResamplePolygons(unittest.TestCase):
     """resample_polygons does UNIFORM ARC-LENGTH resampling along the closed contour.
 
-    2026-06-13: rewritten from index-subsampling to arc-length resampling. The old
+    Uses arc-length resampling, not index-subsampling. An earlier index-subsampling
     code only SELECTED existing vertices, so a sparse polygon (e.g. a 4-corner
     rectangle) kept its few points and the 24-bin radial target collapsed to a
     diamond. Arc-length resampling interpolates points ALONG edges, so the radial

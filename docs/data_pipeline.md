@@ -118,7 +118,7 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
 - The warp's scale gain is drawn from the **explicit** `[aug_scale_min, aug_scale_max]`
   config bounds (`make_perspective_matrix(scale_min=, scale_max=)`). The earlier symmetric
   magnitude form widened the configured `[0.4, 1.9]` to `[0.1, 1.9]`, occasionally shrinking
-  content to ~1% area — the "mostly-gray frame" bug, fixed 2026-06-11.
+  content to ~1% area — the "mostly-gray frame" bug, since fixed.
 
 ## Performance notes
 - Every `.map` uses `num_parallel_calls=AUTOTUNE`.
