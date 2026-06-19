@@ -5,31 +5,44 @@
 
 ---
 
-## Q1. We changed the "core model architecture" and the init checkpoint comes from the OLD architecture. Does that affect accuracy? How is it handled?
+## Q1. I'm STARTING a new training run, using the OLD-code checkpoint (trained with yx anchors + /255) as the init checkpoint. Does the old convention conflict with the new (xy) training?
 
-**Two separate things are being conflated — let's split them.**
+**No. It is a clean, valid warm start — the yx→xy difference cannot conflict, and the matching /255 makes the transferred features immediately useful.** Here is exactly why, mechanism by mechanism.
 
-### (a) The changes WE made on this branch are NOT architecture changes
-- `models/backbone.py`: stride-2 convs now use explicit `ZeroPadding2D` + `valid` instead of `padding="same"`. **Numerically identical**, adds **no trainable variables** (ZeroPadding has none). Same 336 variables, same names/shapes.
-- `models/decoder.py`: `static_resize` flag for SNPE-clean export. Dynamic at train/eval; **identical math**.
-- The box reorder is **export-only** (in `tools/export_device_dlc.py`), not in the model.
-
-➡️ **An existing checkpoint loads unchanged and training resumes identically.** These do not affect accuracy at all (byte-identical forward pass; we verified full-model diff ≈ 2.86e-6 = float noise).
-
-### (b) The init checkpoint from the old codebase = a WARM START, not the final model
-Config (`configs/experiments/yolo/yolov8_poly_dist.yaml`):
+### 1. Only backbone + decoder are loaded — and those are convention-agnostic
 ```yaml
 init_checkpoint: initial_checkpoint_folder/ckpt-920304
 init_checkpoint_modules: [backbone, decoder]
 ```
-- The init checkpoint is loaded by `tools/checkpoint_migration.py` (called from `train/task.py::initialize`).
-- It loads **backbone + decoder only**. The **head is always randomly initialized** (smart-bias init in `models/head.py`) and trained from scratch.
-- Matching is **structural** — by variable *role* (kernel/bias/gamma/beta/moving_mean/moving_variance) + *shape*, in traversal order — **not by name** (`align_structures`). 
-- **Any old variable with no structural match is reported and SKIPPED, never silently copied** (`align_structures` → `unmatched_old`, `clean=False` warning). So if the old and new backbone/decoder genuinely differ in structure, the non-matching parts simply start from random init — you are warned, nothing is corrupted.
+The backbone and decoder are **feature extractors**: they output multi-scale spatial feature maps. They do **not** encode the box channel order or the anchor (xy vs yx) convention. That convention lives entirely in (a) the **box head's** output-channel assignment and (b) the **decode/loss** math — neither of which is in the backbone/decoder weights.
 
-**How it affects accuracy:** the init checkpoint only provides a *starting point* for backbone+decoder features. The model is then **fully trained (300 epochs / 635,400 steps)**, so the final accuracy is determined by training, not by the old architecture. A good warm start → faster convergence and usually a better optimum; a poor/partial match → slower convergence, but training still reaches a valid model. The new model does **not** "inherit" the old model's accuracy or its bugs — it learns its own weights. The head, in particular, is 100% trained fresh.
+### 2. The box head is trained from scratch under the NEW (xy) loss
+The old model's yx box prediction lived in the **old head**, which is **not loaded** (`init_checkpoint_modules` excludes `head`). The new head is randomly initialized (smart-bias init) and learns under this repo's loss, which is xy / `[left, top, right, bottom]`:
+```python
+# losses/tal_loss.py
+anc_list.append(tf.stack([cx_flat, cy_flat], axis=-1))   # xy anchors (line 442)
+pd_bboxes = stack([acx-ltrb0(x1), acy-ltrb1(y1), acx+ltrb2(x2), acy+ltrb3(y2)])  # [l,t,r,b]
+```
+So the old yx convention is simply **discarded** with the old head; the new head freely learns the new xy convention. **There is no conflict to reconcile** — the conventions never meet, because the only place the old convention existed (old head) is not transferred.
 
-**Bottom line:** initializing from an old-architecture checkpoint is safe and normal (transfer learning of the feature extractor). It influences convergence speed / final quality through how many features transfer, but it cannot make the model "wrong" — unmatched weights are skipped with a warning, and everything is retrained.
+### 3. The /255 input distribution MATCHES → features transfer cleanly
+The old model trained on `[0,1]` (`÷255`); the new training also feeds `[0,1]` (`÷255`). So the warm-started backbone sees inputs in **the same distribution it was trained on** → its features are in-distribution and immediately useful → faster convergence and a better starting point. (If the old model had used a *different* normalization — e.g. ImageNet mean/std — the features would be mismatched until retrained. It's the same `/255`, so no issue.)
+
+### 4. Caveat — the weights only transfer where the structure matches
+Migration is **structural** (role + shape, not name; `tools/checkpoint_migration.py`). If the old and new backbone/decoder are the same architecture (CSPDarknetV8-S), they load fully. Any structural difference is **reported and skipped** (`unmatched_old`, `clean=False` warning) — never silently mis-copied; those parts just start from random init. The head always retrains regardless.
+
+### Bottom line
+Starting the new xy training from the old yx + /255 checkpoint is **correct and beneficial**:
+- yx vs xy: **irrelevant** to the warm start — only the convention-agnostic backbone+decoder are loaded; the head relearns the convention.
+- /255 vs /255: **matches** — transferred features are immediately in-distribution.
+- The model then trains fully (300 epochs), so the final box convention is the new xy one (which is why the export still needs the `[l,t,r,b]→[t,l,b,r]` reorder for the legacy device decoder).
+
+> Note: the export-side box reorder (`--legacy_box_order`) is a *separate* concern from training. Training is xy; the reorder only happens at export so the **deployed yx decoder** can read the xy model. It does not change how you train or warm-start.
+
+---
+
+## Q1-extra. (Reference) The branch changes we made are NOT architecture changes
+- `models/backbone.py` explicit `ZeroPadding2D`, `models/decoder.py` `static_resize`: **numerically identical**, **no new variables**, checkpoints load unchanged. The box reorder is **export-only**. None of these affect training or warm-starting.
 
 ---
 
