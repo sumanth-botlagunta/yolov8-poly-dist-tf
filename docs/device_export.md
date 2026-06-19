@@ -41,9 +41,22 @@ The legacy DLC does not emit raw box logits — it bakes the DFL "integral" deco
 does this exporter (op-for-op): `[N,64] → reshape [N,4,16] → softmax over the 16 bins →
 Σ·[0,1,…,15]` (a 1×1 `conv2d`, weights `[1,1,16,1]`, bias 0) `→ [N,4]`. This is exactly
 `distance = Σ softmax(logits)·bin`, identical to `models/detection_generator.py::_decode_dfl`.
-The result is the per-side LTRB distance **in bin units (pre-stride)**; the on-device
-`YoloV8LayerModified` applies stride + anchor + xyxy + NMS. `--verify` asserts the baked
-decode matches the in-repo `_decode_dfl`.
+The result is the per-side distance **in bin units (pre-stride)**; the on-device
+`YoloV8LayerModified` applies stride + anchor + NMS. `--verify` asserts the baked decode
+matches the in-repo `_decode_dfl` (reordered, see below).
+
+### Box channel order: `--legacy_box_order` (default ON)
+
+The deployed decoder stores anchors as **(y, x)** (`make_anchor_points` →
+`tf.stack((sy, sx))`) and `box_ops.dist2bbox(ver=1)` computes `anchor − lt` with **no axis
+reverse**, returning `yxyx`. So it requires the box channels in **y-first** order:
+`[top, left, bottom, right]`. The model (and this repo's `detection_generator`) is the
+standard Ultralytics **x-first** `[left, top, right, bottom]`. Feeding x-first boxes to the
+legacy decoder applies the left/right (x) offsets to the **y**-axis → every box is
+transposed → host 0.68 / device 0.19. The exporter therefore **reorders the box head
+`[l,t,r,b] → [t,l,b,r]` (`tf.gather [1,0,3,2]`)** by default, so the unchanged on-device
+decoder reads each offset on the correct axis. Set `--legacy_box_order=False` only if you
+decode with this repo or `tools/gen_pred_json_from_dlc.py` (both expect x-first).
 
 ## Two device-specific transforms vs the `[0,1]` host export
 

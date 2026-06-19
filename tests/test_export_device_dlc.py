@@ -171,7 +171,11 @@ def test_graph_is_snpe_compatible(exported):
 def test_box_dfl_decode_matches_reference(exported):
     """The baked box DFL decode (reshape→softmax→Σ·bins) must equal the in-repo
     detection_generator._decode_dfl, per level then concat 3→4→5 — proving the legacy
-    box pipeline is reproduced and the concat layout is correct. Pre-stride LTRB."""
+    box pipeline is reproduced and the concat layout is correct. Pre-stride.
+
+    The default export uses legacy_box_order=True: it emits [top,left,bottom,right]
+    (y-first) to match the on-device box_ops.dist2bbox(ver=1) + (y,x) anchors, so the
+    repo-native [left,top,right,bottom] reference is reordered [1,0,3,2] before comparing."""
     out_dir, model, _ = exported
     fn = tf.saved_model.load(out_dir).signatures["serving_default"]
     img255 = np.random.RandomState(2).uniform(0, 255, [1, H, W, 3]).astype(np.float32)
@@ -182,7 +186,7 @@ def test_box_dfl_decode_matches_reference(exported):
     for lvl in ["3", "4", "5"]:
         ltrb = model.detection_generator._decode_dfl(tf.cast(raw["box"][lvl], tf.float32))
         parts.append(tf.reshape(ltrb, [1, -1, 4]))
-    box_ref = tf.concat(parts, axis=1)[0].numpy()      # [N, 4]
+    box_ref = tf.concat(parts, axis=1)[0].numpy()[:, [1, 0, 3, 2]]   # [l,t,r,b] -> [t,l,b,r]
 
     assert tuple(out["box"].shape) == (N_ANCHORS, 4)
     np.testing.assert_allclose(out["box"].numpy(), box_ref, rtol=1e-3, atol=1e-2)

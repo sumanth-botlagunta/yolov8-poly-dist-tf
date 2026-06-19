@@ -86,6 +86,15 @@ try:
                         'tap_feat3/4/5 = /255 output + backbone P3/P4/P5) so the conversion '
                         'can be bisected SavedModel-vs-DLC to find the first diverging layer. '
                         'Add the matching --out_node tap_* to snpe-tensorflow-to-dlc.')
+    flags.DEFINE_bool  ('legacy_box_order', True,
+                        'Emit the box head as [top,left,bottom,right] (y-first) to match the '
+                        'deployed on-device decoder: make_anchor_points stores anchors (y,x) '
+                        'and box_ops.dist2bbox(ver=1) does anchor-lt with NO axis reverse, so '
+                        'it requires distance[0]=top, [1]=left, [2]=bottom, [3]=right. The '
+                        "model/repo-native order is [left,top,right,bottom] (x-first); without "
+                        'this swap the legacy decode applies x-offsets on the y-axis and every '
+                        'box is transposed (the host=0.68 / device=0.19 gap). Set False to keep '
+                        'the x-first order (decode with this repo or tools/gen_pred_json_from_dlc.py).')
 except flags.DuplicateFlagError:
     pass
 
@@ -256,7 +265,11 @@ def main(_):
         log.info("debug_taps ON — also emitting %s (add matching --out_node to the converter)",
                  tap_names)
     serving_fn = build_serving_fn(model, H, W, head_chan, do_norm, reg_max,
-                                  debug_taps=FLAGS.debug_taps)
+                                  debug_taps=FLAGS.debug_taps,
+                                  legacy_box_order=FLAGS.legacy_box_order)
+    if FLAGS.legacy_box_order:
+        log.info("legacy_box_order ON — box emitted as [top,left,bottom,right] (y-first) "
+                 "to match the on-device box_ops.dist2bbox(ver=1) + (y,x) anchors.")
 
     # The on-device SNPE pipeline resolves ``--out_node box`` to tensor ``box:0`` and
     # dumps ``box:0.raw``, so the GraphDef must contain TOP-LEVEL ops literally named
@@ -280,10 +293,12 @@ def main(_):
                  n_anchors * oc, kind)
 
     if FLAGS.verify:
-        _verify(FLAGS.output_dir, model, H, W, n_anchors, head_chan, do_norm)
+        _verify(FLAGS.output_dir, model, H, W, n_anchors, head_chan, do_norm,
+                legacy_box_order=FLAGS.legacy_box_order)
 
 
-def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16, debug_taps=False):
+def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16, debug_taps=False,
+                     legacy_box_order=True):
     """Build the device serving tf.function (legacy-DLC contract).
 
     Bakes /255 (when ``normalize``), runs the raw (deploy=False) model, concatenates
@@ -322,7 +337,13 @@ def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16, debug_taps=F
                 b = tf.reshape(x, [1, N, 4, reg_max])       # [1, N, 4, 16]
                 p = tf.nn.softmax(b, axis=-1)               # softmax over the 16 bins
                 d = tf.nn.conv2d(p, bin_w, strides=[1, 1, 1, 1], padding='VALID')  # [1,N,4,1]
-                x = tf.reshape(d, [N, 4])                   # [N, 4] LTRB (batch dropped)
+                x = tf.reshape(d, [N, 4])                   # [N, 4] [left,top,right,bottom]
+                if legacy_box_order:
+                    # Reorder to [top,left,bottom,right] (y-first) so the deployed
+                    # box_ops.dist2bbox(ver=1) — which does anchor(y,x) - lt with NO axis
+                    # reverse — reads each offset on the correct axis. Without this the
+                    # legacy decoder applies the left/right (x) offsets to the y-axis.
+                    x = tf.gather(x, [1, 0, 3, 2], axis=1)  # [l,t,r,b] -> [t,l,b,r]
             else:
                 x = tf.reshape(x, [N, c])                   # [N, c] raw (batch dropped)
             out[n] = tf.identity(x, name=n)
@@ -388,7 +409,8 @@ def _save_named_savedmodel(serving_fn, head_names, output_dir):
                 sess, output_dir, inputs={'input_image': inp}, outputs=outs)
 
 
-def _verify(saved_model_dir, model, H, W, n_anchors, head_chan, do_norm):
+def _verify(saved_model_dir, model, H, W, n_anchors, head_chan, do_norm,
+            legacy_box_order=True):
     """Assert the exported graph matches the legacy device contract."""
     import numpy as np
     from tensorflow.python.saved_model import loader_impl
@@ -446,9 +468,12 @@ def _verify(saved_model_dir, model, H, W, n_anchors, head_chan, do_norm):
         for lvl in _LEVELS:
             ltrb = dg._decode_dfl(tf.cast(raw['box'][lvl], tf.float32))   # [1,Hl,Wl,4]
             parts.append(tf.reshape(ltrb, [1, -1, 4]))
-        box_ref = tf.concat(parts, axis=1)[0].numpy()                     # [N, 4]
+        box_ref = tf.concat(parts, axis=1)[0].numpy()                     # [N, 4] [l,t,r,b]
+        if legacy_box_order:
+            box_ref = box_ref[:, [1, 0, 3, 2]]                            # -> [t,l,b,r]
         _assert_close('box (DFL)', out['box'].numpy(), box_ref)
-        log.info("[ok] box reproduces the in-repo DFL decode (softmax + Σ·bins, pre-stride)")
+        log.info("[ok] box reproduces the in-repo DFL decode (softmax + Σ·bins, pre-stride%s)",
+                 ", reordered [t,l,b,r] for legacy decode" if legacy_box_order else "")
 
     log.info("---- verification PASSED ----")
 
