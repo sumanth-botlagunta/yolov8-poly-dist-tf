@@ -34,9 +34,12 @@ Result_0,1,2,... correspond to fname_idx '000000','000001',... (the raw generato
 files '%06d' per directory). Use --start_index / --index_from_folder if your layout differs.
 
 NOTE on JSON schema: the geometry (boxes in original coords, xywh) is the important part and
-is correct. The entry field names (image_id / category_id / bbox / score) follow COCO; if
-your 01.gen_pred_json.py uses different names or a category offset, set --category_offset and
---image_id_field, or tell me the exact entry dict and I'll match it byte-for-byte.
+is correct. The entry field names (image_id / category_id / bbox / score) follow COCO; if a
+downstream consumer uses different names or a category offset, set --category_offset and
+--image_id_field to match.
+
+Splits: the list of split ranges to process is defined in the SPLITS constant below (edit it
+there). It is printed at startup. Pass --splits to override it for a one-off run.
 
 Usage:
     python tools/device/gen_pred_json_from_dlc.py \
@@ -57,6 +60,20 @@ import numpy as np
 
 _STRIDES = [8, 16, 32]
 _NODES = ['box', 'cls', 'poly_angle', 'poly_dist', 'poly_conf', 'dist']
+
+# ---------------------------------------------------------------------------
+# Splits to process — EDIT THIS LIST.
+# ---------------------------------------------------------------------------
+# Each entry is an inclusive range "START-END" of zero-padded global frame indices,
+# mirroring the raw generator's directory layout: <raw_root>/<split>/Result_<j>/ with
+# the global key i = split_start + j. The list is the source of truth; it is printed at
+# startup (it can be long). Pass --splits "A-B,C-D" on the command line to override it for
+# a single run without editing this file. Leave SPLITS empty (``[]``) to fall back to a
+# flat <raw_root>/Result_* layout.
+SPLITS = [
+    "000000-000999",
+    "001000-001999",
+]
 
 
 def _sigmoid(x):
@@ -160,13 +177,15 @@ def _to_original(xyxy_px, entry, H, W):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--raw_root', required=True,
-                    help='base path. With --splits: <raw_root>/<split>/Result_<j>/. '
-                         'Without: <raw_root>/Result_0,Result_1,...')
+                    help='base path. With splits: <raw_root>/<split>/Result_<j>/. '
+                         'With empty splits: <raw_root>/Result_0,Result_1,...')
     ap.add_argument('--transform_pkl', required=True)
     ap.add_argument('--output_json', required=True)
-    ap.add_argument('--splits', default='',
-                    help="comma list like '000000-000999,001000-001999' — mirrors "
-                         "01.gen_pred_json.py exactly (i_key=split_start+j). Omit for flat Result_*.")
+    ap.add_argument('--splits', default=None,
+                    help="OPTIONAL override for the in-file SPLITS constant: a comma list "
+                         "like '000000-000999,001000-001999' (i_key=split_start+j). "
+                         "Omit to use SPLITS defined at the top of this file; pass an empty "
+                         "string ('') to force the flat Result_* layout.")
     ap.add_argument('--input_size', default='672,416', help='H,W')
     ap.add_argument('--num_classes', type=int, default=39)
     ap.add_argument('--conf_threshold', type=float, default=0.001)
@@ -182,6 +201,23 @@ def main():
     a = ap.parse_args()
     H, W = (int(x) for x in a.input_size.split(','))
 
+    # Resolve the splits to process: --splits overrides the in-file SPLITS constant when
+    # given (None means "not passed" -> use SPLITS; '' means "force flat Result_* layout").
+    if a.splits is None:
+        splits = list(SPLITS)
+        splits_source = "in-file SPLITS constant"
+    else:
+        splits = [s for s in a.splits.split(',') if s]
+        splits_source = "--splits override"
+
+    # Print the resolved splits up front (the list can be long) so the run is unambiguous.
+    if splits:
+        print(f"Processing {len(splits)} split range(s) (from {splits_source}):")
+        for sp in splits:
+            print(f"  {sp}")
+    else:
+        print(f"No splits ({splits_source}) — using flat <raw_root>/Result_* layout.")
+
     with open(a.transform_pkl, 'rb') as f:
         tinfo = pickle.load(f)
     print(f"transform entries: {len(tinfo)}   example key: {sorted(tinfo)[0]!r}")
@@ -189,10 +225,10 @@ def main():
     print(f"example entry keys: {list(ex.keys())}")
     print(f"  info_ratio={ex.get('info_ratio')}  info_tblr={ex.get('info_tblr')}")
 
-    # Build the (i_global, result_dir) work list — exactly like 01.gen_pred_json.py.
+    # Build the (i_global, result_dir) work list.
     work = []
-    if a.splits:
-        for sp in a.splits.split(','):
+    if splits:
+        for sp in splits:
             st = int(sp.split('-')[0]); ed = int(sp.split('-')[1]) + 1
             for j in range(0, ed - st):
                 work.append((st + j, os.path.join(a.raw_root, sp, 'Result_%d' % j)))
