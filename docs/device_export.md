@@ -11,7 +11,7 @@ emits the post-processed deploy dict for `[0,1]`-normalized input (server/host s
 ## The legacy device contract
 
 Reverse-engineered from the on-device tooling (the `snpe-tensorflow-to-dlc` command and
-the result-extraction script — see `prompts/dlc_conversion.txt`):
+the result-extraction script):
 
 | | |
 |---|---|
