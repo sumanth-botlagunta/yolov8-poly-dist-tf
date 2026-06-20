@@ -71,6 +71,7 @@ class V8ParserExtended(Parser):
         albumentations_frequency: float = 1.0,
         area_thresh: float = 0.1,
         eval_gray_border: bool = False,
+        defer_warp: bool = False,
     ):
         self._output_size = output_size          # [H, W]
         self._expanded_strides = expanded_strides
@@ -92,6 +93,13 @@ class V8ParserExtended(Parser):
         self._albumentations_frequency = albumentations_frequency
         self._area_thresh = area_thresh
         self._eval_gray_border = eval_gray_border
+        # GPU-offload mode: the mosaic stage (mosaic_gpu.mosaic_prepare_fn) already
+        # warped + flipped the LABELS and emits the un-warped 2× canvas + the warp
+        # transform + flip coin. In this mode the parser does NOT touch image
+        # geometry — it only builds the PolyYOLO target + pads, and passes the
+        # canvas/warp/flip through to be warped on the GPU in train_step. Default
+        # off → the standard (warp-in-tf.data) path is unchanged.
+        self._defer_warp = defer_warp
 
         self._n_angles = 360 // angle_step      # = 24 for angle_step=15
         self._poly_depth = self._n_angles * 3   # = 72
@@ -105,6 +113,9 @@ class V8ParserExtended(Parser):
         self, data: Dict[str, tf.Tensor]
     ) -> Tuple[tf.Tensor, Dict]:
         """Parse and augment a single training example."""
+        if self._defer_warp:
+            return self._parse_train_data_deferred(data)
+
         image, boxes, classes, polygons, is_crowd = self._extract_fields(data)
 
         # 1. Filter crowd annotations
@@ -194,6 +205,82 @@ class V8ParserExtended(Parser):
             'log_distance': log_dist,
         }
         return image, labels
+
+    def _parse_train_data_deferred(
+        self, data: Dict[str, tf.Tensor]
+    ) -> Tuple[tf.Tensor, Dict]:
+        """GPU-offload train parse: build the PolyYOLO target; defer the warp.
+
+        The mosaic prepare stage already produced the FINAL labels (warped by the
+        mosaic ``M``, flipped) and the deferred-warp payload (``mosaic_canvas`` /
+        ``mosaic_warp`` / ``mosaic_flip``). This method therefore skips the resize,
+        the flip, and every image-geometry op — it runs ONLY the label work
+        (crowd filter, box/polygon clip + area filter, PolyYOLO radial target,
+        padding), which is identical to the standard path, and returns the canvas
+        as the "image" with the warp/flip threaded into the labels so
+        ``train_step`` can warp on the GPU.
+        """
+        from data_pipeline.mosaic_gpu import CANVAS_KEY, FLIP_KEY, WARP_KEY
+
+        canvas   = tf.cast(data[CANVAS_KEY], tf.uint8)
+        warp     = tf.cast(data[WARP_KEY], tf.float32)
+        flip     = tf.cast(data[FLIP_KEY], tf.bool)
+        boxes    = tf.cast(data['groundtruth_boxes'], tf.float32)
+        classes  = tf.cast(data['groundtruth_classes'], tf.int64)
+        polygons = tf.cast(data['groundtruth_polygons'], tf.float32)
+        is_crowd = tf.cast(
+            data.get('groundtruth_is_crowd', tf.zeros_like(classes, dtype=tf.bool)),
+            tf.bool,
+        )
+
+        # 1. Crowd filter (same as the standard path, applied on the mosaic output).
+        if self._skip_crowd:
+            valid    = tf.logical_not(is_crowd)
+            boxes    = tf.boolean_mask(boxes,    valid)
+            classes  = tf.boolean_mask(classes,  valid)
+            polygons = tf.boolean_mask(polygons, valid)
+
+        # 2. Clip + area filter (idempotent on already-clipped mosaic labels).
+        pre_areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+        boxes, keep = clip_boxes(boxes)
+        if self._area_thresh > 0.0:
+            post_areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+            ratio_ok = (post_areas / tf.maximum(pre_areas, 1e-6)) >= self._area_thresh
+            keep = tf.logical_and(keep, ratio_ok)
+        boxes    = tf.boolean_mask(boxes,    keep)
+        classes  = tf.boolean_mask(classes,  keep)
+        polygons = tf.boolean_mask(polygons, keep)
+        polygons = clip_polygon_coords(polygons)
+
+        n_gt = tf.shape(boxes)[0]
+
+        # 3. PolyYOLO radial target (built from the already-final, already-flipped
+        #    vertices — identical to the standard path's step 5).
+        if self._with_polygons:
+            poly_labels = self._preprocess_polygons_v2(boxes, polygons, self._angle_step)
+        else:
+            poly_labels = tf.zeros([n_gt, self._poly_depth], dtype=tf.float32)
+
+        log_dist = tf.fill([n_gt], self._invalid_sentinel)
+        boxes, classes, poly_labels, log_dist = self._pad_labels(
+            boxes, classes, poly_labels, log_dist, n_gt
+        )
+
+        h_out, w_out = self._output_size[0], self._output_size[1]
+        canvas.set_shape([2 * h_out, 2 * w_out, 3])
+
+        labels = {
+            'bbox':         boxes,
+            'classes':      classes,
+            'polygons':     poly_labels,
+            'n_gt':         tf.cast(tf.minimum(n_gt, self._max_num_instances), tf.int64),
+            'ignore_bg':    tf.constant(0, dtype=tf.int64),
+            'log_distance': log_dist,
+            # Deferred-warp payload consumed by train_step's GPU warp.
+            'mosaic_warp':  warp,
+            'mosaic_flip':  flip,
+        }
+        return canvas, labels
 
     def _parse_eval_data(
         self, data: Dict[str, tf.Tensor]

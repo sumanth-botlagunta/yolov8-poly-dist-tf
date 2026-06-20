@@ -111,6 +111,8 @@ class InputReader:
         drop_remainder: bool = True,
         tfds_download: bool = True,
         private_threadpool_size: int = 0,
+        gpu_offload: bool = False,
+        offload_random_flip: bool = True,
     ):
         self._tfds_names = tfds_names
         self._tfds_split = tfds_split
@@ -131,6 +133,13 @@ class InputReader:
         self._drop_remainder = drop_remainder
         self._tfds_download = tfds_download
         self._private_threadpool_size = private_threadpool_size
+        # GPU-offload (prototype): the mosaic stage emits the un-warped 2× canvas +
+        # warp transform + flip coin (mosaic_gpu.mosaic_prepare_fn) and the parser
+        # runs in defer_warp mode; the per-output random_perspective WARP is moved
+        # out of tf.data into the compiled train_step (run on the GPU). Default off
+        # → the standard warp-in-tf.data path is unchanged.
+        self._gpu_offload = gpu_offload
+        self._offload_random_flip = offload_random_flip
 
     # ------------------------------------------------------------------
     # Public API
@@ -252,7 +261,16 @@ class InputReader:
 
         # Mosaic: padded_batch(group_size) → combine (G in → G//R out) → unbatch.
         if self._mosaic_module is not None:
-            mosaic_fn = self._mosaic_module.mosaic_fn(is_training=True)
+            if self._gpu_offload:
+                # GPU-offload: emit the un-warped canvas + warp transform + flip
+                # coin instead of the warped image (mosaic_gpu.mosaic_prepare_fn);
+                # the parser runs in defer_warp mode and train_step warps on the GPU.
+                from data_pipeline.mosaic_gpu import mosaic_prepare_fn
+                mosaic_fn = mosaic_prepare_fn(
+                    self._mosaic_module, random_flip=self._offload_random_flip
+                )
+            else:
+                mosaic_fn = self._mosaic_module.mosaic_fn(is_training=True)
             # Explicit padding_values for EVERY key in the decoder element spec
             # (PolygonDecoder/ServingBot output, preserved by copy-paste). Without
             # this, padded_batch pads every numeric field with 0, which is WRONG
@@ -278,7 +296,13 @@ class InputReader:
             group_size = self._mosaic_module._group_size
             # Hold several groups' worth of outputs so the P outputs of any one group
             # (which share that group's source images) disperse across many batches.
-            shuffle_buffer = max(256, 4 * group_size)
+            # In GPU-offload mode the buffered elements are 2× canvases (4× the
+            # pixels of a finished image), so cap the buffer to bound host RAM —
+            # the benchmark only needs steady-state throughput, not max shuffle.
+            if self._gpu_offload:
+                shuffle_buffer = max(64, group_size)
+            else:
+                shuffle_buffer = max(256, 4 * group_size)
             ds = (
                 ds
                 .padded_batch(group_size, drop_remainder=True, padding_values=_padding_values)
@@ -463,6 +487,7 @@ def build_input_reader_from_config(
     mosaic_module=None,
     distance_reader: Optional[InputReader] = None,
     cnp_decoder=None,
+    gpu_offload: bool = False,
 ) -> InputReader:
     """Construct an InputReader from DataConfig + TaskConfig dataclasses.
 
@@ -521,6 +546,8 @@ def build_input_reader_from_config(
             albumentations_frequency=parser_cfg.albumentations_frequency,
             area_thresh=parser_cfg.area_thresh,
             eval_gray_border=parser_cfg.eval_gray_border,
+            # GPU-offload: label-only parse (the warp is deferred to train_step).
+            defer_warp=gpu_offload and is_training,
         )
 
     # Mosaic (training only).
@@ -608,4 +635,6 @@ def build_input_reader_from_config(
         drop_remainder=data_cfg.drop_remainder,
         tfds_download=True,
         private_threadpool_size=getattr(data_cfg, 'private_threadpool_size', 0),
+        gpu_offload=gpu_offload and is_training,
+        offload_random_flip=parser_cfg.random_flip,
     )
