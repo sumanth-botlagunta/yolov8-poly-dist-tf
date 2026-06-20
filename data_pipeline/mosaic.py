@@ -397,6 +397,43 @@ class Mosaic:
         anns['width']  = tf.constant(self._W, tf.int32)
         return anns
 
+    def _single_canvas(
+        self, ex: Dict[str, tf.Tensor]
+    ) -> Tuple[tf.Tensor, tf.Tensor]:
+        """Non-mosaic prepare: pad the output-sized image into the 2× canvas + draw M.
+
+        The GPU-offload path warps every sample from a uniform [2H, 2W, 3] canvas,
+        but a single image is only [H, W, 3]. We pad it to the 2× canvas at the
+        TOP-LEFT (gray-114 elsewhere) and build M with ``h_in=H, w_in=W`` (NOT 2H/
+        2W). ``make_perspective_matrix`` centers the input on (W/2, H/2) = the
+        image center, so warping the padded canvas with this M is bit-identical to
+        warping the bare [H, W, 3] image: every output pixel maps to an input coord
+        in [0, W)×[0, H) (real pixel) or outside it (the canvas there is gray-114,
+        the same as the warp's fill_value). The padded region is therefore never
+        observed. This lets singles and mosaics share one batched GPU warp call.
+
+        Returns:
+            canvas: uint8 [2H, 2W, 3]; M: float32 [3, 3] image→output matrix.
+        """
+        H, W = self._H, self._W
+        img = tf.cast(ex['image'], tf.uint8)
+        img.set_shape([H, W, 3])
+        canvas = tf.pad(
+            img, [[0, H], [0, W], [0, 0]], constant_values=114
+        )
+        canvas.set_shape([2 * H, 2 * W, 3])
+        M = make_perspective_matrix(
+            h_in=H, w_in=W,
+            target_h=H, target_w=W,
+            degrees=self._degrees,
+            translate=self._translate,
+            scale_min=self._scale_min,
+            scale_max=self._scale_max,
+            shear=self._shear,
+            perspective=self._perspective,
+        )
+        return canvas, M
+
     # ------------------------------------------------------------------
     # Mosaic implementation
     # ------------------------------------------------------------------
@@ -426,6 +463,52 @@ class Mosaic:
 
         Quadrant → example: TL=one, TR=two, BL=three, BR=four. The warp scale
         gain is drawn from the explicit [aug_scale_min, aug_scale_max] bounds.
+        """
+        canvas, M, merged_src, boxes_all, polys_all = self._mosaic_canvas_M(
+            one, two, three, four
+        )
+        H, W = self._H, self._W
+        H2 = tf.constant(2 * H, tf.int32)
+        W2 = tf.constant(2 * W, tf.int32)
+        image = apply_perspective_image(canvas, M, H, W)
+
+        # Annotation transform uses the SAME global M as the legacy single warp,
+        # so the label math is bit-identical to canvas-then-_warp.
+        boxes_out, keep, polys_out = transform_boxes_polygons(
+            boxes_all, polys_all, M,
+            h_in=H2, w_in=W2,
+            target_h=H, target_w=W,
+            area_thresh=self._area_thresh, min_side=0.005,
+        )
+
+        anns = self._filtered_anns(merged_src, boxes_out, polys_out, keep)
+        anns['image']  = image
+        anns['height'] = tf.constant(H, tf.int32)
+        anns['width']  = tf.constant(W, tf.int32)
+        return anns
+
+    def _mosaic_canvas_M(
+        self,
+        one:   Dict[str, tf.Tensor],
+        two:   Dict[str, tf.Tensor],
+        three: Dict[str, tf.Tensor],
+        four:  Dict[str, tf.Tensor],
+    ) -> Tuple[tf.Tensor, tf.Tensor, Dict[str, tf.Tensor], tf.Tensor, tf.Tensor]:
+        """Assemble the 2× mosaic canvas and the canvas→output matrix M.
+
+        This is the shared geometry core for both the CPU warp path (``_mosaic``,
+        which warps the canvas here on the tf.data worker) and the GPU-offload
+        prepare path (``mosaic_gpu``, which transfers this canvas to the GPU and
+        warps there). Splitting it keeps ONE source of truth for the canvas
+        layout, M draw order, and the canvas-normalized box/polygon mapping, so
+        the two paths are geometrically identical by construction.
+
+        Returns:
+            canvas:      uint8 [2H, 2W, 3] gray-114 stitched 2× canvas.
+            M:           float32 [3, 3] canvas(2×)→output perspective matrix.
+            merged_src:  dict of the 4 examples' concatenated per-box side fields.
+            boxes_all:   float32 [ΣN, 4] boxes in 2×-canvas-normalized yxyx.
+            polys_all:   float32 [ΣN, V] polygons in 2×-canvas-normalized xy.
         """
         H, W = self._H, self._W
         H2 = tf.constant(2 * H, tf.int32)
@@ -499,11 +582,12 @@ class Mosaic:
             boxes_list.append(b_c)
             polys_list.append(p_c)
 
-        # Assemble the 2× canvas from the 4 quadrant cells and warp once.
+        # Assemble the 2× canvas from the 4 quadrant cells. The single warp
+        # canvas→output is applied by the caller (CPU here, or GPU in mosaic_gpu).
         top_row = tf.concat([cells[0], cells[1]], axis=1)   # [yc,    2W, 3]
         bot_row = tf.concat([cells[2], cells[3]], axis=1)   # [2H-yc, 2W, 3]
         canvas  = tf.concat([top_row, bot_row], axis=0)     # [2H,    2W, 3]
-        image = apply_perspective_image(canvas, M, H, W)
+        canvas.set_shape([2 * H, 2 * W, 3])
 
         boxes_all = tf.concat(boxes_list, axis=0)
         polys_all = tf.concat(polys_list, axis=0)
@@ -523,20 +607,7 @@ class Mosaic:
             'source_id':            one.get('source_id', tf.constant('mosaic')),
         }
 
-        # Annotation transform uses the SAME global M as the legacy single warp,
-        # so the label math is bit-identical to canvas-then-_warp.
-        boxes_out, keep, polys_out = transform_boxes_polygons(
-            boxes_all, polys_all, M,
-            h_in=H2, w_in=W2,
-            target_h=H, target_w=W,
-            area_thresh=self._area_thresh, min_side=0.005,
-        )
-
-        anns = self._filtered_anns(merged_src, boxes_out, polys_out, keep)
-        anns['image']  = image
-        anns['height'] = tf.constant(H, tf.int32)
-        anns['width']  = tf.constant(W, tf.int32)
-        return anns
+        return canvas, M, merged_src, boxes_all, polys_all
 
     # ------------------------------------------------------------------
     # MixUp (disabled by default: mixup_frequency=0.0)

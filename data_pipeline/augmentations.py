@@ -247,6 +247,30 @@ def make_perspective_matrix(
     return T @ Sh @ R @ P @ C   # input → output
 
 
+def matrix_to_inverse_transform(M: tf.Tensor) -> tf.Tensor:
+    """Convert an input→output 3×3 matrix M to the [8] ImageProjectiveTransform vector.
+
+    ``ImageProjectiveTransformV3`` consumes the OUTPUT→INPUT (inverse) map as the
+    flat 8-vector ``[a0, a1, a2, b0, b1, b2, c0, c1]`` (the implicit c2 == 1), so
+    we invert M and normalize by M_inv[2, 2]. Shared by ``apply_perspective_image``
+    (single-image CPU warp) and the GPU-offload batched warp so both produce the
+    exact same transform from the same M.
+
+    Args:
+        M: float32 [3, 3] input→output matrix.
+
+    Returns:
+        float32 [8] transform vector for ImageProjectiveTransformV3.
+    """
+    M_inv = tf.linalg.inv(M)
+    M_inv = M_inv / M_inv[2, 2]
+    return tf.stack([
+        M_inv[0, 0], M_inv[0, 1], M_inv[0, 2],
+        M_inv[1, 0], M_inv[1, 1], M_inv[1, 2],
+        M_inv[2, 0], M_inv[2, 1],
+    ])
+
+
 def apply_perspective_image(
     image: tf.Tensor,
     M: tf.Tensor,
@@ -263,13 +287,7 @@ def apply_perspective_image(
     tw_i = tf.cast(target_w, tf.int32)
 
     # Image warp uses the inverse (output → input) map, normalized so M_inv[2,2]=1.
-    M_inv = tf.linalg.inv(M)
-    M_inv = M_inv / M_inv[2, 2]
-    transforms = tf.stack([
-        M_inv[0, 0], M_inv[0, 1], M_inv[0, 2],
-        M_inv[1, 0], M_inv[1, 1], M_inv[1, 2],
-        M_inv[2, 0], M_inv[2, 1],
-    ])[tf.newaxis]   # [1, 8]
+    transforms = matrix_to_inverse_transform(M)[tf.newaxis]   # [1, 8]
 
     image_out = tf.raw_ops.ImageProjectiveTransformV3(
         images=image_f[tf.newaxis],
