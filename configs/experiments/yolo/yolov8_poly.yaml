@@ -210,7 +210,7 @@ trainer:
   # steps_per_loop / train_steps / validation_steps are auto-computed from
   # train_total_examples, validation_total_examples and the batch sizes — do not
   # hand-set them (hand-set step counts are ignored by the loader).
-  train_total_examples: 271166   # verified vs TFDS builders 2026-06-10 (was 305780, stale)
+  train_total_examples: 271166   # verified against the TFDS builders
   validation_total_examples: 3903
   checkpoint_interval: 2118
   best_checkpoint_eval_metric: F1score50

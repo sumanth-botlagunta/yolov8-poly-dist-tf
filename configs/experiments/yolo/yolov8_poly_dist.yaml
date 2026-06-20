@@ -266,7 +266,7 @@ task:
 
 trainer:
   train_epochs: 300
-  # VERIFIED against the actual TFDS builders (2026-06-10):
+  # verified against the actual TFDS builders:
   # cleaner_polygon2026 268,384 + field_misrecog2026 416 + station_misrecog 2,366.
   # (Was 305,780 — stale; it inflated steps/epoch to 2388 vs the true 2118.)
   train_total_examples: 271166
