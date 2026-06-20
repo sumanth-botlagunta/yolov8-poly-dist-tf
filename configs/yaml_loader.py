@@ -167,8 +167,6 @@ def _build_runtime_config(r: Dict[str, Any]) -> RuntimeConfig:
         mixed_precision_dtype=r.get("mixed_precision_dtype", "float32"),
         run_eagerly=r.get("run_eagerly", False),
         enable_xla=r.get("enable_xla", False),
-        num_cores_per_replica=r.get("num_cores_per_replica", 1),
-        num_packs=r.get("num_packs", 1),
         inter_op_threads=r.get("inter_op_threads", 0),
         intra_op_threads=r.get("intra_op_threads", 0),
     )
@@ -220,8 +218,6 @@ def _build_model_config(m: Dict[str, Any], task: Dict[str, Any]) -> ModelConfig:
         max_level=backbone_raw.get("max_level", 5),
         depth_scale=backbone_raw.get("depth_scale", 1.0),
         width_scale=backbone_raw.get("width_scale", 1.0),
-        dilate=backbone_raw.get("dilate", False),
-        use_reorg_input=backbone_raw.get("use_reorg_input", False),
         use_separable_conv=backbone_raw.get("use_separable_conv", False),
     )
 
@@ -345,7 +341,6 @@ def _build_data_config(d: Dict[str, Any]) -> DataConfig:
         seed=d.get("seed"),
         with_polygons=d.get("with_polygons", True),
         with_distance=d.get("with_distance", False),
-        poly_eval_gt_policy=d.get("poly_eval_gt_policy", "polyyolo"),
         class_remap_json_path=d.get("class_remap_json_path"),
         private_threadpool_size=d.get("private_threadpool_size", 0),
         parser=parser_cfg,
@@ -410,15 +405,10 @@ def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
         # mosaic-stage random_perspective: degrees/shear/translate). Removed; a stray
         # key in an old YAML is silently ignored.
         jitter=p.get("jitter", 0.0),
-        random_pad=p.get("random_pad", False),
-        random_rotate=p.get("random_rotate", False),
         area_thresh=p.get("area_thresh", 0.1),
         eval_gray_border=p.get("eval_gray_border", False),
         min_meter=p.get("min_meter", 0.5),
         max_meter=p.get("max_meter", 10.0),
-        best_match_only=p.get("best_match_only", False),
-        use_tie_breaker=p.get("use_tie_breaker", True),
-        anchor_thresh=p.get("anchor_thresh", -0.01),
         mosaic=mosaic_cfg,
     )
 
@@ -474,8 +464,6 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
         nesterov=sgd_raw.get("nesterov", True),
         weight_decay=sgd_raw.get("weight_decay", 0.0005),
         warmup_steps=sgd_raw.get("warmup_steps", 7164),
-        weight_keys=sgd_raw.get("weight_keys", ["kernel", "weight"]),
-        bias_keys=sgd_raw.get("bias_keys", ["bias", "beta"]),
         ema=ema_cfg,
         learning_rate=lr_cfg,
     )

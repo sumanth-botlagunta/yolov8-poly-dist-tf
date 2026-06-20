@@ -36,8 +36,6 @@ class RuntimeConfig:
     mixed_precision_dtype: str = "float32"
     run_eagerly: bool = False
     enable_xla: bool = False
-    num_cores_per_replica: int = 1
-    num_packs: int = 1
     # CPU thread-pool caps (0 = leave TF defaults). On machines where the
     # process is cgroup-capped to fewer cores than are visible (e.g. 13 of 128),
     # TF's default pools oversubscribe massively and thrash; cap them to the
@@ -61,8 +59,6 @@ class BackboneConfig:
     max_level: int = 5
     depth_scale: float = 1.0
     width_scale: float = 1.0
-    dilate: bool = False
-    use_reorg_input: bool = False
     use_separable_conv: bool = False
 
 
@@ -201,17 +197,11 @@ class ParserConfig:
     #  V8ParserExtended nor applied. Geometric aug is the mosaic-stage
     #  random_perspective, configured via MosaicConfig.degrees/shear/translate.)
     jitter: float = 0.0
-    random_pad: bool = False
-    random_rotate: bool = False
     area_thresh: float = 0.1
     eval_gray_border: bool = False
     # Distance range (for distance parser only)
     min_meter: float = 0.5
     max_meter: float = 10.0
-    # Anchor-matching parameters (not used by TAL; kept for config completeness)
-    best_match_only: bool = False
-    use_tie_breaker: bool = True
-    anchor_thresh: float = -0.01
     mosaic: MosaicConfig = dataclasses.field(default_factory=MosaicConfig)
 
 
@@ -250,7 +240,6 @@ class DataConfig:
     seed: Optional[int] = None
     with_polygons: bool = True
     with_distance: bool = False
-    poly_eval_gt_policy: str = "polyyolo"
     class_remap_json_path: Optional[str] = None
     # tf.data private threadpool size for the training pipeline (0 = TF default,
     # which sizes to all VISIBLE cores — set this to the real core quota on
@@ -282,8 +271,6 @@ class OptimizerConfig:
     # The sole warmup control. The legacy nested WarmupConfig (trainer.warmup.*) was
     # never read — warmup is driven entirely by this field — and has been removed.
     warmup_steps: int = 7164
-    weight_keys: List[str] = dataclasses.field(default_factory=lambda: ["kernel", "weight"])
-    bias_keys: List[str] = dataclasses.field(default_factory=lambda: ["bias", "beta"])
     ema: EmaConfig = dataclasses.field(default_factory=EmaConfig)
     learning_rate: LrScheduleConfig = dataclasses.field(default_factory=LrScheduleConfig)
 
