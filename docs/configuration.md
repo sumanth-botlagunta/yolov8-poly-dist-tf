@@ -124,7 +124,7 @@ for both mosaic and single images (the parser no longer applies a separate affin
 | Field | Default | Notes |
 |-------|---------|-------|
 | `momentum` / `momentum_start` | 0.937 / 0.8 | Nesterov momentum (warms from start → momentum). |
-| `weight_decay` | `0.0005` | Applied to `weight_keys` (kernel/weight), not biases/BN. |
+| `weight_decay` | `0.0005` | Applied to weight tensors (`kernel`) only, not biases/BN — per SGDTorch's three param groups. |
 | `warmup_steps` | `7164` | Linear LR warmup; BN/bias groups ramp DOWN from `smart_bias_lr` (design_register entry 2). |
 | `learning_rate.initial_learning_rate` / `decay_steps` / `alpha` | 0.01 / 635400 / 0.01 | Cosine decay. `decay_steps` should equal `steps_per_loop × epochs` (`run_train` warns otherwise). |
 | `ema.average_decay` / `dynamic_decay` | 0.9999 / `true` | EMA `min(0.9999, (1+step)/(10+step))`. EMA weights are swapped in for eval. |
