@@ -129,9 +129,10 @@ python -m tools.eval \
     --split val --per_category
 ```
 
-Reports mAP / mAP50 / AR100 / F1@50, polygon and distance metrics, and (with `--per_category`) a
-per-class table. During training, per-epoch validation metrics are also written to
-`<run_dir>/val_metrics/`. See [docs/scripts.md](docs/scripts.md).
+Reports mAP / mAP50 / AR100 / F1score50, polygon and distance metrics, and (with
+`--per_category`) a per-class table. During training, per-epoch validation metrics are also
+written to `<run_dir>/val_metrics/`. See [docs/metrics.md](docs/metrics.md) for what each metric
+means.
 
 ---
 
@@ -186,8 +187,10 @@ tests/          unit / integration / smoke
 
 | Topic | Doc |
 |-------|-----|
-| Architecture — backbone, decoder, heads, polygon format | [docs/architecture.md](docs/architecture.md) |
+| Architecture — backbone, decoder, heads, polygon formats | [docs/architecture.md](docs/architecture.md) |
+| Datasets — required TFDS datasets, schemas, init checkpoint | [docs/datasets.md](docs/datasets.md) |
 | Data pipeline — sampling, mosaic, augmentation, polygon encoding | [docs/data_pipeline.md](docs/data_pipeline.md) |
+| Metrics — glossary of eval metrics | [docs/metrics.md](docs/metrics.md) |
 | Losses — TAL assignment, gains, normalization conventions | [docs/losses.md](docs/losses.md) |
 | Training — loop, EMA, epoch accounting, distributed | [docs/training.md](docs/training.md) |
 | Configuration — every YAML section/field + invariants | [docs/configuration.md](docs/configuration.md) |

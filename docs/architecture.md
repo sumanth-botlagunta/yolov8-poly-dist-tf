@@ -51,4 +51,19 @@ raw logits.
 24 vertices in 15° bins. The distance head predicts the radial distance per bin; the angle head
 predicts a **sub-bin offset** so the exact vertex angle is `θᵢ = (i + offset)·2π/24` (not snapped
 to the bin center); the confidence head gates which bins hold a vertex (absent bins encode
-distance 0, offset 0). See [data_pipeline.md](data_pipeline.md) for the exact tensor formats.
+distance 0, offset 0). See [data_pipeline.md](data_pipeline.md) for the pipeline-side tensor
+formats.
+
+### Polygon formats across the stack
+
+| Stage | Format | Notes |
+|-------|--------|-------|
+| TFDS input | `[N, 3972]` xy interleaved, `-1` padded | raw dataset (`objects/points`); `-1.0` is the reserved sentinel |
+| Training GT (PolyYOLO target) | `[N, 72]` = `[dist, angle, conf] × 24` interleaved | origin implicit (box center `cx, cy`); `angle` = sub-bin offset ∈ `[0,1)`; built in `losses/tal_loss.py:_polygon_loss` |
+| **Prediction output** | `[B, max_det, 24, 3]` = `(conf, dist, angle)`, **all activated** | from `detection_generator` — `conf` is already sigmoid, so apply your threshold directly |
+| Cartesian (transient) | `[K, 2]` pixel `(x, y)`, `K ≤ 24` | reconstructed only at IoU time (`eval/polygon_metrics.py:_radial_to_cartesian`), conf-gated to occupied bins; never persisted |
+| Eval GT | `[N, 72]` radial (same as training GT) | GT stays radial through eval — it is **not** converted to Cartesian |
+
+Decode of a predicted vertex: keep bin `i` when `conf_i ≥ 0.4`
+(`eval/polygon_metrics.DEFAULT_POLY_CONF_THRESH`), then
+`vertex_angle = (i + angle_i)·angle_step`, `radius = dist_i`, placed relative to the box center.
