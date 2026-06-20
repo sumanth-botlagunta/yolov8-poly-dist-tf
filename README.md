@@ -38,7 +38,8 @@ Use the provided Docker image (it bundles CUDA/cuDNN and all dependencies). Insi
 container, clone the repo and install it editable:
 
 ```bash
-git clone <repo-url> && cd yolov8-poly-dist-tf
+git clone <repo-url>
+cd <cloned-dir>
 pip install -e .
 ```
 
