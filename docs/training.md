@@ -6,7 +6,7 @@ by the hand-rolled mapper in `configs/yaml_loader.py` (not dacite); see
 [configuration.md](configuration.md). Run:
 
 ```bash
-python scripts/run_train.py \
+python -m scripts.run_train \
     --config  configs/experiments/yolo/yolov8_poly_dist.yaml \
     --output_dir /path/to/output
 ```
@@ -127,7 +127,7 @@ whichever has the higher global step wins. To start from a specific step instead
 manually selecting the best non-final checkpoint):
 
 ```bash
-python scripts/run_train.py \
+python -m scripts.run_train \
     --config  configs/experiments/yolo/yolov8_poly_dist.yaml \
     --output_dir /path/to/output \
     --resume_from /path/to/output/ckpt-STEP
@@ -167,7 +167,7 @@ appending results to `eval_log.jsonl`. Useful for monitoring a long training run
 intervention:
 
 ```bash
-python tools/continuous_eval.py \
+python -m tools.continuous_eval \
     --config  configs/experiments/yolo/yolov8_poly_dist.yaml \
     --watch_dir /path/to/output \
     --interval 300

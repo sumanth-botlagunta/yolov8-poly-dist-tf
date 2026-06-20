@@ -17,11 +17,12 @@ Training drops `is_crowd` annotations at parse time
 (`parser.skip_crowd_during_training=True`,
 `data_pipeline/yolo_parser.py` / `distance_parser.py`), while COCO evaluation
 (`eval/coco_metrics.py`) follows the standard COCO protocol and *includes* crowd
-regions in its `iscrowd` matching. This is a **known train/eval mismatch**: the model
+regions in its `iscrowd` matching. This is a deliberate train/eval asymmetry: the model
 never sees crowd GT during training but is scored against a metric that accounts for
-crowds. It is left as-is — a **team decision is pending** on whether to keep crowds out
-of training (current PolyYOLO-parity behavior) or to teach the model on crowd regions.
-Do not silently "align" the two paths; the divergence is recorded and owned.
+crowds. The current behavior (crowds out of training) is **PolyYOLO parity** — the
+checkpoints were trained this way. Changing it (teaching the model on crowd regions) is a
+training-semantics change that requires a re-train, so do not silently "align" the two
+paths; the divergence is intentional and recorded here.
 
 ## 2. BN/bias warmup LR ramps DOWN from `bias_lr_scale = 0.1`
 

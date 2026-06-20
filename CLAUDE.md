@@ -16,8 +16,7 @@ The authoritative hyperparameter reference is the experiment YAML you train with
 **Before flagging a surprising behavior as a bug, read `docs/design_register.md`** — the
 intentional design register listing deliberate decisions (crowd policy, additive HSV,
 warmup ramp direction, polygon conf-over-all-bins, mosaic canvas formulation, `-1.0`
-polygon sentinel, etc.) that must not be "fixed" without a deliberate re-train/team
-decision.
+polygon sentinel, etc.) that must not be "fixed" without a deliberate re-train decision.
 
 ## What This System Does
 

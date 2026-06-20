@@ -84,7 +84,7 @@ graph. `--verify` asserts these names exist in the GraphDef.
 
 ```bash
 # 1. Export the SavedModel (prefers EMA weights; --verify runs all contract checks)
-python tools/device/export_device_dlc.py \
+python -m tools.device.export_device_dlc \
     --config     configs/experiments/yolo/yolov8_poly_dist.yaml \
     --checkpoint /path/to/ckpts/epochN \
     --output_dir /path/to/epochN_export/saved_model \
