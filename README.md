@@ -75,7 +75,7 @@ tail -f /path/to/run_dir/supervisor.log
   attempt instead of restarting (or send SIGTERM/Ctrl-C to write a resume checkpoint first).
 - **Crash-loop guard:** 5 consecutive exits within 120s abort the supervisor (a real bug, not
   an OOM blip — check `train.log`).
-- On a fresh host, run `bash tools/cloud_diagnose.sh --config <yaml>` first to measure pipeline
+- On a fresh host, run `bash tools/cloud_diagnose.sh <config.yaml>` first to measure pipeline
   throughput / CPU throttling before committing to a full run.
 
 To run training in the foreground (short tests / debugging) call the entry point directly:
@@ -102,7 +102,8 @@ interruption saves, rotated, max 2) — whichever has the higher global step.
 
 ### Mixed precision & XLA
 
-The default configs run in `float32` with XLA off. To train faster on Tensor-Core GPUs, use the
+The `yolov8_bbox` / `yolov8_poly` tiers run in `float32`; `yolov8_poly_dist` runs in `bfloat16`
+(heads pinned to float32), both with XLA off. To also enable XLA on Tensor-Core GPUs, use the
 `bfloat16` + XLA variant:
 
 ```bash
@@ -111,12 +112,11 @@ nohup bash tools/train_supervisor.sh \
     --output_dir /path/to/run_dir >> /path/to/run_dir/supervisor.log 2>&1 &
 ```
 
-That config is a thin override — it inherits everything from `yolov8_poly_dist.yaml` via a
-top-level `base:` key and only flips `runtime.mixed_precision_dtype: bfloat16` and
-`runtime.enable_xla: true`. `bfloat16` needs no loss scaling (unlike `float16`). Validate on a
-few hundred steps (loss finite, curves track the float32 baseline) before committing to a full
-run, and use `python -m tools.benchmark_pipeline` to record the throughput delta. Any config can
-inherit from another with `base: <relative-path.yaml>` — see
+That config is a thin override — it inherits everything from `yolov8_poly_dist.yaml` (already
+`bfloat16`) via a top-level `base:` key and only flips `runtime.enable_xla: true`. `bfloat16`
+needs no loss scaling (unlike `float16`). Validate on a few hundred steps (loss finite) before a
+full run, and use `python -m tools.benchmark_pipeline` to record the throughput delta. Any config
+can inherit from another with `base: <relative-path.yaml>` — see
 [docs/configuration.md](docs/configuration.md).
 
 ---

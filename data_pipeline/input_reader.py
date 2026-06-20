@@ -402,8 +402,9 @@ class InputReader:
             except Exception as e:
                 raise RuntimeError(
                     f"Failed to load TFDS dataset '{name}' split='{split}' "
-                    f"from data_dir='{self._tfds_data_dir}'. "
-                    f"Run /check-env to verify dataset availability. Error: {e}"
+                    f"from data_dir='{self._tfds_data_dir}'. Check that the dataset is "
+                    f"built under that directory and the name/version/split are correct. "
+                    f"Error: {e}"
                 ) from e
         return datasets
 

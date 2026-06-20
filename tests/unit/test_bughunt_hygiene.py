@@ -84,11 +84,14 @@ def test_no_hardcoded_0_4_in_draw_polygon_body():
 # README checkpoint interval (bug #3)
 # ---------------------------------------------------------------------------
 
-def test_readme_checkpoint_interval_2118():
+def test_readme_checkpoint_interval_is_formula_not_baked():
+    """README describes checkpoint_interval by its formula (one epoch =
+    train_total_examples // global_batch_size), not a baked step count."""
     with open(os.path.join(REPO, "README.md")) as f:
         readme = f.read()
     assert "2388" not in readme, "stale checkpoint_interval default 2388 still present"
-    assert "default 2118" in readme
+    assert "2118" not in readme, "checkpoint_interval should be a formula, not the baked 2118"
+    assert "train_total_examples // global_batch_size" in readme
 
 
 # ---------------------------------------------------------------------------

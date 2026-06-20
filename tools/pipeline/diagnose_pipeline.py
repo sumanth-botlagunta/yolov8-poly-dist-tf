@@ -140,7 +140,7 @@ def main() -> None:
     stages.append(("1. read + sample + shuffle (encoded records)", s1, 1, args.samples))
 
     # NOTE: stage order MUST mirror InputReader._build_detection_dataset —
-    # currently: decode → pre-resize → copy-paste → padded_batch(4) → mosaic →
+    # currently: decode → pre-resize → copy-paste → padded_batch(group_size) → mosaic →
     # unbatch → shuffle(128) → parser → batch. Keep in sync when the pipeline
     # changes, or the attribution lies.
     s2 = base.map(reader._decoder.decode, num_parallel_calls=AUTOTUNE)
@@ -184,15 +184,18 @@ def main() -> None:
 
     s5 = s4
     if reader._mosaic_module is not None:
+        # Mirror the real pipeline: padded_batch(group_size) -> mosaic (G in -> G//R out).
+        g = reader._mosaic_module._group_size
+        r = reader._mosaic_module._decodes_per_output
         s5 = (
             s4
-            .padded_batch(4, drop_remainder=True)
+            .padded_batch(g, drop_remainder=True)
             .map(reader._mosaic_module.mosaic_fn(is_training=True),
                  num_parallel_calls=AUTOTUNE)
             .unbatch()
-            .shuffle(128, seed=reader._seed, reshuffle_each_iteration=True)
+            .shuffle(max(256, 4 * g), seed=reader._seed, reshuffle_each_iteration=True)
         )
-        stages.append(("5. + mosaic(4→4) + unbatch + shuffle",
+        stages.append((f"5. + mosaic({g}->{g // r}) + unbatch + shuffle",
                        s5.prefetch(AUTOTUNE).with_options(opts), 1, args.samples))
 
     s6 = s5.map(reader._parser.parse_fn(is_training=True), num_parallel_calls=AUTOTUNE)

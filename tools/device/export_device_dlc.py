@@ -9,7 +9,7 @@ simply replaces the old one.
 
 Legacy contract (reverse-engineered from the on-device tooling — see the
 ``snpe-tensorflow-to-dlc`` command and the result-extraction script in
-``prompts/dlc_conversion.txt`` / ``docs/device_export.md``):
+``docs/device_export.md``):
 
     Input  node:  ``input_image``   float32  [1, 672, 416, 3]   pixels in [0, 255]
     Output nodes (one flat tensor per head, levels concatenated 3→4→5, channels-last,
@@ -148,7 +148,7 @@ def _force_float32_policy() -> None:
         raise RuntimeError(
             f"Global Keras compute policy is '{compute}', not 'float32', even after "
             "set_global_policy('float32'). The SNPE export must be float32. Something "
-            "re-enabled mixed precision (e.g. tools.runtime_setup.apply_eval_precision_policy "
+            "re-enabled mixed precision (e.g. tools.shared.runtime_setup.apply_eval_precision_policy "
             "or an earlier import). Run this exporter in a clean process / before any "
             "bfloat16 policy is set."
         )
@@ -203,7 +203,7 @@ def main(_):
     # mixed_bfloat16 policy (heads pinned float32) is for throughput only; float32
     # is numerically a superset, restores from the same checkpoint, and avoids
     # bf16 ops the SNPE TF converter would choke on. (Do NOT call
-    # tools.runtime_setup.apply_eval_precision_policy here — that re-enables bf16.)
+    # tools.shared.runtime_setup.apply_eval_precision_policy here — that re-enables bf16.)
     tf.keras.mixed_precision.set_global_policy('float32')
 
     config    = load_config(FLAGS.config)

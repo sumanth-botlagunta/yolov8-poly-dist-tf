@@ -91,11 +91,12 @@ python -m tools.device.export_device_dlc \
     --input_size 672,416 \
     --verify
 
-# 2. (optional) sanity-check the SavedModel on host images before converting
-python -m utils.object_detection.inference_saved_model_yolov8 \
-    --model /path/to/epochN_export/saved_model \
-    --data  /path/to/eval_images --image_size 672,416 \
-    --num_classes 39 --with_polygons --with_distance
+# 2. (optional) sanity-check the device SavedModel on host val images before converting
+#    (decodes its raw heads with the in-repo YoloV8Layer and draws detections at 672x416)
+python -m tools.device.visualize_device_export \
+    --config      configs/experiments/yolo/yolov8_poly_dist.yaml \
+    --saved_model /path/to/epochN_export/saved_model \
+    --output_dir  /tmp/device_viz
 
 # 3. Convert to DLC — IDENTICAL to the legacy command, only --input_network changes
 ./snpe-tensorflow-to-dlc \

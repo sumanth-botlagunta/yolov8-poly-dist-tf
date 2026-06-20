@@ -116,16 +116,17 @@ python -m tools.benchmark_pipeline --config configs/experiments/yolo/yolov8_poly
 ```
 
 ### `python -m tools.pipeline.diagnose_pipeline` — stage-by-stage attribution
-- `--config` (req). `--samples`, `--batches` — workload size. `--threadpool_sweep` — sweep
+- `--config` (req). `--samples`, `--batches` — workload size. `--threadpool-sweep` — sweep
   `private_threadpool_size` values (comma list).
 ```bash
 python -m tools.pipeline.diagnose_pipeline --config configs/experiments/yolo/yolov8_poly_dist.yaml --samples 768 --batches 10
 ```
 
 ### `bash tools/cloud_diagnose.sh` — one-shot cloud bring-up check
-- `--config` (req). Runs the diagnose + benchmark (cold & warm) and measures CPU throttle.
+- Takes the experiment YAML as a **positional** argument (defaults to the poly_dist tier if
+  omitted). Runs the diagnose + benchmark (cold & warm) and measures CPU throttle.
 ```bash
-bash tools/cloud_diagnose.sh --config configs/experiments/yolo/yolov8_poly_dist.yaml
+bash tools/cloud_diagnose.sh configs/experiments/yolo/yolov8_poly_dist.yaml
 ```
 
 ### `python -m tools.pipeline.reencode_tfds_672` — build pre-resized 672² datasets

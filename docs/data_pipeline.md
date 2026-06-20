@@ -131,13 +131,14 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
 - `tf.data.Options(deterministic=False)` is applied to the training stream (removes
   head-of-line blocking). `private_threadpool_size` (DataConfig field, default 0 = all cores)
   caps tf.data's worker count on cgroup-capped machines; `yolov8_poly_dist.yaml` sets it to 13.
-- The post-unbatch `shuffle(128)` breaks up the 4-sample mosaic-group correlation clusters
-  before the final `batch(global_batch_size)`.
-- **Three pipeline changes target the three dominant CPU bottlenecks** (measured on the
+- The post-unbatch `shuffle` (buffer ≥ 256, scaled with `group_size`) disperses each mosaic
+  group's outputs before the final `batch(global_batch_size)`.
+- **Three pipeline changes target the dominant CPU bottlenecks** (measured on the
   13-core-capped cloud host): pre-resizing before copy-paste (~18 ms·core/img at full-res),
-  composed-affine mosaic eliminating the intermediate 2× canvas resize (~54 ms·core/img),
-  and moving colour aug to GPU (~20 ms·core/img in the parser). Together they shift
-  the heavy colour and geometry work off the CPU-capped tf.data threadpool.
+  the mosaic **canvas formulation** (one `random_perspective` warp per output — 4 cheap
+  resizes + 1 warp — rather than a composed-affine variant that warped each source full-frame
+  and measured slower here), and moving colour aug to GPU (~20 ms·core/img in the parser).
+  Together they shift the heavy colour and geometry work off the CPU-capped tf.data threadpool.
 - Colour augmentation (`batch_color_aug.py`) runs inside `train_step`; the `train/data_wait_ms`
   TensorBoard scalar (written by `YoloV8Trainer`) separates data-wait time from compute time,
   making it easy to tell whether the bottleneck is in tf.data or on the GPU.
@@ -159,7 +160,7 @@ they affect training — changing one mid-run would shift the GT a run is traini
   coordinate that lands in-view is a *real* vertex: `transform_boxes_polygons` transforms and
   **clips it to the edge** (consistent with the box GT for the same overflow), rather than
   dropping it as padding.
-- **`padded_batch(4)` pads polygons with `-1.0`.** `input_reader` installs an explicit
+- **`padded_batch(group_size)` pads polygons with `-1.0`.** `input_reader` installs an explicit
   per-key `padding_values` dict; `groundtruth_polygons` pads with `-1.0`, because the default
   `0.0` is a valid top-left vertex coordinate and 0-padded rows would read as real vertices.
   Every other key gets its natural empty (image 0, `''`, ints 0, boxes/area/dists 0.0,

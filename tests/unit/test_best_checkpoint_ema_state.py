@@ -11,7 +11,7 @@ shadow update.
 The fix: save the model with its RAW weights (no swap_in). The EMA shadows are
 tf.Variables tracked inside the EMA wrapper and are serialized under
 ``optimizer/`` regardless, so eval/export recover them via
-``tools/ckpt_loading.restore_eval_weights`` and a training resume stays coherent.
+``tools/shared/ckpt_loading.restore_eval_weights`` and a training resume stays coherent.
 
 This test drives the real trainer loop until raw and EMA weights diverge, forces
 a best-checkpoint write, and asserts:

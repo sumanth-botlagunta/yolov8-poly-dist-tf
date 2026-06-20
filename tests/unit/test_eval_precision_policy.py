@@ -2,7 +2,7 @@
 
 eval / export / continuous_eval historically built the model without setting the
 global Keras precision policy, so a bfloat16-trained checkpoint computed in
-float32 (a different numerical path than training/serving). tools/runtime_setup
+float32 (a different numerical path than training/serving). tools/shared/runtime_setup
 centralizes the policy application; this pins that:
   * a bfloat16 runtime config activates the mixed_bfloat16 global policy;
   * float32 leaves the default policy;

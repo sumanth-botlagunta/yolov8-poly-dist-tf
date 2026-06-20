@@ -152,7 +152,8 @@ class COCOEvaluator:
 
         if not self._gt_anns:
             log.warning("COCOEvaluator.evaluate() called with no GT annotations.")
-            return {'mAP': 0.0, 'mAP50': 0.0, 'AR100': 0.0, 'F1score50': 0.0}
+            return {'mAP': 0.0, 'mAP50': 0.0, 'AR100': 0.0, 'F1score50': 0.0,
+                    'precision50': 0.0, 'recall50': 0.0, 'best_conf_thresh': 0.0}
 
         cats = [{'id': c, 'name': str(c)} for c in range(self._num_classes)]
         gt_dict = {
@@ -175,7 +176,8 @@ class COCOEvaluator:
             with redirect_stdout(io.StringIO()):
                 coco_dt = coco_gt.loadRes(self._dt_anns)
         else:
-            return {'mAP': 0.0, 'mAP50': 0.0, 'AR100': 0.0, 'F1score50': 0.0}
+            return {'mAP': 0.0, 'mAP50': 0.0, 'AR100': 0.0, 'F1score50': 0.0,
+                    'precision50': 0.0, 'recall50': 0.0, 'best_conf_thresh': 0.0}
 
         # ---- Standard eval (IoU 0.50:0.95) ----
         ev = COCOeval(coco_gt, coco_dt, 'bbox')
@@ -199,11 +201,14 @@ class COCOEvaluator:
         f1_50, best_thresh = self._peak_f1(ev50)
         self._ev50 = ev50  # keep for per_category_ap50() / per_category_full_metrics()
 
-        # Mean precision/recall at each class's peak-F1 operating point (same point
-        # F1score50 is read from), so the logged scalars are mutually consistent.
+        # Mean precision/recall at each class's peak-F1 operating point, averaged over
+        # the SAME classes F1score50 uses (those with at least one valid PR point —
+        # `valid=True`), so the three scalars share a denominator and are mutually
+        # consistent (mean of per-category f1 == F1score50).
         best = self.per_category_best_f1()
-        prec_50 = float(np.mean([b['precision'] for b in best])) if best else 0.0
-        rec_50  = float(np.mean([b['recall']    for b in best])) if best else 0.0
+        valid_best = [b for b in best if b.get('valid', True)]
+        prec_50 = float(np.mean([b['precision'] for b in valid_best])) if valid_best else 0.0
+        rec_50  = float(np.mean([b['recall']    for b in valid_best])) if valid_best else 0.0
 
         return {
             'mAP':              map_val,
@@ -308,8 +313,11 @@ class COCOEvaluator:
             p = prec[:, k]
             valid = p >= 0
             if not valid.any():
+                # No valid PR point (a class with GT but no detections). Listed in the
+                # table for visibility but flagged ``valid=False`` so it is excluded from
+                # the macro means — matching ``_peak_f1`` / ``F1score50``.
                 out.append({'category': int(cat), 'f1': 0.0, 'precision': 0.0,
-                            'recall': 0.0, 'conf_threshold': 0.0})
+                            'recall': 0.0, 'conf_threshold': 0.0, 'valid': False})
                 continue
             pv, rv = p[valid], rec[valid]
             denom = pv + rv
@@ -322,7 +330,7 @@ class COCOEvaluator:
                 thr = float(sv[i]) if sv[i] >= 0 else 0.0
             out.append({'category': int(cat), 'f1': float(f1[i]),
                         'precision': float(pv[i]), 'recall': float(rv[i]),
-                        'conf_threshold': thr})
+                        'conf_threshold': thr, 'valid': True})
         return out
 
     def per_category_conf_sweep(self, conf_grid) -> List[Dict[str, float]]:
@@ -371,8 +379,12 @@ class COCOEvaluator:
             'dontcare': gtc.get(k, {}).get('dontcare', 0),
         } for k in sorted(ap)] if ap else []
 
+        # Average over classes with a valid PR point only, so the report's mean F1
+        # equals the logged F1score50 (empty classes are still listed in `best_conf`).
+        valid_best = [b for b in best if b.get('valid', True)]
+
         def _mean(key):
-            vals = [b[key] for b in best]
+            vals = [b[key] for b in valid_best]
             return float(np.mean(vals)) if vals else 0.0
 
         return {

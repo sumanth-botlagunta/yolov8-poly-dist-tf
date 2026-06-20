@@ -292,7 +292,9 @@ class YoloV8Task:
             n_gt  = labels['n_gt'].numpy()
             gt_ld = labels['log_distance'].numpy()        # [B, M]  log-metres
             gt_bx = labels['bbox'].numpy()                # [B, M, 4] yxyx-norm
-            pd_d  = np.log(preds['distance'].numpy())     # [B, max_det] log-metres
+            # Clamp padded (0) slots before log so unused detections don't emit
+            # log(0)=-inf warnings; only valid slots (>0) are indexed below.
+            pd_d  = np.log(np.maximum(preds['distance'].numpy(), 1e-9))  # [B, max_det] log-metres
             pd_bx = preds['bbox'].numpy()                 # [B, max_det, 4]
             nd    = preds['num_detections'].numpy()       # [B]
             for i in range(len(n_gt)):

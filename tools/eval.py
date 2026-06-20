@@ -120,7 +120,10 @@ def main(_):
             n_gt  = labels['n_gt'].numpy()
             gt_ld = labels['log_distance'].numpy()
             gt_bx = labels['bbox'].numpy()
-            pd_d  = np.log(predictions['distance'].numpy())
+            # Padded detections beyond num_detections are 0; clamp before log so the
+            # unused slots don't emit log(0)=-inf RuntimeWarnings (only valid slots,
+            # which are >0, are ever indexed below).
+            pd_d  = np.log(np.maximum(predictions['distance'].numpy(), 1e-9))
             pd_bx = predictions['bbox'].numpy()
             nd    = predictions['num_detections'].numpy()
             for i in range(len(n_gt)):

@@ -704,7 +704,7 @@ def _detect_strategy(reader) -> str:
 def apply_frozen_map(reader, new_model, modules: Optional[List[str]] = None) -> Dict[str, int]:
     """Assign weights using the committed, hand-verified frozen map.
 
-    ``tools/legacy_weight_map_frozen.LEGACY_TO_NEW`` maps each exact legacy
+    ``tools/shared/legacy_weight_map_frozen.LEGACY_TO_NEW`` maps each exact legacy
     checkpoint key to a stable canonical id of the new variable. We index the
     live model by that canonical id (env-independent — no Keras auto-names) and
     copy each legacy tensor into the matching variable, shape-verified. The
@@ -906,7 +906,7 @@ def migrate_with_map(
 
     Copies ``confident`` (and, unless disabled, ``suggested``) pairs whose module
     is in the selected set, verifying shapes. Ambiguous/unmatched variables are
-    reported and left at their initial values. See ``tools/checkpoint_weight_map``.
+    reported and left at their initial values. See ``tools/shared/checkpoint_weight_map``.
     """
     import tensorflow as tf
 
@@ -1075,7 +1075,7 @@ def migrate_checkpoint(
         selected modules and ignoring the source optimizer/step state. ``"frozen"``
         assigns via the committed hand-verified frozen map. ``"map"`` (opt-in only) uses the curated
         structural weight map for the legacy→new migration
-        (:mod:`tools.checkpoint_weight_map`) and the 39-class module rule
+        (:mod:`tools.shared.checkpoint_weight_map`) and the 39-class module rule
         (:func:`select_modules_39`); like ``"frozen"`` it now refuses to write if
         a whole selected module loaded nothing. ``"structural"`` matches by DFS
         structure + role + shape. ``"name"`` is the legacy fuzzy name matcher.

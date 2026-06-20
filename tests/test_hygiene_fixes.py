@@ -195,38 +195,40 @@ def test_eval_random_flip_false_everywhere():
 _README_PATH = os.path.join(os.path.dirname(__file__), '..', 'README.md')
 
 
-def test_readme_step_count_matches_config():
-    """README's documented LR-schedule step count and ckpt names must equal the
-    authoritative decay_steps in yolov8_poly_dist.yaml (635400, = 271166//128 * 300),
-    not the stale 716400."""
+def test_readme_step_count_has_no_stale_or_baked_numbers():
+    """The config's decay_steps stays authoritative, and the README must not bake the
+    derived step count — neither the stale 716400 nor the resolved 635400; it references
+    the schedule by formula / example checkpoint placeholders instead."""
     cfg = load_config(os.path.join(_CFG_DIR, 'yolov8_poly_dist.yaml'))
     decay_steps = cfg.trainer.optimizer_config.learning_rate.decay_steps
     assert decay_steps == 635400, f"config decay_steps drifted: {decay_steps}"
 
     with open(_README_PATH) as f:
         readme = f.read()
-    # The stale value must not reappear (any spacing/checkpoint form).
-    assert '716400' not in readme and '716 400' not in readme, \
-        "README still references the stale 716400 step count"
-    # The correct value must be present (schedule line + checkpoint names).
-    assert '635 400 steps' in readme, "README LR-schedule step count not updated"
-    assert 'ckpt-635400' in readme, "README checkpoint names not updated to 635400"
+    # No stale value, and no baked derived step count (per the formula-based doc style).
+    for stale in ('716400', '716 400', '635400', '635 400'):
+        assert stale not in readme, f"README should not bake the step count ('{stale}')"
+    # Example checkpoint paths use a placeholder, not a baked step.
+    assert 'ckpt-<step>' in readme, "README checkpoint examples should use a placeholder"
 
 
-def test_readme_does_not_claim_yaml_loader_uses_dacite():
-    """yaml_loader.py is a hand-rolled mapper (it says so in its module docstring);
-    the README structure table must not claim it uses dacite."""
-    loader_path = os.path.join(os.path.dirname(__file__), '..', 'configs', 'yaml_loader.py')
-    with open(loader_path) as f:
-        loader_src = f.read()
-    assert 'NOT dacite' in loader_src, "yaml_loader no longer self-documents as non-dacite"
+def test_docs_do_not_claim_yaml_loader_uses_dacite():
+    """yaml_loader.py is a hand-rolled mapper (it says so in its module docstring); no doc
+    may claim it converts via dacite, and the config/training docs state it is hand-rolled."""
+    base = os.path.join(os.path.dirname(__file__), '..')
+    with open(os.path.join(base, 'configs', 'yaml_loader.py')) as f:
+        assert 'NOT dacite' in f.read(), "yaml_loader no longer self-documents as non-dacite"
 
-    with open(_README_PATH) as f:
-        readme = f.read()
-    assert 'ExperimentConfig via dacite' not in readme, \
-        "README still claims yaml_loader.py converts via dacite"
-    assert 'hand-rolled mapper (not dacite)' in readme, \
-        "README should state yaml_loader uses a hand-rolled mapper, not dacite"
+    docs = {}
+    for rel in ('README.md', 'docs/configuration.md', 'docs/training.md'):
+        with open(os.path.join(base, rel)) as f:
+            docs[rel] = f.read()
+    # No doc may claim dacite-based conversion.
+    for rel, txt in docs.items():
+        assert 'via dacite' not in txt, f"{rel} still claims yaml_loader converts via dacite"
+    # The config + training docs state the loader is hand-rolled (not dacite).
+    assert 'hand-rolled' in docs['docs/configuration.md'] and 'dacite' in docs['docs/configuration.md']
+    assert 'hand-rolled mapper' in docs['docs/training.md']
 
 
 # ---------------------------------------------------------------------------

@@ -102,7 +102,7 @@ task:
     tfds_name: "cleaner_polygon2026:2.0.0,field_misrecog2026:1.0.0,station_misrecog:1.1.0"
     # If the input pipeline still can't feed the GPU (diagnose_pipeline.py shows
     # decode/pre-resize dominating), build the pre-resized 672² variants ONCE:
-    #   python tools/reencode_tfds_672.py --data_dir <tfds dir> \
+    #   python -m tools.pipeline.reencode_tfds_672 --data_dir <tfds dir> \
     #     --datasets cleaner_polygon2026:2.0.0,field_misrecog2026:1.0.0,station_misrecog:1.1.0
     # then swap to (training only; keep validation on the original):
     # tfds_name: "cleaner_polygon2026_672:2.0.0,field_misrecog2026_672:1.0.0,station_misrecog_672:1.1.0"

@@ -265,12 +265,17 @@ class PolygonEvaluator:
             matched_dt = set()
             matched_gt = set()
 
-            # Greedy match by descending score
+            # Greedy match by descending score. For each detection pick the best GT
+            # among those still unmatched (mask matched columns), so a detection that
+            # overlaps several GTs falls back to its next-best unmatched GT instead of
+            # being dropped when its global-argmax GT is already taken.
             order = np.asarray(pred_scores[i, :n_det]).argsort()[::-1]
             for di in order:
-                best_gt = int(iou_mat[di].argmax())
-                if (iou_mat[di, best_gt] >= self._iou_thresh
-                        and best_gt not in matched_gt):
+                ious = iou_mat[di].copy()
+                if matched_gt:
+                    ious[list(matched_gt)] = -1.0
+                best_gt = int(ious.argmax())
+                if ious[best_gt] >= self._iou_thresh:
                     matched_dt.add(di)
                     matched_gt.add(best_gt)
                     self._n_matched += 1

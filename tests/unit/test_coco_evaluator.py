@@ -58,6 +58,43 @@ class TestCOCOEvaluator(unittest.TestCase):
         metrics = ev.evaluate()
         self.assertAlmostEqual(metrics['mAP50'], 0.0, places=5)
 
+    def test_no_detections_returns_all_seven_keys(self):
+        """Both early-return branches return the full metric key set."""
+        ev = COCOEvaluator(num_classes=3, image_size=(100, 100))
+        preds, labels = _make_batch()
+        preds['num_detections'] = tf.zeros([2], dtype=tf.int32)
+        ev.update(preds, labels)
+        metrics = ev.evaluate()
+        for k in ('mAP', 'mAP50', 'AR100', 'F1score50',
+                  'precision50', 'recall50', 'best_conf_thresh'):
+            self.assertIn(k, metrics)
+
+    def test_macro_means_consistent_when_a_class_has_no_gt(self):
+        """F1score50, precision50/recall50, and the saved report's mean F1 must all be
+        averaged over the SAME classes (those with a valid PR point). A class absent from
+        the GT (here class 2: num_classes=3 but GT only uses 0/1) has no valid PR point and
+        must be excluded from every macro mean — not counted as 0 in some and skipped in
+        others (the pre-fix inconsistency)."""
+        # _make_batch: num_classes=3, GT classes {0,1}, perfect detections -> class 2 has
+        # no GT, so its precision is all -1 (no valid PR point).
+        preds, labels = _make_batch(num_classes=3)
+        ev = COCOEvaluator(num_classes=3, image_size=(100, 100))
+        ev.update(preds, labels)
+        m = ev.evaluate()
+
+        # Classes 0/1 perfectly detected; class 2 (no GT) excluded from the means.
+        self.assertAlmostEqual(m['F1score50'], 1.0, places=5)
+        self.assertAlmostEqual(m['precision50'], m['F1score50'], places=6)
+        self.assertAlmostEqual(m['recall50'],    m['F1score50'], places=6)
+
+        # The saved report's mean F1 equals F1score50 (same denominator)...
+        report = ev.metrics_tables()
+        self.assertAlmostEqual(report['mean']['f1'], m['F1score50'], places=6)
+        # ...but the undetected class is still LISTED (flagged valid=False).
+        best = ev.per_category_best_f1()
+        invalid = [b for b in best if not b.get('valid', True)]
+        self.assertTrue(any(b['category'] == 2 for b in invalid))
+
     def test_reset_clears_state(self):
         """After reset(), evaluate() on empty state returns zeros."""
         ev = COCOEvaluator(num_classes=3, image_size=(100, 100))

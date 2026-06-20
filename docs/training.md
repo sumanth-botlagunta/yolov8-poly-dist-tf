@@ -45,7 +45,7 @@ Validation at startup (`run_train.py:_validate_config`) checks invariants such a
   linear warmup over `warmup_steps`.
 - `optimizers/ema.py:ExponentialMovingAverage` — dynamic decay `min(0.9999, (1+step)/(10+step))`,
   incremented before the decay is read (matches Ultralytics ModelEMA). EMA weights are swapped in
-  for evaluation and swapped back after (`swap_weights`). It asserts the model is fully built when
+  for evaluation (`swap_in`) and swapped back after (`swap_out`). It asserts the model is fully built when
   constructed (shadow/variable counts must match).
 
 ## Training loop — `train/`

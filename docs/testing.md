@@ -18,8 +18,8 @@ paths), `test_batch_shape_consistency.py`, `test_copy_paste.py` (includes the
 resolution-correction tests for compositing on pre-resized backgrounds),
 `test_decoders.py` (includes encoded-bytes / `SkipDecoding` decoder tests), `test_distance_loss.py`,
 `test_loss_computation.py`, `test_loss_reference_parity.py`,
-`test_mosaic.py` (4-in/4-out semantics, composed-warp geometry/label/mask-partition tests,
-warp-scale-bounds distribution test), `test_parser.py`,
+`test_mosaic.py` (group semantics: G in → G//R out, R=4 no-reuse, per-output frequency;
+canvas-warp geometry/label/mask-partition tests; warp-scale-bounds distribution test), `test_parser.py`,
 `test_polygon_loss_conventions.py` (pins the all-bins conf convention),
 `test_polygon_preprocessing.py` (includes segment-equivalence tests asserting exact output parity
 of the `unsorted_segment_max` / `segment_min` formulation vs the old one-hot reference).

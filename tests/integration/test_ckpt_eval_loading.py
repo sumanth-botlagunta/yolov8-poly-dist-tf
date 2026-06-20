@@ -1,4 +1,4 @@
-"""Tests for tools/ckpt_loading.restore_eval_weights.
+"""Tests for tools/shared/ckpt_loading.restore_eval_weights.
 
 Pins the contract that eval/export load EMA weights from a periodic checkpoint
 (model/ = raw, optimizer/ = EMA shadows) and raw weights from a best_-style
