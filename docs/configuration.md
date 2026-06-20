@@ -76,7 +76,7 @@ normalization conventions.
 | Field | Default | Notes |
 |-------|---------|-------|
 | `tfds_name` / `tfds_split` / `tfds_data_dir` | — | The source TFDS dataset. |
-| `global_batch_size` | `128` | Detection batch (distance stream adds 16 → logs count 144). |
+| `global_batch_size` | `128` | Detection batch; the distance stream's batch is merged on top, and throughput/logs count the merged total. |
 | `tfds_sampling_weights` | `None` | Per-source weights for multi-TFDS weighted sampling. |
 | `prob_copy_n_paste` | `0.2` | Copy-paste probability; `tfds_for_cnp` sets the RGBA source dataset. |
 | `seed` | `None` | Base seed; the three shuffle stages use `seed`, `seed+1`, `seed+2`. |

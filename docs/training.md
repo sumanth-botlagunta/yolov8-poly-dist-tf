@@ -41,7 +41,8 @@ Validation at startup (`run_train.py:_validate_config`) checks invariants such a
   LR ramps **up** from 0 while bias/BN ramp **down** from `bias_lr_scale` (an absolute LR,
   default `0.1` = 10× the initial weight LR, not `bias_lr_scale·base_lr`); after warmup all
   groups use the schedule LR.
-- LR: cosine decay, initial 0.01, α=0.01, 635,400 steps; linear warmup (6354 steps).
+- LR: cosine decay, initial 0.01, α=0.01, over `decay_steps` (= `steps_per_loop × train_epochs`);
+  linear warmup over `warmup_steps`.
 - `optimizers/ema.py:ExponentialMovingAverage` — dynamic decay `min(0.9999, (1+step)/(10+step))`,
   incremented before the decay is read (matches Ultralytics ModelEMA). EMA weights are swapped in
   for evaluation and swapped back after (`swap_weights`). It asserts the model is fully built when
@@ -58,13 +59,14 @@ Validation at startup (`run_train.py:_validate_config`) checks invariants such a
 - `viz_utils.py` — renders box/polygon overlays for TensorBoard image summaries.
 
 **Epoch accounting**: when `steps_per_loop > 0` (the normal case — computed as
-`train_total_examples // batch_size`, e.g. 2118 = 271,166 // 128), every epoch runs exactly that
-many steps from one **persistent iterator** over the infinite training stream. After a mid-epoch
-resume (`YoloV8Trainer._steps_for_epoch`) only the remainder to the next multiple is run, keeping
-epoch boundaries at exact multiples of `steps_per_loop`. The cosine LR `decay_steps=635,400`
-(= 2118 × 300), warmup `6354` (= 3 epochs), and `checkpoint_interval=2118` (= 1 epoch) are all
-consistent with this count. `run_train.py:_validate_config` warns at startup if `decay_steps`
-in the YAML diverges from `steps_per_loop × train_epochs`. When `steps_per_loop == 0`
+`train_total_examples // batch_size`), every epoch runs exactly that many steps from one
+**persistent iterator** over the infinite training stream. After a mid-epoch resume
+(`YoloV8Trainer._steps_for_epoch`) only the remainder to the next multiple is run, keeping epoch
+boundaries at exact multiples of `steps_per_loop`. The derived fields are consistent by
+construction: `decay_steps = steps_per_loop × train_epochs`, `checkpoint_interval = steps_per_loop`
+(one epoch), and warmup is a small multiple of `steps_per_loop`.
+`run_train.py:_validate_config` warns at startup if `decay_steps` in the YAML diverges from
+`steps_per_loop × train_epochs`. When `steps_per_loop == 0`
 (synthetic/test configs with no example count configured) the loop falls back to data-driven epochs.
 
 Checkpoints are written to `output_dir/` every `checkpoint_interval` steps (defaults to one epoch);
@@ -106,9 +108,10 @@ logical devices).
 
 ## Derived fields
 `steps_per_loop`, `train_steps`, and `validation_steps` are computed from
-`train_total_examples` / `validation_total_examples` and batch sizes — don't hand-edit them.
-For the default config: `steps_per_loop = 271,166 // 128 = 2118`, `train_steps = 2118 × 300 =
-635,400`, warmup = 6354 steps (3 epochs), `checkpoint_interval = 2118` (1 epoch). These numbers
+`train_total_examples` / `validation_total_examples` and batch sizes — don't hand-edit them:
+`steps_per_loop = train_total_examples // global_batch_size`,
+`train_steps = steps_per_loop × train_epochs`, `checkpoint_interval = steps_per_loop` (one
+epoch), and warmup is a small multiple of `steps_per_loop`. The resolved values for your config
 appear in the startup banner logged by `YoloV8Trainer._log_startup_info`.
 `decay_steps` is an explicit YAML field (not derived); `run_train.py` warns if it
 diverges from `train_steps` so schedule drift is caught at startup.

@@ -44,10 +44,9 @@ Multi-TFDS weighted sampling (each source `.repeat()`ed → stationary weights, 
 The geometric transform (`random_perspective`) is applied inside the mosaic stage for **both** the 4-image mosaic and non-mosaic single images; the parser no longer applies a separate affine.
 
 **Epoch semantics**: the training stream is infinite; the trainer runs **exactly
-`steps_per_loop` steps per epoch** (= `train_total_examples // batch` = **2118** for the
-poly_dist config; 271,166 examples verified against the TFDS builders) from one
-persistent iterator, so one epoch = one nominal data pass and the startup banner / LR
-schedule (`decay_steps = steps_per_loop × epochs` = 635,400) / checkpoint interval are all
+`steps_per_loop` steps per epoch** (= `train_total_examples // batch`, derived from the
+config) from one persistent iterator, so one epoch = one nominal data pass and the startup
+banner / LR schedule (`decay_steps = steps_per_loop × epochs`) / checkpoint interval are all
 true by construction. After a mid-epoch resume only the remainder to the next epoch
 boundary is run (`YoloV8Trainer._steps_for_epoch`). Eval datasets do not repeat.
 `run_train` warns if `decay_steps != train_steps`. Step logs report compute, data-wait,
@@ -55,7 +54,8 @@ and wall-clock throughput separately (`train/data_wait_ms`).
 
 The distance dataset (`servingbot_polygon:1.0.1`) is a **separate stream** merged via `tf.data.Dataset.zip()` and concatenated on the batch dimension. Distance-only samples carry `ignore_bg=1` to suppress class loss on background. The distance stream is **training-only** (no validation merge path).
 
-Training batch sizes: 128 (detection) + 16 (distance) — throughput/logs count the merged 144.
+Training batch = the detection `global_batch_size` + the distance stream's batch (merged on
+the batch dim); throughput/logs count the merged total.
 
 ### Polygon Representation
 
@@ -111,7 +111,7 @@ Distance loss: L1 on log-scale, masked to samples where `gt_distance > -10.0` (i
 
 ### Optimizer
 
-SGD with Nesterov momentum (0.937), cosine LR decay (initial=0.01, alpha=0.01), 300 epochs / 635,400 steps (`optimizers/sgd_warmup.py`). EMA with dynamic decay: `min(0.9999, (1+step)/(10+step))` (`optimizers/ema.py`). EMA weights are swapped in for evaluation and swapped back afterward.
+SGD with Nesterov momentum (0.937), cosine LR decay (initial=0.01, alpha=0.01) over the full `train_steps` (`optimizers/sgd_warmup.py`). EMA with dynamic decay: `min(0.9999, (1+step)/(10+step))` (`optimizers/ema.py`). EMA weights are swapped in for evaluation and swapped back afterward.
 
 ## Actual File Layout
 
@@ -179,8 +179,7 @@ tests/                 # unit/ integration/ smoke/ + component tests
   ignored). `scripts/run_train.py:_validate_config` checks invariants
   (e.g. `output_poly_size == 360 // angle_step`) before training.
 - Common workflows are documented as copy-paste commands in `docs/scripts.md`
-  (training/eval/export/benchmark/migrate/infer) and wrapped as Claude Code slash commands
-  in `.claude/commands/`.
+  (training/eval/export/benchmark/migrate/infer).
 - Runtime flags (XLA via `tf.config.optimizer.set_jit`, mixed precision via the global Keras
   policy, distribution strategy) are applied in `scripts/run_train.py:_apply_runtime_config`
   from `RuntimeConfig`. Default precision is `float32`.

@@ -52,8 +52,8 @@ def _run_benchmark(ds, n_steps: int) -> dict:
 
     Step time is the wall-clock *between* successive batches (i.e. how long the
     pipeline takes to produce a batch), and the per-batch image count is read
-    from the actual batch — so the merged detection+distance batch (144) is
-    measured correctly, not assumed to be the detection size (128).
+    from the actual batch — so the merged detection+distance batch is measured
+    correctly, not assumed to be the detection-only size.
     """
     import numpy as np
     import tensorflow as tf

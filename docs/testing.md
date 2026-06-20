@@ -77,8 +77,18 @@ pytest tests/unit tests/integration --cov -q
 - Match coordinate conventions (`yxyx` normalized GT vs `xyxy` pixels in the loss) — mismatches are
   the most common test bug.
 
-## CI
-`.github/workflows/test.yml` installs `requirements.txt` and runs `pytest -m "not smoke"`
-on push/PR — the whole suite except the real-data smoke tests (the synthetic dry-smoke loop
-is included). The real-data smoke suite is intentionally out of CI (needs the datasets); run it
-locally before large changes.
+## Running the full suite
+
+There is no hosted CI; run the suite locally before large changes:
+
+```bash
+# Whole suite except the real-data smoke tests (the synthetic dry-smoke loop IS included)
+pytest -m "not smoke" -q
+
+# Multi-GPU (MirroredStrategy) tests need a FRESH process (they split the CPU into 2
+# logical devices, which only works before TF's device context is initialized; in the
+# run above they self-skip)
+pytest tests/integration/test_multigpu.py -q
+```
+
+The real-data smoke suite is kept separate (it needs `TFDS_DATA_DIR` and the datasets).

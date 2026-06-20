@@ -226,10 +226,14 @@ def main() -> None:
             print(f"  {la.split('.')[0]} → {lb.split('.')[0]}: "
                   f"{ra:8.1f} → {rb:8.1f} imgs/sec  ({drop:+.0f}% drop){marker}")
         full = results[-1][1]
-        epoch_min = cfg.trainer.steps_per_loop * (144.0 / max(full, 1e-9)) / 60.0
+        # Merged per-step image count = detection batch + the (optional) distance batch.
+        dd = getattr(cfg.task.train_data, 'distance_data', None)
+        merged_batch = cfg.task.train_data.global_batch_size + (dd.global_batch_size if dd else 0)
+        steps = cfg.trainer.steps_per_loop
+        epoch_min = steps * (merged_batch / max(full, 1e-9)) / 60.0
         print(f"\n  Full-stream rate: {full:.0f} imgs/sec → pipeline-bound epoch "
-              f"≈ {epoch_min:.1f} min for {cfg.trainer.steps_per_loop} steps "
-              f"(target ≤20 min needs ≥{cfg.trainer.steps_per_loop * 144 / 1200:.0f} imgs/sec)")
+              f"≈ {epoch_min:.1f} min for {steps} steps × {merged_batch} imgs "
+              f"(target ≤20 min needs ≥{steps * merged_batch / 1200:.0f} imgs/sec)")
 
     if args.threadpool_sweep:
         print("\n--- private_threadpool_size sweep (full merged stream) ---")

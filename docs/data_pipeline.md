@@ -41,8 +41,8 @@ The geometric affine lives in the mosaic stage (`random_perspective`), applied t
 mosaic and single-image branches — the parser no longer does an affine.
 
 The training stream is **infinite** (each source dataset is `.repeat()`ed before
-`sample_from_datasets`). Epoch length is enforced by the trainer (`steps_per_loop = 2118`
-for the default config), not by data exhaustion. `tf.data.Options` sets
+`sample_from_datasets`). Epoch length is enforced by the trainer (`steps_per_loop`, derived
+from the config), not by data exhaustion. `tf.data.Options` sets
 `deterministic=False` (removes head-of-line blocking in parallel maps) and optionally
 `private_threadpool_size` (e.g. 13 in `yolov8_poly_dist.yaml` for cgroup-capped machines).
 
@@ -64,7 +64,7 @@ decoder has a `tf.string` branch that decodes the bytes inside the parallel `map
 ## Distance stream merge — `input_reader.py:_merge_streams`
 The distance dataset (`servingbot_polygon:1.0.1`) is an **independent, training-only** stream.
 It is combined with the detection stream via `tf.data.Dataset.zip(...)` and concatenated on the
-**batch dimension** (detection 128 + distance 16 = 144). Distance-only samples set `ignore_bg=1`
+**batch dimension** (detection `global_batch_size` + the distance stream's batch). Distance-only samples set `ignore_bg=1`
 so their class loss is masked to foreground (they have no detection labels for background).
 
 > There is **no validation merge path** — `validation_data.distance_data` is `null`. Distance

@@ -29,7 +29,7 @@ The codebase supports three experiment tiers (config-driven, shared code):
 | Classes | 39 |
 | Activation | ReLU throughout |
 | Optimizer | SGDTorch — decoupled WD, Nesterov, per-param-group, linear momentum warmup |
-| LR schedule | Cosine decay, initial 0.01, α=0.01, 635 400 steps |
+| LR schedule | Cosine decay, initial 0.01, α=0.01, over the full `train_steps` (300 epochs) |
 | EMA | Dynamic decay `min(0.9999, (1+step)/(10+step))` |
 
 ---
@@ -105,9 +105,9 @@ nohup bash tools/train_supervisor.sh \
 On a fresh cloud host, run `bash tools/cloud_diagnose.sh --config <yaml>` first to measure
 pipeline throughput / CPU throttling before committing to a full run.
 
-Checkpoints are saved to `output_dir/` every `checkpoint_interval` steps (default 2118
-= 271,166 train examples // batch size 128 = one epoch; set `checkpoint_interval` in your
-YAML to override).  
+Checkpoints are saved to `output_dir/` every `checkpoint_interval` steps. By default this is
+**one epoch** — derived from your config as `train_total_examples // global_batch_size` — so
+checkpoints land on epoch boundaries. Set `checkpoint_interval` in your YAML to override.  
 TensorBoard events are written to `output_dir/tb_events/`.
 
 ```bash
@@ -131,8 +131,8 @@ That config is a thin override — it inherits everything from `yolov8_poly_dist
 top-level `base:` key and only flips `runtime.mixed_precision_dtype: bfloat16` and
 `runtime.enable_xla: true`. `bfloat16` needs no loss scaling (unlike `float16`). Validate on
 a few hundred steps (loss finite, curves track the float32 baseline) before committing to a
-full run, and use `/benchmark` to record the throughput delta. Any config can inherit from
-another with `base: <relative-path.yaml>` and deep-merge its own keys on top.
+full run, and use `tools/benchmark_pipeline.py` to record the throughput delta. Any config can
+inherit from another with `base: <relative-path.yaml>` and deep-merge its own keys on top.
 
 ---
 
@@ -167,7 +167,7 @@ Set `task.init_checkpoint` in your YAML to the migrated checkpoint path so `trai
 ```bash
 python tools/eval.py \
     --config      configs/experiments/yolo/yolov8_poly_dist.yaml \
-    --checkpoint  /path/to/output/ckpt-635400 \
+    --checkpoint  /path/to/output/ckpt-<step> \
     --split       val \
     --output_json /tmp/results.json
 ```
@@ -184,13 +184,13 @@ Metrics reported: **mAP** (0.50:0.95), **mAP50**, **AR100**, **F1@50**,
 # SavedModel (deploy=True, NMS baked in)
 python tools/export_saved_model.py \
     --config      configs/experiments/yolo/yolov8_poly_dist.yaml \
-    --checkpoint  /path/to/output/ckpt-635400 \
+    --checkpoint  /path/to/output/ckpt-<step> \
     --output_dir  /tmp/saved_model
 
 # Also produce a .tflite file
 python tools/export_saved_model.py \
     --config      configs/experiments/yolo/yolov8_poly_dist.yaml \
-    --checkpoint  /path/to/output/ckpt-635400 \
+    --checkpoint  /path/to/output/ckpt-<step> \
     --output_dir  /tmp/saved_model \
     --tflite
 ```
