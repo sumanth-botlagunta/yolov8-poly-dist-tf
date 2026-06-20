@@ -42,8 +42,8 @@ validity mask (`vertex_mask`); all normalize by `num_objs`:
   empty → 0), ÷ `num_objs`. Conf is the decode gate and must see negatives: the earlier masked
   form (valid-bins-only) gave empty bins zero gradient ever, so their conf drifted above
   the 0.4 decode/viz threshold while their dist stayed untrained — the star/spiky polygon
-  artifacts seen in val overlays. The masked form is preserved verbatim in
-  `polygon_conf_loss`'s docstring as a one-line swap. Angle/dist remain masked because their
+  artifacts seen in val overlays. (The earlier masked form is kept in the
+  `polygon_conf_loss` docstring as a one-line swap.) Angle/dist remain masked because their
   regression targets are undefined on empty bins.
 Combined in `tal_loss.py:_polygon_loss` with the component gains; the overall `poly_gain`
 multiplier is applied inside `_polygon_loss`.
@@ -58,9 +58,9 @@ detection-stream GTs with sentinel distance). Valid range `[0.5, 10.0]` m.
 overall `poly_gain=0.5`. The detection gains are the Ultralytics defaults and are calibrated for
 the weighted formulation above.
 
-## Normalization conventions — important
-Not all terms share the same denominator/reduction. **These are intentional**, but mean the gains
-are not directly comparable across heads:
+## Normalization conventions
+Not all terms share the same denominator/reduction, so the gains are not directly comparable across
+heads:
 
 | Term | Denominator | Vertex reduction |
 |------|-------------|------------------|
@@ -77,8 +77,8 @@ Consequences:
 - Angle/dist average over the **valid** vertex count per anchor (empty bins do not dilute the
   mean); conf averages over all 24 bins so empty bins receive a negative signal (see the
   Polygon section). The conf magnitude reflects that choice (negatives dominate the
-  24-bin mean early in training); `poly_conf_gain=0.2` was deliberately kept. **Re-tune the poly
-  gains if you change the masking or vertex count.**
+  24-bin mean early in training); `poly_conf_gain=0.2` is set against it. Changing the masking or
+  vertex count shifts these magnitudes, so the poly gains would need re-tuning.
 
 These conventions are pinned by `tests/test_polygon_loss_conventions.py`.
 

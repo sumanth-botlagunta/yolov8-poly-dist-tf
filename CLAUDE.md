@@ -13,10 +13,11 @@ The authoritative hyperparameter reference is the experiment YAML you train with
 (architecture, data pipeline, losses, training, testing). The older
 `docs/implementation_plan.md` / top-level `MASTER_PLAN.md` references are obsolete and gone.
 
-**Before flagging a surprising behavior as a bug, read `docs/design_register.md`** — the
-intentional design register listing deliberate decisions (crowd policy, additive HSV,
-warmup ramp direction, polygon conf-over-all-bins, mosaic canvas formulation, `-1.0`
-polygon sentinel, etc.) that must not be "fixed" without a deliberate re-train decision.
+`docs/design_register.md` documents non-obvious design choices (crowd policy, additive HSV,
+warmup ramp direction, polygon conf-over-all-bins, mosaic canvas formulation, `-1.0` polygon
+sentinel, etc.) and the reasoning behind them. Several differ from stock YOLOv8 for parity with
+the original codebase or a measured performance reason, and several affect training — so changing
+them means re-training.
 
 ## What This System Does
 

@@ -105,7 +105,7 @@ just the bin). **Absent bins encode `dist = 0`, `angle = 0`, `conf = 0`** — so
 learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode uses
 `vertex_angle = (i + angle)·angle_step` in `detection_generator` / `polygon_metrics` / `viz_utils`.
 
-## Coordinate conventions (read carefully)
+## Coordinate conventions
 - GT boxes from decoders/parsers: **`yxyx` normalized** `[0,1]`.
 - The loss/assigner convert to **`xyxy` pixels**.
 - Mosaic image path is the **canvas formulation**: per-image `tf.image.resize` at the
@@ -150,9 +150,9 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
 
 ## Polygon-GT correctness notes (train-semantics)
 
-These govern the polygon ground truth the loss sees. Changing them alters targets, so they
-are train-semantics decisions (do not flip mid-run). See `docs/design_register.md` for the
-`-1.0` sentinel and clip-to-edge conventions they build on.
+These govern the polygon ground truth the loss sees. Changing them alters the targets, so
+they affect training — changing one mid-run would shift the GT a run is training against. See
+`docs/design_register.md` for the `-1.0` sentinel and clip-to-edge conventions they build on.
 
 - **`-1.0` is the only polygon sentinel.** Vertex validity is tested as `x > -1.0`, not
   `x >= 0.0`. A mosaic-canvas-overflow vertex with a slightly-negative input-normalized

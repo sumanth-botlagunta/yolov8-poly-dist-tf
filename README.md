@@ -199,4 +199,4 @@ tests/          unit / integration / smoke
 | On-device SNPE/DLC export | [docs/device_export.md](docs/device_export.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Testing | [docs/testing.md](docs/testing.md) |
-| Intentional design decisions (read before "fixing" a surprise) | [docs/design_register.md](docs/design_register.md) |
+| Design decisions — non-obvious choices and their reasoning | [docs/design_register.md](docs/design_register.md) |

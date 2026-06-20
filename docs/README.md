@@ -20,7 +20,7 @@ For a quick start (setup, training/eval/export commands), see the top-level
 | [device_export.md](device_export.md) | On-device (Qualcomm SNPE/DLC) export workflow and the box channel-order contract. |
 | [troubleshooting.md](troubleshooting.md) | Common training/eval/export failures and what to check. |
 | [testing.md](testing.md) | Test layout, how to run subsets, and what needs TFDS. |
-| [design_register.md](design_register.md) | Deliberate design decisions — read before "fixing" a surprising behavior. |
+| [design_register.md](design_register.md) | Non-obvious design choices and the reasoning behind them. |
 
 ## Conventions used in these docs
 - Tensor coordinate order is called out explicitly (`yxyx` vs `xyxy`, normalized vs pixels) because mismatches are the most common source of bugs.
