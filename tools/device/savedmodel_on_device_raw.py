@@ -103,6 +103,10 @@ def main():
     ap.add_argument('--normalize_baked', default='true', choices=['true', 'false'],
                     help='the SavedModel bakes /255 (feed raw [0,255]). If false, this '
                          'script divides by 255 before feeding.')
+    ap.add_argument('--box_order', default='yfirst', choices=['yfirst', 'xfirst'],
+                    help="box head order of the SavedModel. 'yfirst' = legacy/DLC default "
+                         "([t,l,b,r], export_device_dlc --legacy_box_order), reordered to "
+                         "x-first before decode. 'xfirst' only for --legacy_box_order=False.")
     ap.add_argument('--swap_rb', action='store_true',
                     help='swap channels 0<->2 before inference (test the BGR hypothesis)')
     ap.add_argument('--score_thr', type=float, default=0.25, help='draw/print threshold')
@@ -151,7 +155,7 @@ def main():
                   f"{fl.mean():>11.4f}{fl.std():>11.4f}")
         print("-" * 88)
 
-        pred = _reconstruct(out, H, W, a.num_classes, score_thresh=0.01)
+        pred = _reconstruct(out, H, W, a.num_classes, score_thresh=0.01, box_order=a.box_order)
         nd = int(pred['num_detections'][0])
         boxes = pred['bbox'].numpy()[0, :nd]
         cls = pred['classes'].numpy()[0, :nd]
