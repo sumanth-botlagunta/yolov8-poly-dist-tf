@@ -157,7 +157,7 @@ scripts/
   run_train.py         # entry point (config load, validation, strategy, runtime flags)
 tools/                 # core workflow tools (top level)
   eval.py export_saved_model.py benchmark_pipeline.py
-  checkpoint_migration.py trace_shapes.py continuous_eval.py
+  checkpoint_migration.py trace_shapes.py
   cloud_diagnose.sh train_supervisor.sh
   device/              # SNPE/DLC export + on-device diagnostics
     export_device_dlc.py validate_device_export.py gen_pred_json_from_dlc.py

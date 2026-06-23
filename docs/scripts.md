@@ -28,15 +28,24 @@ Keeps training alive across crashes/OOM, auto-resumes, detaches from SSH.
 nohup bash tools/train_supervisor.sh --config configs/experiments/yolo/yolov8_poly_dist.yaml --output_dir /run >> /run/supervisor.log 2>&1 &
 ```
 
-### `python -m tools.eval` — evaluate a checkpoint
-COCO mAP/F1, polygon, and distance metrics on val/test (EMA weights preferred).
-- `--config` (req), `--checkpoint` (req) — YAML and checkpoint prefix.
-- `--split` — `val` (default) / `test` / `train`.
-- `--per_category` — also print the per-class AP/AR table.
-- `--output_json` — write COCO-format detection results to this path.
-- `--output_dir` — write `metrics.json` (+ `per_category_metrics.json`) here.
+### `python -m tools.eval` — evaluate one or many checkpoints
+COCO mAP/F1, polygon, and distance metrics on val/test (EMA weights preferred). One eval code
+path with three modes:
+- **single** (default, `--checkpoint <ckpt>`): evaluate one checkpoint and print the metric table.
+  - `--config` (req), `--checkpoint` — YAML and checkpoint prefix.
+  - `--split` — `val` (default) / `test` / `train`.
+  - `--per_category` — also print the per-class AP/AR table.
+  - `--output_json` — write COCO-format detection results to this path.
+  - `--output_dir` — write `metrics.json` (+ `per_category_metrics.json`) here.
+- **all** (`--all --watch_dir <dir>`): evaluate every checkpoint already in `<dir>` once,
+  appending each result to `<dir>/eval_log.jsonl`.
+- **watch** (`--watch --watch_dir <dir>`): poll `<dir>` and evaluate each new checkpoint as it
+  appears, appending to `<dir>/eval_log.jsonl`. `--interval` — seconds between polls.
+  `--max_evals` — stop after N evaluations (0 = unlimited).
 ```bash
 python -m tools.eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000 --split val --per_category
+python -m tools.eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --all   --watch_dir /run
+python -m tools.eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --watch --watch_dir /run --interval 300
 ```
 
 ### `python -m tools.infer` — overlays on arbitrary images
@@ -48,14 +57,6 @@ Loads a checkpoint **or** a SavedModel, draws box+polygon overlays, prints class
 - `--input_size` — override the square input size (0 = read from config/SavedModel).
 ```bash
 python -m tools.infer --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000 --images /imgs --output_dir /tmp/out
-```
-
-### `python -m tools.continuous_eval` — auto-evaluate new checkpoints
-Polls a run directory and evaluates each new checkpoint, appending to `eval_log.jsonl`.
-- `--config` (req), `--watch_dir` (req) — YAML and the run directory to watch.
-- `--interval` — seconds between polls. `--max_evals` — stop after N evaluations.
-```bash
-python -m tools.continuous_eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --watch_dir /run
 ```
 
 ## Export

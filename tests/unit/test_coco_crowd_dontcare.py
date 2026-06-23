@@ -2,8 +2,10 @@
 
 The annotation-building logic (eval/coco_metrics.py) does, per GT:
     - is_crowd & class in iscrowds_labels (ignore_iscrowds) → skip entirely.
-    - is_dontcare (ignore_dontcare)                          → emit with iscrowd=1.
-    - otherwise                                              → emit with iscrowd=0.
+    - is_dontcare                                           → emit with a separate
+                                                              'dontcare'=1 field (iscrowd
+                                                              stays = raw is_crowd).
+    - otherwise                                             → emit dontcare=0, iscrowd=0.
 
 These tests inspect the accumulated GT annotations directly so they are deterministic
 (independent of pycocotools mAP edge cases for empty GT sets).
@@ -56,11 +58,16 @@ class TestCrowdDontcare(unittest.TestCase):
         self.assertNotIn(6, cats)          # crowd-class GT skipped
         self.assertEqual(len(ev._gt_anns), 2)
 
-    def test_dontcare_marked_iscrowd(self):
+    def test_dontcare_separate_field(self):
+        # dontcare is carried as a SEPARATE field, NOT collapsed into iscrowd. The
+        # custom COCOevalCustom keys dontcare absorption off ann['dontcare']; iscrowd
+        # stays = raw is_crowd.
         ev = self._run(ignore_iscrowds=True, ignore_dontcare=True, iscrowds_labels=[6])
-        by_cat = {a["category_id"]: a["iscrowd"] for a in ev._gt_anns}
-        self.assertEqual(by_cat[1], 1)     # dontcare → iscrowd=1
-        self.assertEqual(by_cat[0], 0)     # normal → iscrowd=0
+        by_cat = {a["category_id"]: a for a in ev._gt_anns}
+        self.assertEqual(by_cat[1]["dontcare"], 1)   # GT1 is dontcare
+        self.assertEqual(by_cat[1]["iscrowd"], 0)    # ...and not a raw crowd
+        self.assertEqual(by_cat[0]["dontcare"], 0)   # normal GT
+        self.assertEqual(by_cat[0]["iscrowd"], 0)
 
     def test_iscrowds_not_ignored_keeps_all_gt(self):
         # With ignore_iscrowds=False the crowd-class GT is kept (as a normal GT).

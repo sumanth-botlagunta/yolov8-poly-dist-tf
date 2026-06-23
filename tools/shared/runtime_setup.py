@@ -1,4 +1,4 @@
-"""Shared runtime setup for offline tools (eval / export / continuous_eval).
+"""Shared runtime setup for offline tools (eval / export).
 
 The trainer (`scripts/run_train.py:_apply_runtime_config`) activates the global
 Keras mixed-precision policy from the experiment config before building the model.

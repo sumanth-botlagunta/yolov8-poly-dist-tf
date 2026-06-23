@@ -1,8 +1,10 @@
 """COCO-style detection evaluator.
 
-Wraps pycocotools to compute mAP, mAP50, AR, and F1@50 over accumulated
-prediction/GT batches.  All bounding boxes are expected in yxyx-normalized
-format from the model (matching the parser convention).
+Computes mAP, mAP50, AR, and F1@50 over accumulated prediction/GT batches using a
+single :class:`~eval.coco_eval_custom.COCOevalCustom` instance, so every detection
+metric shares one match table, crowd policy, and don't-care absorption pass. All
+bounding boxes are expected in yxyx-normalized format from the model (matching the
+parser convention).
 
 Classes:
     COCOEvaluator: Accumulates predictions + GT, computes mAP on evaluate().
@@ -17,6 +19,10 @@ from typing import Dict, List, Optional
 import numpy as np
 
 log = logging.getLogger(__name__)
+
+# Category ids treated as crowd regions by the project's crowd policy. Used as the
+# default ``iscrowds_labels`` when a caller does not supply its own list.
+DEFAULT_ISCROWD_LABELS = [6, 13, 24, 36, 37]
 
 
 class COCOEvaluator:
@@ -43,12 +49,27 @@ class COCOEvaluator:
         ignore_dontcare: bool = True,
         ignore_iscrowds: bool = False,
         iscrowds_labels: Optional[List[int]] = None,
+        find_best_score_thresh: bool = True,
+        score_thresh_step: float = 0.05,
+        f1_max_dets: int = 10,
     ):
+        # Every metric comes from one COCOevalCustom: mAP / mAP50 / AR100 from its
+        # precision/recall summary, and F1score50 from a confidence-threshold sweep
+        # (step 0.05) on the cumulative precision/recall with a hallucination-GT recall
+        # correction, at IoU=0.5 / area='all' / **maxDets=10**, macro-averaged over
+        # categories with a valid (>=0) bestF1.  The GT-build policy is exposed as
+        # flags: the defaults absorb dontcare regions and keep crowd GT; setting
+        # ``ignore_iscrowds`` instead drops crowd GT.  ``iscrowds_labels`` defaults to
+        # the project's crowd-policy category ids.
         self._num_classes    = num_classes
         self._H, self._W     = image_size[0], image_size[1]
         self._ignore_dontcare = ignore_dontcare
         self._ignore_iscrowds = ignore_iscrowds
-        self._iscrowds_labels = set(iscrowds_labels) if iscrowds_labels else set()
+        labels = iscrowds_labels if iscrowds_labels is not None else DEFAULT_ISCROWD_LABELS
+        self._iscrowds_labels = set(labels)
+        self._find_best_score_thresh = find_best_score_thresh
+        self._score_thresh_step = score_thresh_step
+        self._f1_max_dets       = f1_max_dets
         self._dt_anns: List[dict] = []
         self._gt_anns: List[dict] = []
         self._gt_imgs: List[dict] = []
@@ -56,8 +77,7 @@ class COCOEvaluator:
         # annotation with id=0 would be treated as unmatched.  Start at 1.
         self._img_id  = 1
         self._ann_id  = 1
-        self._ev50    = None
-        self._ev      = None   # full eval (all IoU thresholds)
+        self._ev      = None   # single COCOevalCustom (all IoU thresholds + F1 sweep)
 
     # ------------------------------------------------------------------
     # Accumulation
@@ -77,8 +97,9 @@ class COCOEvaluator:
 
         GT handling:
             is_crowd + class in iscrowds_labels → skip GT entirely (not a missed detection).
-            is_dontcare → iscrowd=1 in COCO: absorbs overlapping detections (IoU>0.5)
-                          without counting them as FP, but is itself not a TP.
+            is_dontcare → carried as a separate 'dontcare' field: absorbs overlapping
+                          detections (IoU>=0.5) without counting them as FP, but is
+                          itself not a TP, and is removed from the recall denominator.
         """
         import tensorflow as tf
 
@@ -107,9 +128,13 @@ class COCOEvaluator:
                 y1, x1, y2, x2 = [float(v) for v in groundtruths['bbox'][i, j]]
                 xywh = [x1 * W, y1 * H, (x2 - x1) * W, (y2 - y1) * H]
 
-                # dontcare → iscrowd=1: pycocotools absorbs overlapping detections
-                # without counting them as FP or TP
-                iscrowd_val = 1 if (self._ignore_dontcare and is_dc) else 0
+                # Carry dontcare as a SEPARATE field — NOT collapsed into iscrowd.
+                # COCOevalCustom keys dontcare absorption off ann['dontcare'] (IoU
+                # >= 0.5 fixed), while iscrowd stays = raw is_crowd for the crowd
+                # policy (COCOevalCustom._prepare additionally sets iscrowd=1 for
+                # categories in iscrowds_labels).
+                dontcare_val = 1 if is_dc else 0
+                iscrowd_val  = 1 if is_crowd else 0
 
                 self._gt_anns.append({
                     'id':          self._ann_id,
@@ -118,6 +143,7 @@ class COCOEvaluator:
                     'bbox':        xywh,
                     'area':        xywh[2] * xywh[3],
                     'iscrowd':     iscrowd_val,
+                    'dontcare':    dontcare_val,
                 })
                 self._ann_id += 1
 
@@ -143,29 +169,36 @@ class COCOEvaluator:
     def evaluate(self) -> Dict[str, float]:
         """Compute mAP and related metrics from accumulated data.
 
+        All metrics come from one :class:`COCOevalCustom`: mAP / mAP50 / AR100 from
+        its summary slots, F1score50 from the confidence-threshold sweep.
+
         Returns:
-            Dict with keys: mAP, mAP50, AR100, F1score50, and optionally
-            per_class_AP50 (dict str→float).
+            Dict with keys: mAP, mAP50, AR100, F1score50, precision50, recall50,
+            best_conf_thresh.
         """
         from pycocotools.coco import COCO
-        from pycocotools.cocoeval import COCOeval
 
         if not self._gt_anns:
             log.warning("COCOEvaluator.evaluate() called with no GT annotations.")
             return {'mAP': 0.0, 'mAP50': 0.0, 'AR100': 0.0, 'F1score50': 0.0,
                     'precision50': 0.0, 'recall50': 0.0, 'best_conf_thresh': 0.0}
 
+        from .coco_eval_custom import COCOevalCustom
+
         cats = [{'id': c, 'name': str(c)} for c in range(self._num_classes)]
+
+        # GT carries raw iscrowd (= is_crowd) plus a SEPARATE 'dontcare' field;
+        # COCOevalCustom absorbs dontcare at IoU>=0.5 via dtMatchesDc and sets
+        # iscrowd=1 for iscrowds_labels categories in _prepare.
         gt_dict = {
             'images':      self._gt_imgs,
             'annotations': self._gt_anns,
             'categories':  cats,
         }
 
-        # Clear any cached eval objects up front so an empty-detection early
+        # Clear any cached eval object up front so an empty-detection early
         # return below can't leave stale per-category metrics from a prior call.
         self._ev = None
-        self._ev50 = None
 
         coco_gt = COCO()
         with redirect_stdout(io.StringIO()):
@@ -179,36 +212,43 @@ class COCOEvaluator:
             return {'mAP': 0.0, 'mAP50': 0.0, 'AR100': 0.0, 'F1score50': 0.0,
                     'precision50': 0.0, 'recall50': 0.0, 'best_conf_thresh': 0.0}
 
-        # ---- Standard eval (IoU 0.50:0.95) ----
-        ev = COCOeval(coco_gt, coco_dt, 'bbox')
+        image_ids = [img['id'] for img in self._gt_imgs]
+
+        # ---- Single evaluator: full PR summary (IoU 0.50:0.95) + F1 sweep ----
+        ev = COCOevalCustom(
+            coco_gt, coco_dt, iouType='bbox',
+            find_best_score_thresh=self._find_best_score_thresh,
+            ignore_dontcare=self._ignore_dontcare,
+            ignore_iscrowds=self._ignore_iscrowds,
+            iscrowds_labels=sorted(self._iscrowds_labels) if self._iscrowds_labels else None,
+            iou_thresh_dontcare=0.5,
+            score_thresh_step=self._score_thresh_step,
+        )
+        ev.params.imgIds = image_ids
+        # Ensure the F1 maxDets slot exists in params.maxDets (sorted), as the F1
+        # readout selects the slot whose value == f1_max_dets.
+        ev.params.maxDets = sorted(set(list(ev.params.maxDets) + [self._f1_max_dets]))
         with redirect_stdout(io.StringIO()):
             ev.evaluate()
-            ev.accumulate()
-            ev.summarize()  # keep inside redirect: still populates ev.stats
-        self._ev = ev   # keep for per_category_full_metrics()
+            ev.accumulate(find_best_score_thresh=self._find_best_score_thresh)
+            ev.summarize()  # fills ev.stats (12 COCO slots + F1@.5 in slot 12)
+
+        self._ev = ev   # keep for per_category_* / metrics_tables()
 
         map_val   = float(ev.stats[0])
         map50_val = float(ev.stats[1])
         ar100_val = float(ev.stats[8])
+        f1_50     = float(ev.stats[12])
 
-        # ---- F1@50: separate eval at IoU=0.5 only ----
-        ev50 = COCOeval(coco_gt, coco_dt, 'bbox')
-        ev50.params.iouThrs = np.array([0.5])
-        with redirect_stdout(io.StringIO()):
-            ev50.evaluate()
-            ev50.accumulate()
-
-        f1_50, best_thresh = self._peak_f1(ev50)
-        self._ev50 = ev50  # keep for per_category_ap50() / per_category_full_metrics()
-
-        # Mean precision/recall at each class's peak-F1 operating point, averaged over
-        # the SAME classes F1score50 uses (those with at least one valid PR point —
-        # `valid=True`), so the three scalars share a denominator and are mutually
-        # consistent (mean of per-category f1 == F1score50).
+        # Mean precision/recall at each class's best-F1 operating point, averaged over
+        # the SAME categories F1score50 uses (valid bestF1 >= 0), so the three scalars
+        # share a denominator (mean of per-category bestF1 == F1score50).
         best = self.per_category_best_f1()
         valid_best = [b for b in best if b.get('valid', True)]
         prec_50 = float(np.mean([b['precision'] for b in valid_best])) if valid_best else 0.0
         rec_50  = float(np.mean([b['recall']    for b in valid_best])) if valid_best else 0.0
+        best_thresh = (
+            float(np.mean([b['conf_threshold'] for b in valid_best])) if valid_best else 0.0)
 
         return {
             'mAP':              map_val,
@@ -222,13 +262,15 @@ class COCOEvaluator:
 
     def per_category_ap50(self) -> Dict[int, float]:
         """Per-category AP@50.  Call after evaluate()."""
-        ev50 = getattr(self, '_ev50', None)
-        if ev50 is None or ev50.eval is None:
+        ev = getattr(self, '_ev', None)
+        if ev is None or ev.eval is None:
             return {}
-        prec = ev50.eval['precision']  # [T=1, R=101, K, A=1, M=1]
+        prec = ev.eval['precision']  # [T, R, K, A, M]
+        t = np.where(0.5 == ev.params.iouThrs)[0][0]
+        m100 = [i for i, m in enumerate(ev.params.maxDets) if m == 100][0]
         result: Dict[int, float] = {}
-        for k, cat_id in enumerate(ev50.params.catIds):
-            p = prec[0, :, k, 0, 2]
+        for k, cat_id in enumerate(ev.params.catIds):
+            p = prec[t, :, k, 0, m100]
             valid = p[p >= 0]
             result[int(cat_id)] = float(valid.mean()) if valid.size > 0 else 0.0
         return result
@@ -236,7 +278,7 @@ class COCOEvaluator:
     def per_category_full_metrics(self) -> Dict[int, Dict[str, float]]:
         """Per-category full COCO metrics (12 per category) after evaluate().
 
-        Mirrors the old-codebase ``_retrieve_per_category_metrics`` output:
+        Reports the standard 12 COCO metrics per category:
             ap, ap50, ap75, ap_s, ap_m, ap_l  (precision-based)
             ar1, ar10, ar100, ar_s, ar_m, ar_l (recall-based)
 
@@ -248,8 +290,16 @@ class COCOEvaluator:
         if ev is None or ev.eval is None:
             return {}
 
-        prec = ev.eval['precision']   # [T=10, R=101, K, A=4, M=3]
-        rec  = ev.eval['recall']      # [T=10, K, A=4, M=3]
+        prec = ev.eval['precision']   # [T, R, K, A, M]
+        rec  = ev.eval['recall']      # [T, K, A, M]
+
+        # Resolve maxDets / IoU slots by value (params.maxDets may be augmented).
+        def _mIdx(v):
+            idx = [i for i, m in enumerate(ev.params.maxDets) if m == v]
+            return idx[0] if idx else len(ev.params.maxDets) - 1
+        m1, m10, m100 = _mIdx(1), _mIdx(10), _mIdx(100)
+        t50 = int(np.where(0.5 == ev.params.iouThrs)[0][0])
+        t75 = int(np.where(0.75 == ev.params.iouThrs)[0][0])
 
         def _mean(arr):
             v = arr[arr >= 0]
@@ -258,18 +308,18 @@ class COCOEvaluator:
         result: Dict[int, Dict[str, float]] = {}
         for k, cat_id in enumerate(ev.params.catIds):
             result[int(cat_id)] = {
-                'ap':    _mean(prec[:, :, k, 0, 2]),   # AP@50:95
-                'ap50':  _mean(prec[0,  :, k, 0, 2]),  # AP@50
-                'ap75':  _mean(prec[5,  :, k, 0, 2]),  # AP@75
-                'ap_s':  _mean(prec[:, :, k, 1, 2]),   # AP small
-                'ap_m':  _mean(prec[:, :, k, 2, 2]),   # AP medium
-                'ap_l':  _mean(prec[:, :, k, 3, 2]),   # AP large
-                'ar1':   _mean(rec[:,  k, 0, 0]),       # AR@1
-                'ar10':  _mean(rec[:,  k, 0, 1]),       # AR@10
-                'ar100': _mean(rec[:,  k, 0, 2]),       # AR@100
-                'ar_s':  _mean(rec[:,  k, 1, 2]),       # AR small
-                'ar_m':  _mean(rec[:,  k, 2, 2]),       # AR medium
-                'ar_l':  _mean(rec[:,  k, 3, 2]),       # AR large
+                'ap':    _mean(prec[:,   :, k, 0, m100]),  # AP@50:95
+                'ap50':  _mean(prec[t50, :, k, 0, m100]),  # AP@50
+                'ap75':  _mean(prec[t75, :, k, 0, m100]),  # AP@75
+                'ap_s':  _mean(prec[:,   :, k, 1, m100]),  # AP small
+                'ap_m':  _mean(prec[:,   :, k, 2, m100]),  # AP medium
+                'ap_l':  _mean(prec[:,   :, k, 3, m100]),  # AP large
+                'ar1':   _mean(rec[:,  k, 0, m1]),          # AR@1
+                'ar10':  _mean(rec[:,  k, 0, m10]),         # AR@10
+                'ar100': _mean(rec[:,  k, 0, m100]),        # AR@100
+                'ar_s':  _mean(rec[:,  k, 1, m100]),        # AR small
+                'ar_m':  _mean(rec[:,  k, 2, m100]),        # AR medium
+                'ar_l':  _mean(rec[:,  k, 3, m100]),        # AR large
             }
         return result
 
@@ -277,61 +327,43 @@ class COCOEvaluator:
     # Per-category F1 / precision / recall tables (for the saved report)
     # ------------------------------------------------------------------
 
-    def _ev50_pr_arrays(self):
+    def _pr_arrays_at_50(self):
         """(precision, scores, recThrs) at IoU=0.5, area='all', maxDets=100.
 
         precision/scores are [R=101, K] (recall-point × class); recThrs is [101].
-        Same slice F1score50 is read from, so the report's mean F1 equals the
-        logged F1score50. Returns (None, None, None) if evaluate() hasn't run.
+        Returns (None, None, None) if evaluate() hasn't run.
         """
-        ev50 = getattr(self, '_ev50', None)
-        if ev50 is None or ev50.eval is None:
+        ev = getattr(self, '_ev', None)
+        if ev is None or ev.eval is None:
             return None, None, None
-        prec = ev50.eval['precision'][0, :, :, 0, 2]            # [101, K]
-        sc   = ev50.eval.get('scores')
-        scores = sc[0, :, :, 0, 2] if sc is not None else None   # [101, K]
-        return prec, scores, ev50.params.recThrs
+        t = int(np.where(0.5 == ev.params.iouThrs)[0][0])
+        m100 = [i for i, m in enumerate(ev.params.maxDets) if m == 100][0]
+        prec = ev.eval['precision'][t, :, :, 0, m100]          # [101, K]
+        sc   = ev.eval.get('scores')
+        scores = sc[t, :, :, 0, m100] if sc is not None else None   # [101, K]
+        return prec, scores, ev.params.recThrs
 
     def _gt_counts(self) -> Dict[int, Dict[str, int]]:
         """Per-category {num_gt, dontcare} from the accumulated GT annotations.
-        (iscrowd==1 marks dontcare here; raw crowd is filtered before accumulation.)"""
+        Dontcare is now a separate field (not collapsed into iscrowd)."""
         counts: Dict[int, Dict[str, int]] = {}
         for a in self._gt_anns:
             c = counts.setdefault(int(a['category_id']), {'num_gt': 0, 'dontcare': 0})
             c['num_gt'] += 1
-            if a.get('iscrowd'):
+            if a.get('dontcare'):
                 c['dontcare'] += 1
         return counts
 
     def per_category_best_f1(self) -> List[Dict[str, float]]:
-        """Per-category peak F1 with its precision / recall / conf threshold. After evaluate()."""
-        prec, scores, rec = self._ev50_pr_arrays()
-        if prec is None:
+        """Per-category best F1 (confidence-sweep) with its precision / recall /
+        conf threshold, at (IoU=0.5, area='all', maxDets=f1_max_dets). Categories
+        with no valid bestF1 are flagged ``valid=False`` so the macro means exclude
+        them — matching F1score50. After evaluate()."""
+        ev = getattr(self, '_ev', None)
+        if ev is None or not getattr(ev, 'eval', None):
             return []
-        out = []
-        for k, cat in enumerate(self._ev50.params.catIds):
-            p = prec[:, k]
-            valid = p >= 0
-            if not valid.any():
-                # No valid PR point (a class with GT but no detections). Listed in the
-                # table for visibility but flagged ``valid=False`` so it is excluded from
-                # the macro means — matching ``_peak_f1`` / ``F1score50``.
-                out.append({'category': int(cat), 'f1': 0.0, 'precision': 0.0,
-                            'recall': 0.0, 'conf_threshold': 0.0, 'valid': False})
-                continue
-            pv, rv = p[valid], rec[valid]
-            denom = pv + rv
-            with np.errstate(divide='ignore', invalid='ignore'):
-                f1 = np.where(denom > 0, 2 * pv * rv / denom, 0.0)
-            i = int(f1.argmax())
-            thr = 0.0
-            if scores is not None:
-                sv = scores[:, k][valid]
-                thr = float(sv[i]) if sv[i] >= 0 else 0.0
-            out.append({'category': int(cat), 'f1': float(f1[i]),
-                        'precision': float(pv[i]), 'recall': float(rv[i]),
-                        'conf_threshold': thr, 'valid': True})
-        return out
+        return ev.per_category_best_f1(
+            iouThr=0.5, areaRng='all', maxDets=self._f1_max_dets)
 
     def per_category_conf_sweep(self, conf_grid) -> List[Dict[str, float]]:
         """Per-category F1/precision/recall at each confidence threshold. After evaluate().
@@ -340,11 +372,11 @@ class COCOEvaluator:
         highest-recall PR point whose score is still >= t (scores decrease as recall
         rises). Reads precision/recall there. Empty when t exceeds all scores.
         """
-        prec, scores, rec = self._ev50_pr_arrays()
+        prec, scores, rec = self._pr_arrays_at_50()
         if prec is None or scores is None:
             return []
         out = []
-        for k, cat in enumerate(self._ev50.params.catIds):
+        for k, cat in enumerate(self._ev.params.catIds):
             p = prec[:, k]
             s = scores[:, k]
             valid = p >= 0
@@ -390,7 +422,7 @@ class COCOEvaluator:
         return {
             'iou_thresh': 0.5,
             'area':       'all',
-            'max_dets':   100,
+            'max_dets':   self._f1_max_dets,
             'conf_grid':  list(conf_grid),
             'mean':       {'f1': _mean('f1'), 'precision': _mean('precision'),
                            'recall': _mean('recall')},
@@ -406,58 +438,4 @@ class COCOEvaluator:
         self._gt_imgs.clear()
         self._img_id = 1
         self._ann_id = 1
-        self._ev50   = None
         self._ev     = None
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _peak_f1(coco_eval):
-        """Mean peak-F1 and mean confidence threshold at peak-F1 over all classes.
-
-        Uses the ``scores`` tensor from COCOeval (shape [T, R, K, A, M]) which
-        stores the detection confidence at each precision-recall curve point.
-        This gives the actual NMS score threshold that achieves peak F1 —
-        matching the old-codebase behavior of reporting a usable confidence value.
-
-        Returns:
-            (mean_peak_f1: float, mean_conf_thresh: float)
-        """
-        precision = coco_eval.eval.get('precision')
-        if precision is None or precision.size == 0:
-            return 0.0, 0.0
-
-        prec   = precision[0, :, :, 0, 2]              # [101, num_classes]
-        scores = coco_eval.eval.get('scores')           # [T, R, K, A, M] or None
-        scores_arr = scores[0, :, :, 0, 2] if scores is not None else None  # [101, K]
-
-        class_f1     = []
-        class_thresh = []
-        for k in range(prec.shape[1]):
-            p     = prec[:, k]
-            r     = coco_eval.params.recThrs   # [101]
-            valid = p >= 0
-            if not valid.any():
-                continue
-            p_v, r_v = p[valid], r[valid]
-            denom = p_v + r_v
-            with np.errstate(divide='ignore', invalid='ignore'):
-                f1 = np.where(denom > 0, 2 * p_v * r_v / denom, 0.0)
-            peak_idx = int(f1.argmax())
-            class_f1.append(float(f1[peak_idx]))
-
-            # Confidence threshold at peak F1: look up from scores tensor.
-            # The scores array maps each PR curve point to the detection score
-            # that achieved that recall — this is the usable NMS threshold.
-            if scores_arr is not None:
-                s = scores_arr[:, k][valid]
-                thresh = float(s[peak_idx]) if s[peak_idx] >= 0 else 0.0
-            else:
-                thresh = 0.0
-            class_thresh.append(thresh)
-
-        mean_f1     = float(np.mean(class_f1))     if class_f1     else 0.0
-        mean_thresh = float(np.mean(class_thresh)) if class_thresh else 0.0
-        return mean_f1, mean_thresh

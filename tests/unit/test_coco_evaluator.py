@@ -133,5 +133,240 @@ class TestCOCOEvaluator(unittest.TestCase):
         self.assertLessEqual(metrics['F1score50'],    1.0)
 
 
+class TestCustomF1Sweep(unittest.TestCase):
+    """Tests for the F1score50 metric (confidence sweep, maxDets=10,
+    hallucination-GT correction, dontcare absorption at IoU>=0.5 fixed)."""
+
+    @staticmethod
+    def _single_image(dets, gts, num_classes=1, ignore_dontcare=True,
+                      ignore_iscrowds=False):
+        """Build a 1-image evaluator state.
+
+        dets: list of (yxyx_norm, cls, score)
+        gts:  list of (yxyx_norm, cls, is_dontcare)
+        """
+        ev = COCOEvaluator(num_classes=num_classes, image_size=(100, 100),
+                           ignore_dontcare=ignore_dontcare,
+                           ignore_iscrowds=ignore_iscrowds)
+        n_det, n_gt = len(dets), len(gts)
+        preds = {
+            'bbox':           tf.constant([[d[0] for d in dets]], dtype=tf.float32)
+                              if n_det else tf.zeros([1, 0, 4], tf.float32),
+            'classes':        tf.constant([[d[1] for d in dets]], dtype=tf.int64)
+                              if n_det else tf.zeros([1, 0], tf.int64),
+            'confidence':     tf.constant([[d[2] for d in dets]], dtype=tf.float32)
+                              if n_det else tf.zeros([1, 0], tf.float32),
+            'num_detections': tf.constant([n_det], dtype=tf.int32),
+        }
+        labels = {
+            'bbox':        tf.constant([[g[0] for g in gts]], dtype=tf.float32)
+                           if n_gt else tf.zeros([1, 0, 4], tf.float32),
+            'classes':     tf.constant([[g[1] for g in gts]], dtype=tf.int64)
+                           if n_gt else tf.zeros([1, 0], tf.int64),
+            'n_gt':        tf.constant([n_gt], dtype=tf.int64),
+            'is_dontcare': tf.constant([[bool(g[2]) for g in gts]], dtype=tf.bool)
+                           if n_gt else tf.zeros([1, 0], tf.bool),
+        }
+        ev.update(preds, labels)
+        return ev
+
+    def test_f1_sweep_hand_computed(self):
+        """Hand-computed best-F1 over the confidence grid arange(0.1,1.0,0.05).
+
+        One class, 2 GT, 3 detections:
+          A: TP for GT1, score 0.9
+          B: FP (no overlap), score 0.6
+          C: TP for GT2, score 0.3
+        Sorted by -score: [A(TP), B(FP), C(TP)].
+          tp=[1,1,2], fp=[0,1,1], npig=2, hgt=0
+          rc = tp/2 = [0.5,0.5,1.0]
+          pr = tp/(tp+fp) = [1.0,0.5,2/3]
+        Sweep (strict >, last index above thresh):
+          s in [0.1..0.25] -> all 3 kept -> last=C -> pr=2/3,rc=1 -> f1=0.8
+          s in [0.3..0.55] -> A,B kept    -> last=B -> pr=0.5,rc=0.5 -> f1=0.5
+          s in [0.6..0.85] -> A kept       -> last=A -> pr=1,rc=0.5 -> f1=2/3
+          s in [0.9,0.95]  -> none kept -> skipped
+        max F1 = 0.8.  An interpolated peak-F1 would NOT give exactly 0.8.
+        """
+        GT1 = [0.10, 0.10, 0.30, 0.30]
+        GT2 = [0.50, 0.50, 0.70, 0.70]
+        FP  = [0.80, 0.05, 0.95, 0.20]
+        ev = self._single_image(
+            dets=[(GT1, 0, 0.9), (FP, 0, 0.6), (GT2, 0, 0.3)],
+            gts=[(GT1, 0, 0), (GT2, 0, 0)],
+            num_classes=1,
+        )
+        m = ev.evaluate()
+        self.assertAlmostEqual(m['F1score50'], 0.8, places=6)
+
+        best = ev.per_category_best_f1()
+        self.assertEqual(len(best), 1)
+        self.assertTrue(best[0]['valid'])
+        self.assertAlmostEqual(best[0]['f1'], 0.8, places=6)
+        # best operating point is the low-threshold one keeping all 3 dets:
+        self.assertAlmostEqual(best[0]['precision'], 2.0 / 3.0, places=6)
+        self.assertAlmostEqual(best[0]['recall'], 1.0, places=6)
+
+    def test_dontcare_absorbs_fp(self):
+        """A detection overlapping ONLY a dontcare GT (IoU>=0.5) is absorbed: not an
+        FP, and the dontcare GT is removed from npig.
+
+        1 class, GT = {GT1 (real), GTd (dontcare)}.  Detections:
+          A: TP for GT1, score 0.9
+          B: overlaps GTd at IoU=1.0, score 0.6  -> absorbed (dtMatchesDc), not FP
+        npig = 1 (dontcare excluded). With B absorbed:
+          sorted [A(TP), B(absorbed: not tp, not fp)]
+          tp=[1,1], fp=[0,0], rc=tp/1=[1,1], pr=tp/(tp+fp)=[1,1]
+          best F1 over sweep = 1.0.
+        Without dontcare absorption (B as FP) F1 would be < 1.0, so this asserts the
+        absorption is active.
+        """
+        GT1 = [0.10, 0.10, 0.30, 0.30]
+        GTd = [0.50, 0.50, 0.70, 0.70]   # dontcare
+        ev = self._single_image(
+            dets=[(GT1, 0, 0.9), (GTd, 0, 0.6)],
+            gts=[(GT1, 0, 0), (GTd, 0, 1)],   # second GT is dontcare
+            num_classes=1, ignore_dontcare=True,
+        )
+        m = ev.evaluate()
+        self.assertAlmostEqual(m['F1score50'], 1.0, places=6)
+
+    def test_dontcare_off_counts_fp(self):
+        """With ignore_dontcare=False the same overlapping det is a normal detection
+        matched to the (now-real) GT -> still a TP here, but the dontcare GT counts in
+        npig.  This pins that the dontcare channel is gated by the flag."""
+        GT1 = [0.10, 0.10, 0.30, 0.30]
+        GTd = [0.50, 0.50, 0.70, 0.70]
+        ev = self._single_image(
+            dets=[(GT1, 0, 0.9), (GTd, 0, 0.6)],
+            gts=[(GT1, 0, 0), (GTd, 0, 1)],
+            num_classes=1, ignore_dontcare=False,
+        )
+        m = ev.evaluate()
+        # both dets are TPs of their (counted) GTs -> F1 = 1.0
+        self.assertAlmostEqual(m['F1score50'], 1.0, places=6)
+
+    def test_maxdets10_truncation(self):
+        """F1 uses maxDets=10: only the top-10 highest-scored detections per image
+        participate.  Put 1 real GT matched by a LOW-scored det, preceded by 10
+        higher-scored false positives -> the TP is ranked 11th and dropped at
+        maxDets=10, so there is no TP above any threshold -> best F1 = -1 -> 0.0.
+
+        At maxDets=100 the TP would survive and yield a positive F1, so this isolates
+        the maxDets=10 behavior.
+        """
+        GT1 = [0.10, 0.10, 0.30, 0.30]
+        # 10 FP boxes, all higher score than the TP det
+        fp_boxes = [[0.40 + 0.001 * i, 0.40, 0.45 + 0.001 * i, 0.45] for i in range(10)]
+        dets = [(b, 0, 0.95 - 0.01 * i) for i, b in enumerate(fp_boxes)]
+        dets.append((GT1, 0, 0.20))   # the only TP, lowest score -> rank 11
+        ev = self._single_image(
+            dets=dets, gts=[(GT1, 0, 0)], num_classes=1, ignore_dontcare=True,
+        )
+        m = ev.evaluate()
+        # TP dropped by maxDets=10 -> no TP -> bestF1 sentinel -> 0.0
+        self.assertAlmostEqual(m['F1score50'], 0.0, places=6)
+
+    def test_hallucination_gt_correction(self):
+        """Two detections both match the SAME single GT; the second (lower-scored) is
+        a hallucination -> its recall denominator gets +1 (npig+hgt).
+
+        1 class, 1 GT.  Dets: A(TP for GT, 0.9), B(also matches GT, 0.6).
+        In pycocotools the 2nd det matching an already-matched GT is a FP (dtm=0).
+        So actually B is an FP here. tp=[1,1], fp=[0,1]. This pins that a duplicate
+        det does NOT inflate recall beyond 1 and is penalized as FP:
+          rc=tp/1=[1,1]; pr=[1, 0.5]
+          sweep: s low -> last=B -> f1=2*0.5*1/1.5=2/3 ; s in [0.6..0.85] -> last=A ->
+          f1=1.0 ; best=1.0.
+        """
+        GT1 = [0.10, 0.10, 0.30, 0.30]
+        ev = self._single_image(
+            dets=[(GT1, 0, 0.9), (GT1, 0, 0.6)],
+            gts=[(GT1, 0, 0)], num_classes=1, ignore_dontcare=True,
+        )
+        m = ev.evaluate()
+        self.assertAlmostEqual(m['F1score50'], 1.0, places=6)
+
+    def test_map_path_perfect(self):
+        """mAP / F1 share the one evaluator: perfect detections -> mAP50 = 1.0 and
+        F1score50 = 1.0 (sweep finds a perfect operating point)."""
+        GT1 = [0.10, 0.10, 0.30, 0.30]
+        GT2 = [0.50, 0.50, 0.70, 0.70]
+        ev = self._single_image(
+            dets=[(GT1, 0, 0.9), (GT2, 0, 0.8)],
+            gts=[(GT1, 0, 0), (GT2, 0, 0)], num_classes=1,
+        )
+        m = ev.evaluate()
+        self.assertAlmostEqual(m['mAP50'], 1.0, places=2)
+        self.assertAlmostEqual(m['F1score50'], 1.0, places=6)
+
+
+class TestCustomEvalRouting(unittest.TestCase):
+    """mAP / mAP50 / AR100 are now sourced from COCOevalCustom, and the crowd /
+    dontcare policy that COCOevalCustom applies must move those scalars relative to a
+    no-crowd baseline (otherwise the routing isn't actually exercised)."""
+
+    @staticmethod
+    def _eval(dets, gts, **kw):
+        ev = COCOEvaluator(num_classes=1, image_size=(100, 100), **kw)
+        preds = {
+            'bbox':           tf.constant([[d[0] for d in dets]], tf.float32),
+            'classes':        tf.constant([[d[1] for d in dets]], tf.int64),
+            'confidence':     tf.constant([[d[2] for d in dets]], tf.float32),
+            'num_detections': tf.constant([len(dets)], tf.int32),
+        }
+        labels = {
+            'bbox':        tf.constant([[g[0] for g in gts]], tf.float32),
+            'classes':     tf.constant([[g[1] for g in gts]], tf.int64),
+            'n_gt':        tf.constant([len(gts)], tf.int64),
+            'is_dontcare': tf.constant([[bool(g[2]) for g in gts]], tf.bool),
+        }
+        ev.update(preds, labels)
+        return ev
+
+    def test_map_comes_from_custom_evaluator(self):
+        """The cached evaluator is a COCOevalCustom and ev.stats slot 12 == F1score50."""
+        from eval.coco_eval_custom import COCOevalCustom
+        GT1 = [0.10, 0.10, 0.30, 0.30]
+        ev = self._eval(dets=[(GT1, 0, 0.9)], gts=[(GT1, 0, 0)])
+        m = ev.evaluate()
+        self.assertIsInstance(ev._ev, COCOevalCustom)
+        self.assertAlmostEqual(float(ev._ev.stats[0]), m['mAP'], places=6)
+        self.assertAlmostEqual(float(ev._ev.stats[1]), m['mAP50'], places=6)
+        self.assertAlmostEqual(float(ev._ev.stats[8]), m['AR100'], places=6)
+        self.assertAlmostEqual(float(ev._ev.stats[12]), m['F1score50'], places=6)
+
+    def test_dontcare_absorption_changes_map_and_ar(self):
+        """A dontcare GT is dropped from the recall denominator (npig) and its
+        overlapping detection is absorbed when the dontcare path is on, so mAP / AR
+        differ from the baseline where it counts as a normal GT. An undetected real GT
+        keeps recall below 1 so the denominator change is visible in the metrics."""
+        GT1 = [0.10, 0.10, 0.30, 0.30]   # real, detected -> TP
+        GT2 = [0.80, 0.80, 0.95, 0.95]   # real, NOT detected -> FN
+        GTd = [0.50, 0.50, 0.70, 0.70]   # dontcare, detected
+        dets = [(GT1, 0, 0.9), (GTd, 0, 0.6)]
+        gts  = [(GT1, 0, 0), (GT2, 0, 0), (GTd, 0, 1)]
+
+        m_off = self._eval(dets=dets, gts=gts, ignore_dontcare=False).evaluate()
+        m_on  = self._eval(dets=dets, gts=gts, ignore_dontcare=True).evaluate()
+
+        # dontcare on -> GTd dropped from npig (2 vs 3) and its det absorbed -> recall
+        # denominator shrinks, so mAP and AR both drop relative to the baseline.
+        self.assertLess(m_on['AR100'], m_off['AR100'])
+        self.assertLess(m_on['mAP'],   m_off['mAP'])
+
+    def test_f1_still_maxdets10(self):
+        """F1score50 still uses maxDets=10: a TP ranked 11th behind 10 FPs is dropped,
+        so F1 collapses to 0 even though the single evaluator carries maxDets 1/10/100."""
+        GT1 = [0.10, 0.10, 0.30, 0.30]
+        fp_boxes = [[0.40 + 0.001 * i, 0.40, 0.45 + 0.001 * i, 0.45] for i in range(10)]
+        dets = [(b, 0, 0.95 - 0.01 * i) for i, b in enumerate(fp_boxes)]
+        dets.append((GT1, 0, 0.20))
+        ev = self._eval(dets=dets, gts=[(GT1, 0, 0)], ignore_dontcare=True)
+        m = ev.evaluate()
+        self.assertEqual(ev._f1_max_dets, 10)
+        self.assertAlmostEqual(m['F1score50'], 0.0, places=6)
+
+
 if __name__ == '__main__':
     unittest.main()

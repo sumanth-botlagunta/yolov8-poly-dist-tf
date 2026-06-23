@@ -110,7 +110,7 @@ raise with the weighting and update this entry.
 `tools/export_saved_model.py:serving_fn` accepts `float32 [0,1]` images and passes them straight to
 the model; the model has no internal `/255` layer (`models/yolo_v8.py`). Normalization is done by
 `train.task.normalize_images` (uint8 `[0,255]` → float32 `[0,1]`) on every in-repo call path
-(`validation_step`, `tools/eval.py`, `tools/continuous_eval.py`), and the serving contract mirrors
+(`validation_step`, `tools/eval.py`), and the serving contract mirrors
 that. Two reasons: (1) baking `/255` into the graph would double-normalize any caller that already
 follows the documented `[0,1]` contract (e.g. a pipeline reusing `normalize_images`), flooring all
 inputs near 0; (2) keeping the contract identical to eval avoids a train/serve skew. The TensorSpec is

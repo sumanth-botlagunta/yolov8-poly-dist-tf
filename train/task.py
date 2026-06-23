@@ -32,8 +32,8 @@ def normalize_images(images: tf.Tensor) -> tf.Tensor:
     """uint8 [0, 255] → float32 [0, 1]; float images pass through unchanged.
 
     The parsers emit uint8 (colour aug + /255 moved to the batch level), so
-    EVERY consumer that calls ``model(images)`` directly — ``validation_step``,
-    ``tools/eval.py``, ``tools/continuous_eval.py`` — must normalize through
+    EVERY consumer that calls ``model(images)`` directly — ``validation_step``
+    and ``tools/eval.py`` — must normalize through
     this one helper. Feeding raw uint8 to the model raises (float32 conv
     kernels); feeding 0–255 floats would silently produce garbage.
     """

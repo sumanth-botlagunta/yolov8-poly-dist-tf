@@ -1,6 +1,6 @@
 """Pinning test: offline tools apply the trainer's mixed-precision policy.
 
-eval / export / continuous_eval historically built the model without setting the
+The offline eval / export tools historically built the model without setting the
 global Keras precision policy, so a bfloat16-trained checkpoint computed in
 float32 (a different numerical path than training/serving). tools/shared/runtime_setup
 centralizes the policy application; this pins that:

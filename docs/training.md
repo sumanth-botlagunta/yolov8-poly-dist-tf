@@ -162,13 +162,16 @@ batch size (144). Together these allow diagnosing whether the bottleneck is in t
 the GPU.
 
 ## Continuous evaluation
-`tools/continuous_eval.py` watches an `output_dir` for new checkpoints and evaluates each one,
+`tools/eval.py --watch` polls an `output_dir` for new checkpoints and evaluates each one,
 appending results to `eval_log.jsonl`. Useful for monitoring a long training run without manual
 intervention:
 
 ```bash
-python -m tools.continuous_eval \
+python -m tools.eval --watch \
     --config  configs/experiments/yolo/yolov8_poly_dist.yaml \
     --watch_dir /path/to/output \
     --interval 300
 ```
+
+To evaluate every checkpoint already in a run directory once (instead of polling), use
+`--all` in place of `--watch`.

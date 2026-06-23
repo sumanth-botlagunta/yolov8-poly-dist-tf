@@ -1,9 +1,9 @@
 """Pins train.task.normalize_images — the single uint8→[0,1] gate for every
-direct model() caller (validation_step, tools/eval.py, tools/continuous_eval.py).
+direct model() caller (validation_step, tools/eval.py in all its modes).
 
-The parsers emit uint8 since the GPU-colour-aug change; both standalone eval
-tools crashed by feeding uint8 straight to float32 conv kernels. This helper is
-the fix — a regression here re-breaks /eval and /continuous-eval.
+The parsers emit uint8 since the GPU-colour-aug change; the standalone eval
+path crashed by feeding uint8 straight to float32 conv kernels. This helper is
+the fix — a regression here re-breaks /eval.
 """
 
 import numpy as np
