@@ -47,6 +47,66 @@ def _head_chan(cfg):
     return hc
 
 
+def _frozen_conv_bn(use_bias):
+    """Tiny conv-BN(-relu) graph frozen to constants, with non-trivial BN params."""
+    from tensorflow.python.framework.convert_to_constants import convert_variables_to_constants_v2
+    m = tf.keras.Sequential([
+        tf.keras.Input((16, 16, 3)),
+        tf.keras.layers.Conv2D(8, 3, padding="same", use_bias=use_bias),
+        tf.keras.layers.BatchNormalization(), tf.keras.layers.ReLU(),
+        tf.keras.layers.Conv2D(4, 3, padding="same", use_bias=use_bias),
+        tf.keras.layers.BatchNormalization(),
+    ])
+    m(tf.zeros((1, 16, 16, 3)))
+    rng = np.random.default_rng(0)
+    for l in m.layers:
+        if isinstance(l, tf.keras.layers.BatchNormalization):
+            l.set_weights([rng.uniform(0.5, 2.0, l.gamma.shape).astype("f"),
+                           rng.uniform(-1, 1, l.beta.shape).astype("f"),
+                           rng.uniform(-1, 1, l.moving_mean.shape).astype("f"),
+                           rng.uniform(0.2, 2.0, l.moving_variance.shape).astype("f")])
+
+    @tf.function
+    def f(x):
+        return m(x, training=False)
+    cf = f.get_concrete_function(tf.TensorSpec([1, 16, 16, 3], tf.float32))
+    return convert_variables_to_constants_v2(cf).graph.as_graph_def()
+
+
+def _run_graph(gd, in_name, out_name, x):
+    with tf.Graph().as_default() as g:
+        tf.compat.v1.import_graph_def(gd, name="")
+        with tf.compat.v1.Session(graph=g) as s:
+            return s.run(g.get_tensor_by_name(out_name + ":0"),
+                         {g.get_tensor_by_name(in_name + ":0"): x})
+
+
+@pytest.mark.parametrize("use_bias", [False, True])
+def test_batch_norm_folded_into_conv(use_bias):
+    """_fold_batch_norms removes every FusedBatchNorm* AND is numerically identical.
+
+    A standalone FusedBatchNormV3 left in the exported graph quantizes badly — its
+    per-channel scale gets forced into one per-tensor int8 activation encoding (the
+    "merge 1 encoding ... found 0" converter warning), crushing narrow-range channels.
+    The exporter folds BN into the preceding conv's per-channel weights instead. This
+    pins both invariants the fix relies on: no BN op survives, and the float output is
+    unchanged — so quantization sees a clean Conv2D+BiasAdd it can quantize per-channel.
+    """
+    gd = _frozen_conv_bn(use_bias)
+    in_name = [n.name for n in gd.node if n.op == "Placeholder"][0]
+    out_name = [n.name for n in gd.node if n.op in ("Relu", "FusedBatchNormV3")][-1]
+    assert sum(1 for n in gd.node if n.op in ed._BN_OPS) > 0          # precondition: BN present
+    x = np.random.default_rng(1).standard_normal((1, 16, 16, 3)).astype("f")
+    before = _run_graph(gd, in_name, out_name, x)
+
+    gd2, folded, skipped = ed._fold_batch_norms(gd)
+    out2 = out_name if out_name in {n.name for n in gd2.node} else out_name + "/fold_ba"
+    assert sum(1 for n in gd2.node if n.op in ed._BN_OPS) == 0        # no BN survives
+    assert (folded, skipped) == (2, 0)
+    after = _run_graph(gd2, in_name, out2, x)
+    assert np.abs(before - after).max() < 1e-4                        # numerically identical
+
+
 def test_concat_levels_shape_and_order(full_model):
     """_concat_levels flattens row-major and concatenates levels 3→4→5."""
     model, cfg = full_model
