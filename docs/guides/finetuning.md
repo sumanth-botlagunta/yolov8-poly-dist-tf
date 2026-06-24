@@ -3,7 +3,7 @@
 Fine-tuning = take a model that is already trained and **adapt it to new/more data** with a gentle
 schedule, *without* throwing away what it learned. You control how much it moves with the
 **learning rate** (and augmentation), and — optionally — by **freezing** whole modules so they
-don't update at all (§3).
+don't update at all (Section 3).
 
 ## First: which workflow do you actually want?
 
@@ -30,7 +30,7 @@ So: **same task, want it better on new data → `finetune_from`.** Different tas
 ## 1. Start the fine-tune
 
 Make a fine-tune config first: **copy your tier YAML** (e.g. `yolov8_poly_dist.yaml`) to
-`yolov8_poly_dist_finetune.yaml`, apply the §2 LR/epoch changes, and point its `train_data` at the
+`yolov8_poly_dist_finetune.yaml`, apply the Section 2 LR/epoch changes, and point its `train_data` at the
 new data. Then:
 
 ```bash
@@ -150,7 +150,7 @@ lower, the LR was too high or the new data is hurting.
 
 ## Pitfalls
 
-- **Freeze vs LR.** To limit drift you can freeze modules (§3) and/or use a low LR + short
+- **Freeze vs LR.** To limit drift you can freeze modules (Section 3) and/or use a low LR + short
   schedule + gentle aug. Freezing everything is rejected — keep at least one module trainable.
 - **Don't reuse the source `output_dir`** — a dir with existing checkpoints auto-resumes *that* run
   and ignores `finetune_from`.
