@@ -138,9 +138,9 @@ hardcoded path exactly. Alternatives are additive.
 | `beta_1` / `beta_2` | 0.9 / 0.999 | Adam/AdamW moment coefficients (ignored by SGD). |
 | `momentum` / `momentum_start` | 0.937 / 0.8 | Nesterov momentum (warms from start → momentum). |
 | `weight_decay` | `0.0005` | Applied to weight tensors (`kernel`) only, not biases/BN — per SGDTorch's three param groups. |
-| `warmup_steps` | `7164` | SGD momentum/bias warmup; BN/bias groups ramp DOWN from `smart_bias_lr` (design_register entry 2). |
+| `warmup_steps` | `≈3 × steps_per_loop` | SGD momentum/bias warmup (≈3 epochs of steps); BN/bias groups ramp DOWN from `smart_bias_lr` (design_register entry 2). Set explicitly in the experiment YAML for the run's steps/epoch. |
 | `learning_rate.type` | `cosine` | Schedule: `cosine` (default) · `linear` · `step` · `polynomial` · `constant`. |
-| `learning_rate.initial_learning_rate` / `decay_steps` / `alpha` | 0.01 / 635400 / 0.01 | `decay_steps` should equal `steps_per_loop × epochs` (`run_train` warns otherwise). |
+| `learning_rate.initial_learning_rate` / `decay_steps` / `alpha` | 0.01 / `steps_per_loop × epochs` / 0.01 | `decay_steps` should equal `steps_per_loop × epochs`, i.e. `train_steps // grad_accum_steps` (`run_train` warns otherwise). |
 | `learning_rate.step_size` / `gamma` / `power` | 30000 / 0.1 / 1.0 | Used by `step` (gamma every step_size) / `polynomial` (power) schedules. |
 | `learning_rate.warmup_steps` / `warmup_init_lr` | 0 / 0.0 | Optional linear LR-warmup wrapper (0 = off; SGD keeps its own momentum/bias warmup). |
 | `ema.average_decay` / `dynamic_decay` | 0.9999 / `true` | EMA `min(0.9999, (1+step)/(10+step))`. EMA weights are swapped in for eval. |

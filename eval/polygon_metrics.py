@@ -204,7 +204,6 @@ class PolygonEvaluator:
         self._mask_ious:  List[float] = []
         self._n_matched   = 0
         self._n_gt_total  = 0
-        self._n_dt_total  = 0
 
     # ------------------------------------------------------------------
     # Accumulation
@@ -221,6 +220,8 @@ class PolygonEvaluator:
         n_gt:             np.ndarray,
         gt_is_crowd:      Optional[np.ndarray] = None,
         gt_is_dontcare:   Optional[np.ndarray] = None,
+        pred_classes:     Optional[np.ndarray] = None,
+        gt_classes:       Optional[np.ndarray] = None,
     ) -> None:
         """Accumulate one batch.
 
@@ -237,13 +238,17 @@ class PolygonEvaluator:
             gt_is_crowd:    [B, max_gt] bool, optional. Crowd GT are excluded from
                             both the recall denominator and matching (COCO semantics).
             gt_is_dontcare: [B, max_gt] bool, optional. Excluded like crowd GT.
+            pred_classes:   [B, max_det] int, optional. gt_classes: [B, max_gt] int,
+                            optional. When BOTH are given, matching is class-aware (a
+                            detection may only match a GT of the same class — COCO
+                            semantics), so cross-class bbox overlaps no longer inflate
+                            poly_recall50. When omitted, matching is class-agnostic
+                            (legacy behaviour, preserved for callers without classes).
         """
         B = int(num_detections.shape[0])
         for i in range(B):
             n_det = int(num_detections[i])
             n_g   = int(n_gt[i])
-
-            self._n_dt_total += n_det
 
             if n_g == 0 or n_det == 0:
                 # Still count valid (non-crowd/dontcare) GT toward the denominator.
@@ -262,7 +267,14 @@ class PolygonEvaluator:
             gt_keep_idx = np.nonzero(keep_gt)[0]                # map filtered→original
             iou_mat = _bbox_iou_matrix(db, gb)         # [n_det, n_keep]
 
-            matched_dt = set()
+            # Class-aware matching (COCO semantics) when classes are provided: a
+            # detection may only match a GT of the SAME class. Without this a class-A
+            # detection overlapping a class-B GT at IoU>=0.5 was counted as a recall.
+            class_aware = pred_classes is not None and gt_classes is not None
+            if class_aware:
+                dc = np.asarray(pred_classes[i, :n_det])           # [n_det]
+                gc = np.asarray(gt_classes[i,  :n_g])[keep_gt]     # [n_keep]
+
             matched_gt = set()
 
             # Greedy match by descending score. For each detection pick the best GT
@@ -274,9 +286,10 @@ class PolygonEvaluator:
                 ious = iou_mat[di].copy()
                 if matched_gt:
                     ious[list(matched_gt)] = -1.0
+                if class_aware:
+                    ious[gc != dc[di]] = -1.0     # only same-class GT are matchable
                 best_gt = int(ious.argmax())
                 if ious[best_gt] >= self._iou_thresh:
-                    matched_dt.add(di)
                     matched_gt.add(best_gt)
                     self._n_matched += 1
 
@@ -358,4 +371,3 @@ class PolygonEvaluator:
         self._mask_ious.clear()
         self._n_matched  = 0
         self._n_gt_total = 0
-        self._n_dt_total = 0

@@ -1,6 +1,7 @@
 """Task-Aligned Learning loss with polygon and distance extensions.
 
-Loss components and gains (from experiment_config.yaml):
+Loss components and gains (from the experiment YAML, e.g.
+configs/experiments/yolo/yolov8_poly_dist.yaml):
     iou_gain:        7.5   CIoU box loss
     dfl_gain:        1.5   Distribution Focal Loss (DFL) for box regression
     cls_gain:        0.5   BCE classification loss

@@ -459,8 +459,15 @@ class YoloV8Trainer:
                 )
                 # Losses are already normalized by the GLOBAL object count, so each
                 # replica returns its share; SUM-reduce reconstructs the full scalar.
+                # The norm DIAGNOSTICS are not per-replica shares: weight_norm is
+                # identical on every (mirrored) replica and grad_norm is a per-replica
+                # global-norm, so SUM would report ~N× the true value — MEAN gives the
+                # correct single-device-equivalent diagnostic.
+                _mean_keys = ('grad_norm', 'weight_norm')
                 return {
-                    k: _strategy.reduce(tf.distribute.ReduceOp.SUM, v, axis=None)
+                    k: _strategy.reduce(
+                        tf.distribute.ReduceOp.MEAN if k in _mean_keys
+                        else tf.distribute.ReduceOp.SUM, v, axis=None)
                     for k, v in per_replica.items()
                 }
         else:

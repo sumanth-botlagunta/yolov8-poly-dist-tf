@@ -66,7 +66,7 @@ instead of relearning.
 | schedule (`learning_rate.type`) | `cosine` | `cosine` (decay to a small floor), or `constant` for a short run |
 | `decay_steps` | `steps_per_loop × 300` | **`steps_per_loop × <your epochs>`** (so cosine hits its floor at the end) |
 | `alpha` (cosine floor fraction) | `0.01` | `0.01` |
-| `optimizer.sgd_torch.warmup_steps` | `~6354` (3 epochs) | **small** (e.g. ≤1 epoch) — a long warmup eats a short run |
+| `optimizer.sgd_torch.warmup_steps` | `≈3 × steps_per_loop` (3 epochs) | **small** (e.g. ≤1 epoch) — a long warmup eats a short run |
 
 Recommended fine-tune block (≈20 epochs example):
 ```yaml

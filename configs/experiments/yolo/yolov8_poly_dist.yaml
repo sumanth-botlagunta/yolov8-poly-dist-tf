@@ -1,6 +1,6 @@
 # Experiment: yolov8_poly_dist
 # Full pipeline: bbox + cls + polygon (24-vertex PolyYOLO) + distance estimation
-# Source of truth: docs/experiment_config.yaml
+# This experiment YAML is itself the authoritative hyperparameter reference.
 
 task:
   init_checkpoint: initial_checkpoint_folder/ckpt-920304
