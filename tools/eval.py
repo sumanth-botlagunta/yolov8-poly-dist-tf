@@ -295,7 +295,7 @@ def _run_single(config, task):
         log.info("Metrics written to %s", metrics_path)
 
         # Same per-validation report the trainer drops next to checkpoints: best F1 /
-        # precision / recall per category over the 0.05 conf grid, mean line, and the
+        # precision / recall per category over the 0.10 conf grid, mean line, and the
         # full sweep -> <base>.json + <base>.txt.
         from eval import metrics_report
         base = os.path.basename(FLAGS.checkpoint.rstrip('/')) + '_val'

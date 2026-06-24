@@ -328,8 +328,11 @@ class COCOEvaluator:
     # ------------------------------------------------------------------
 
     def _pr_arrays_at_50(self):
-        """(precision, scores, recThrs) at IoU=0.5, area='all', maxDets=100.
+        """(precision, scores, recThrs) at IoU=0.5, area='all', maxDets=f1_max_dets.
 
+        Uses the SAME detection budget (``f1_max_dets``, default 10) as the headline
+        F1score50 and the per-category best-F1 table, so the all-conf sweep table is
+        consistent with them (it previously read at maxDets=100 and silently disagreed).
         precision/scores are [R=101, K] (recall-point × class); recThrs is [101].
         Returns (None, None, None) if evaluate() hasn't run.
         """
@@ -337,10 +340,10 @@ class COCOEvaluator:
         if ev is None or ev.eval is None:
             return None, None, None
         t = int(np.where(0.5 == ev.params.iouThrs)[0][0])
-        m100 = [i for i, m in enumerate(ev.params.maxDets) if m == 100][0]
-        prec = ev.eval['precision'][t, :, :, 0, m100]          # [101, K]
+        md = [i for i, m in enumerate(ev.params.maxDets) if m == self._f1_max_dets][0]
+        prec = ev.eval['precision'][t, :, :, 0, md]          # [101, K]
         sc   = ev.eval.get('scores')
-        scores = sc[t, :, :, 0, m100] if sc is not None else None   # [101, K]
+        scores = sc[t, :, :, 0, md] if sc is not None else None   # [101, K]
         return prec, scores, ev.params.recThrs
 
     def _gt_counts(self) -> Dict[int, Dict[str, int]]:
@@ -398,7 +401,9 @@ class COCOEvaluator:
         machine-readable structure callers serialize to JSON / csv / xlsx / txt.
         """
         if conf_grid is None:
-            conf_grid = [round(float(x), 2) for x in np.arange(0.05, 1.0, 0.05)]
+            # Floor 0.10 to match the best-F1 sweep grid (COCOevalCustom._scoreTreshCand);
+            # below that is too low-confidence to be a useful operating point.
+            conf_grid = [round(float(x), 2) for x in np.arange(0.1, 1.0, 0.05)]
         best  = self.per_category_best_f1()
         sweep = self.per_category_conf_sweep(conf_grid)
         ap    = self.per_category_full_metrics()

@@ -118,7 +118,7 @@ Distance loss: L1 on log-scale, masked to samples where `gt_distance > -10.0` (i
 
 SGD with Nesterov momentum (0.937), cosine LR decay (initial=0.01, alpha=0.01) over the full `train_steps` (`optimizers/sgd_warmup.py`). EMA with dynamic decay: `min(0.9999, (1+step)/(10+step))` (`optimizers/ema.py`). EMA weights are swapped in for evaluation and swapped back afterward.
 
-The optimizer and LR schedule are **config-selectable** via a registry (`optimizers/factory.py`): `optimizer.type` = `sgd_torch` (default) / `adamw` / `adam`; `learning_rate.type` = `cosine` (default) / `linear` / `step` / `polynomial` / `constant`, plus an optional linear LR-warmup. Defaults reproduce the SGD+cosine path byte-identically. Gradient clipping is `task.gradient_clip_norm` (SGD clips per-call; keras optimizers set `global_clipnorm`).
+The optimizer and LR schedule are **config-selectable** via a registry (`optimizers/factory.py`): `optimizer.type` = `sgd` (default; `sgd_torch` is an accepted alias) / `adamw` / `adam`; `learning_rate.type` = `cosine` (default) / `linear` / `step` / `polynomial` / `constant`, plus an optional linear LR-warmup. Defaults reproduce the SGD+cosine path byte-identically. Gradient clipping is `task.gradient_clip_norm` (SGD clips per-call; keras optimizers set `global_clipnorm`).
 
 ## Actual File Layout
 
@@ -148,12 +148,18 @@ optimizers/
   sgd_warmup.py        # SGD + Nesterov + momentum warmup + cosine decay
 eval/
   coco_metrics.py      # COCO mAP (is_crowd / is_dontcare handling)
+  coco_eval_custom.py  # COCOevalCustom: F1score50 confidence sweep + dontcare absorption
   polygon_metrics.py   # polygon IoU metrics
   distance_metrics.py  # distance error metrics
+  metrics_report.py    # ckpt-format report writer (best-conf + all-conf tables)
+  val_history.py       # val_history.jsonl store (append/load/select/best)
+  failure_mining.py    # FailureCollector (worst-K fp/fn/lowiou per class)
 train/
   task.py              # YoloV8Task (build, loss, metrics, train/val steps)
   trainer.py           # YoloV8Trainer (custom loop, EMA swap, checkpoints, signals)
   viz_utils.py         # box/polygon overlay rendering for TensorBoard image summaries
+  metric_meta.py       # TensorBoard scalar names + formula descriptions
+  run_metadata.py      # run provenance (git/env/datasets) -> run_metadata.json
 configs/
   model_config.py      # config dataclasses
   yaml_loader.py       # YAML → dataclasses (hand-rolled mapping; no dacite)
@@ -179,7 +185,7 @@ tools/                 # core workflow tools (top level)
     runtime_setup.py ckpt_loading.py checkpoint_weight_map.py
     legacy_weight_map_frozen.py _table.py compare_checkpoints.py
   pipeline/            # data-pipeline diagnostics + dataset re-encoding
-    diagnose_pipeline.py reencode_tfds_672.py export_val_metrics.py
+    diagnose_pipeline.py reencode_tfds_672.py export_val_metrics.py bench_mosaic_device.py
 tests/                 # unit/ integration/ smoke/ + component tests
 ```
 

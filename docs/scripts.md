@@ -145,7 +145,7 @@ bash tools/cloud_diagnose.sh configs/experiments/yolo/yolov8_poly_dist.yaml
 
 ### `python -m tools.pipeline.reencode_tfds_672` — build pre-resized 672² datasets
 One-time: stores `<name>_672` TFDS copies (672² JPEG) to cut decode cost.
-- `--datasets` (req) — TFDS name(s). `--data_dir` — TFDS root. `--size` (default 672). `--splits`.
+- `--datasets` (req) — TFDS name(s). `--data_dir` (req) — TFDS root. `--size` (default 672). `--splits`.
 ```bash
 python -m tools.pipeline.reencode_tfds_672 --datasets <tfds_name> --data_dir ~/tensorflow_datasets
 ```
@@ -174,7 +174,7 @@ python -m tools.val_report_txt /run/ckpt-99000_val.json --best-only
 
 ### `python -m tools.pipeline.export_val_metrics` — export validation metrics to xlsx/parquet
 Reads `val_history.jsonl` (or a single report JSON) and writes xlsx/csv/parquet for trend analysis.
-- `--input` (req) — a `val_history.jsonl`, a run dir containing it, or a single report JSON. `--out_dir`, `--basename`.
+- `--input` (req) — a `val_history.jsonl`, a run dir containing it, or a single report JSON. `--out_dir` (req), `--basename`.
 - `--formats` — comma list (`xlsx,csv,parquet`). `--aggregate` — combine all epochs into one table.
 ```bash
 python -m tools.pipeline.export_val_metrics --input /run/val_history.jsonl --aggregate --formats xlsx,parquet

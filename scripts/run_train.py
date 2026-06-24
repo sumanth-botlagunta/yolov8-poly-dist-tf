@@ -96,17 +96,26 @@ def _validate_config(config, output_dir: str) -> None:
             "runs exactly steps_per_loop steps per epoch — without it epochs have "
             "no defined length."
         )
-    # decay_steps is an EXPLICIT YAML value (not derived); if it drifts from
-    # train_steps the cosine schedule ends early or never anneals. Warn loudly.
+    # decay_steps is an EXPLICIT YAML value (not derived); if it drifts from the
+    # number of optimizer updates the cosine schedule ends early or never anneals.
+    # The LR schedule advances once per OPTIMIZER UPDATE (optimizer.iterations),
+    # which with gradient accumulation (grad_accum_steps=N) is one update every N
+    # micro-steps — so it should anneal over train_steps // N updates, NOT the
+    # micro-step count. At N=1 expected_decay == train_steps (unchanged). Warn loudly.
+    n_accum = max(1, getattr(trainer, 'grad_accum_steps', 1))
     decay = trainer.optimizer_config.learning_rate.decay_steps
-    if trainer.train_steps > 0 and decay != trainer.train_steps:
+    expected_decay = trainer.train_steps // n_accum
+    if trainer.train_steps > 0 and decay != expected_decay:
+        accum_note = "" if n_accum == 1 else f" // grad_accum_steps {n_accum}"
         logging.warning(
-            "LR decay_steps (%d) != train_steps (%d = steps_per_loop %d × epochs %d). "
-            "The cosine schedule will %s. Set decay_steps to train_steps in the YAML "
-            "unless this is intentional.",
-            decay, trainer.train_steps, trainer.steps_per_loop, trainer.train_epochs,
-            "reach its floor before training ends" if decay < trainer.train_steps
+            "LR decay_steps (%d) != optimizer updates (%d = train_steps %d%s, "
+            "steps_per_loop %d × epochs %d). The cosine schedule will %s. Set "
+            "decay_steps to %d in the YAML unless this is intentional.",
+            decay, expected_decay, trainer.train_steps, accum_note,
+            trainer.steps_per_loop, trainer.train_epochs,
+            "reach its floor before training ends" if decay < expected_decay
             else "never reach its floor",
+            expected_decay,
         )
 
     # --- dataset directories ---

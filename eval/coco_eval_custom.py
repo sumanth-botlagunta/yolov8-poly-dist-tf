@@ -60,7 +60,10 @@ class COCOevalCustom(COCOeval):
         self._find_best_score_thresh = find_best_score_thresh
         self._ignore_dontcare = ignore_dontcare
         self._iou_thresh_dontcare = iou_thresh_dontcare
-        # arange(0.1, 1.0, step) -> [0.1, 0.15, ..., 0.95] for step=0.05
+        # arange(0.1, 1.0, step) -> [0.10, 0.15, ..., 0.95] for step=0.05. Floor is
+        # 0.10: anything below is too low-confidence to be a useful operating point.
+        # The report's all-conf grid (coco_metrics.metrics_tables) uses the SAME 0.10
+        # floor so the best-conf table and the all-conf sweep agree.
         self._scoreTreshCand = np.arange(0.1, 1.0, score_thresh_step)
         self._ignore_iscrowds = ignore_iscrowds
         self._iscrowds_labels = (
@@ -147,12 +150,16 @@ class COCOevalCustom(COCOeval):
                 if len(self.ious[imgId, catId]) > 0
                 else self.ious[imgId, catId])
 
-        # NOTE: after the gt[gtind] reorder, gt is already sorted; the dontcare/
-        # nondc split here indexes into the *reordered* gt list (it iterates
-        # `for i in gtind` over the reordered list).
+        # After the gt[gtind] reorder, gt is sorted ignore-LAST. The dontcare/nondc
+        # split indexes into that *reordered* list, so it must iterate ascending
+        # positions `range(len(gt))` — NOT `for i in gtind` (the permutation's order),
+        # which would scramble the ignore-last ordering the matching loop's early-out
+        # at `gtIg[m]==0 and gtIg[gind]==1` relies on (an ignore GT visited before a
+        # real GT could absorb a detection that should match the real GT). Matches
+        # stock pycocotools' `for gind, g in enumerate(gt)`.
         gtind_nondc = []
         gtind_dc = []
-        for i in gtind:
+        for i in range(len(gt)):
             if int(gt[i]['dontcare']) == 1:
                 gtind_dc.append(i)
             else:
