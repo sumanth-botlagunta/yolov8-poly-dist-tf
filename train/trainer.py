@@ -1018,6 +1018,16 @@ class YoloV8Trainer:
 
         with self._tb_writer.as_default():
             for k, v in val_metrics.items():
+                # Per-category metrics arrive as `cls/<NN_name>/<metric>`. Route them to a
+                # SEPARATE top-level group keyed by metric — `per_class/<metric>/<NN_name>` —
+                # so TensorBoard groups all classes of one metric together and they no longer
+                # flood the headline `val/` group. `key=k` keeps the per-class tooltip.
+                if k.startswith('cls/'):
+                    parts = k.split('/')
+                    if len(parts) == 3:
+                        _, cls_name, metric = parts
+                        self._scalar(f'per_class/{metric}/{cls_name}', v, step=step, key=k)
+                        continue
                 self._scalar(f'val/{k}', v, step=step, key=k)
             for k, v in epoch_losses.items():
                 self._scalar(f'train/mean/{k}', v, step=step, key=k)

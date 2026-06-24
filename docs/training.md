@@ -158,15 +158,27 @@ The three polygon loss components are logged separately:
 
 These are useful for diagnosing which polygon component is not converging.
 
-## TensorBoard tag names & descriptions
+## TensorBoard structure & tag names
 Every scalar is written with a markdown `description` (full name + formula) shown in the
-TensorBoard tooltip — the registry lives in `train/metric_meta.py`. Per-category detection
-metrics are tagged `val/cls/<NN>_<class-name>/<metric>` (e.g. `val/cls/35_label_35/ap50`): the
-zero-padded index keeps TensorBoard's ordering numeric while the class name (from
-`configs/class_map.py:DETECTION_CLASSES`) makes the tag readable without a lookup. Fill in real
-names in `DETECTION_CLASSES` and they propagate to the tags and the image-overlay labels.
+TensorBoard tooltip — the registry lives in `train/metric_meta.py`. Scalars are grouped into
+clearly-separated top-level sections so the headline metrics aren't buried under the per-class flood:
 
-`train/data_wait_ms` logs the time the training loop blocked waiting for the next batch.
+| Group | Contents |
+|-------|----------|
+| `train/` | per-step loss components, `lr`, `momentum`, `ema_decay`, **`grad_norm`** (pre-clip global gradient norm), `step_time_ms`, `data_wait_ms`, `throughput_img_per_s`. `train/mean/<k>` = epoch means. |
+| `val/` | the **headline** validation metrics only: `mAP`, `mAP50`, `AR100`, `F1score50`, `precision50`, `recall50`, polygon + distance metrics. |
+| `per_class/<metric>/<NN_name>` | per-category detection metrics, grouped **by metric** so all classes of one metric (e.g. `per_class/ap50/*`) sit together — out of the `val/` group. |
+| `epoch/` | per-epoch timing (`time_s`, `val_time_s`, `eta_s`), `throughput`, `best_<metric>`. |
+| `system/` | `gpu_mem_gb`, `gpu_mem_peak_gb`. |
+
+The per-class tag's zero-padded index (`<NN>_<name>`, from `configs/class_map.py:DETECTION_CLASSES`)
+keeps TensorBoard's ordering numeric while the class name makes it readable; fill in real names in
+`DETECTION_CLASSES` and they propagate to the tags and the image-overlay labels. Image summaries
+are `train/augmentations`, `val/predictions`, `val/ground_truth`.
+
+`grad_norm` and `train/data_wait_ms` are the two most useful debugging scalars: a gradient-norm
+spike flags an unstable step/bad batch (and shows whether `gradient_clip_norm` is active), and a
+high data-wait means the pipeline is input-bound (the GPU is starved).
 `train/throughput_img_per_s` uses wall-clock time (compute + data wait) over the merged
 batch size (144). Together these allow diagnosing whether the bottleneck is in tf.data or on
 the GPU.

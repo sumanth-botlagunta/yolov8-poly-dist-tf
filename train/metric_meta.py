@@ -86,6 +86,9 @@ METRIC_DESCRIPTIONS = {
     "throughput_img_per_s": "**Throughput** — training images per second of WALL CLOCK "
                             "(merged batch ÷ (step_time + data_wait)) — the honest number "
                             "for epoch-time projections.",
+    "grad_norm":            "**Gradient Norm** — global L2 norm of all gradients BEFORE "
+                            "clipping. Watch for spikes (instability / bad batches); compare "
+                            "against `task.gradient_clip_norm` to see if clipping is active.",
     "gpu_mem_gb":           "**GPU Memory** (GB) — current device allocation.",
     "gpu_mem_peak_gb":      "**GPU Memory, peak** (GB) — peak device allocation.",
     "time_s":               "**Epoch Time** (s) — wall-clock for the epoch (train + validation).",

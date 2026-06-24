@@ -204,6 +204,9 @@ class YoloV8Task:
             total, box, dfl, cls, dist, poly, poly_a, poly_d, poly_c = self._loss_fn(feats, labels)
 
         grads = tape.gradient(total, model.trainable_variables)
+        # Global gradient norm BEFORE clipping — a key debugging signal (spikes →
+        # instability; compare against gradient_clip_norm to see if clipping is active).
+        grad_norm = tf.linalg.global_norm([g for g in grads if g is not None])
         # Pass clip_norm INTO the optimizer so clipping happens after the
         # cross-replica gradient sum (clipping here, per-replica, would break
         # single-vs-multi-GPU equivalence). No-op on a single replica.
@@ -222,6 +225,7 @@ class YoloV8Task:
             'poly_angle_loss': poly_a,
             'poly_dist_loss':  poly_d,
             'poly_conf_loss':  poly_c,
+            'grad_norm':       grad_norm,
         }
 
     def validation_step(
