@@ -420,6 +420,9 @@ class YoloV8Trainer:
                          "(finetune_from / init_checkpoint); restoring this run's own weights.")
             else:
                 self._task.initialize(self._model)
+            # Freeze modules BEFORE building the optimizer so trainable_variables (and the
+            # SGD slots / EMA) already exclude the frozen weights. Applied on resume too.
+            self._task.apply_freezing(self._model)
             self._optimizer = self._task.build_optimizer()
             self._task._loss_fn = self._task.build_losses()
             # Pre-create optimizer slots in cross-replica context: under

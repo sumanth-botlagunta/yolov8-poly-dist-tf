@@ -338,6 +338,11 @@ class TaskConfig:
     # into a fresh optimizer/EMA/step (new LR schedule). Takes precedence over
     # init_checkpoint; both are no-ops once the run has its own checkpoints (resume wins).
     finetune_from: Optional[str] = None
+    # Freeze whole modules (set trainable=False) — names from {backbone, decoder, head}.
+    # Their weights stop updating and their BatchNorm runs in inference mode (frozen
+    # running stats). Common with finetune_from: freeze [backbone] (or [backbone, decoder])
+    # to adapt only the head. Empty = nothing frozen (default).
+    freeze_modules: List[str] = dataclasses.field(default_factory=list)
     init_checkpoint: Optional[str] = None
     init_checkpoint_modules: List[str] = dataclasses.field(
         default_factory=lambda: ["backbone", "decoder"]

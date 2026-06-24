@@ -153,6 +153,7 @@ keras optimizers (adam/adamw) set `global_clipnorm`. Activation is `task.model.n
 | Field | Default | Notes |
 |-------|---------|-------|
 | `finetune_from` | `None` | **Fine-tuning** (same task, new data): load the FULL model from a trained `ckpt-N`, preferring its EMA/deployed weights, into a **fresh optimizer/EMA/step** (new LR schedule). Overrides via `--finetune_from`. Mutually exclusive with `init_checkpoint`. Fresh-start-only (resume ignores it). See [guides/finetuning](guides/finetuning.md). |
+| `freeze_modules` | `[]` | Modules to freeze (`trainable=False`; BN runs in inference mode) — subset of `{backbone, decoder, head}`. Excluded from grads/optimizer/EMA. Common with `finetune_from` (freeze `[backbone]` → adapt only the head). At least one module must stay trainable. |
 | `init_checkpoint` | `None` | **Transfer-init** (new task/head): warm-start source for the selected modules. Auto-detected: legacy → frozen/structural; **this codebase's own checkpoint → native**. See [checkpoint_migration](../tools/checkpoint_migration.py). |
 | `init_checkpoint_modules` | `[backbone, decoder]` | Which modules `init_checkpoint` warm-starts (head randomly initialized otherwise). For same-task continuation use `finetune_from` instead. |
 

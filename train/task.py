@@ -107,6 +107,29 @@ class YoloV8Task:
         )
         log.info("Checkpoint migration: %s", stats)
 
+    def apply_freezing(self, model: tf.keras.Model) -> None:
+        """Freeze whole modules listed in ``task.freeze_modules`` (set trainable=False).
+
+        Keras propagates ``trainable=False`` to sublayers and runs frozen BatchNorm in
+        inference mode (running stats held), so a frozen module truly stops learning.
+        Idempotent — applied on every start (including resume), before the optimizer is
+        built so ``model.trainable_variables`` already excludes the frozen weights.
+        """
+        frozen = getattr(self._config.task, 'freeze_modules', None) or []
+        for name in frozen:
+            module = getattr(model, name, None)
+            if module is None:
+                raise ValueError(
+                    f"task.freeze_modules: unknown module '{name}'. "
+                    f"Expected one of: backbone, decoder, head.")
+            module.trainable = False
+            log.info("Froze module '%s' (%d trainable variables remain across the model).",
+                     name, len(model.trainable_variables))
+        if frozen and not model.trainable_variables:
+            raise ValueError(
+                "task.freeze_modules froze every trainable variable — nothing left to "
+                "train. Leave at least one module (e.g. the head) unfrozen.")
+
     def build_inputs(
         self,
         params,

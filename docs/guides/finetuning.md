@@ -1,9 +1,9 @@
 # Guide: Fine-tuning a trained model
 
 Fine-tuning = take a model that is already trained and **adapt it to new/more data** with a gentle
-schedule, *without* throwing away what it learned. This codebase has **no layer-freezing
-mechanism** — the whole model is always trainable — so you control how much it moves with the
-**learning rate** (and augmentation), not by freezing weights.
+schedule, *without* throwing away what it learned. You control how much it moves with the
+**learning rate** (and augmentation), and — optionally — by **freezing** whole modules so they
+don't update at all (§3).
 
 ## First: which workflow do you actually want?
 
@@ -91,7 +91,29 @@ Also worth tuning:
 - **Watch `train/update_ratio`** in TensorBoard (`lr·‖grad‖/‖weights‖`): a healthy fine-tune sits
   around `1e-3`; much higher means the LR is too aggressive for the trained weights.
 
-## 3. Resuming a dropped / interrupted fine-tune
+## 3. Optionally freeze modules
+
+To adapt **only the head** (or head + decoder) and keep the feature extractor fixed, freeze whole
+modules — they stop updating entirely and their BatchNorm runs in inference mode (frozen running
+stats):
+
+```yaml
+task:
+  freeze_modules: [backbone]            # or [backbone, decoder]; names: backbone | decoder | head
+```
+
+- Frozen modules are excluded from `model.trainable_variables`, so no gradients, no optimizer
+  slots, and no EMA drift for them.
+- Leave at least one module unfrozen (rejected at startup otherwise).
+- Freezing is applied on **every** start (including resume), so it's a stable property of the run.
+- Pairs naturally with `finetune_from`: freeze `[backbone]` + a low LR to refine the head/decoder on
+  new data with minimal risk to the learned features. Unfreeze (remove the field) for a full fine-tune.
+
+When to freeze vs just use a low LR: freeze when you're confident the backbone features transfer
+as-is (similar domain) and want speed + stability; use a low LR with nothing frozen when the new
+domain differs enough that the backbone should still adapt a little.
+
+## 4. Resuming a dropped / interrupted fine-tune
 
 **Use the normal resume — there is nothing special to do.** A fine-tune run writes its own
 checkpoints to its `output_dir` just like any run, so:
@@ -109,7 +131,7 @@ checkpoints to its `output_dir` just like any run, so:
 In short: `--finetune_from` only matters on the **very first** start of a fresh `output_dir`.
 After that, it's an ordinary run — resume normally.
 
-## 4. Validate
+## 5. Validate
 
 Watch `<run>/val_history.jsonl` and the best checkpoint (see the [validation guide](validation.md)).
 Compare `F1score50` against the **source** run to confirm the fine-tune actually helped — if it's
@@ -117,8 +139,8 @@ lower, the LR was too high or the new data is hurting.
 
 ## Pitfalls
 
-- **No freezing.** No `trainable=False` switch; the lever to limit drift is the low LR + short
-  schedule + gentle aug.
+- **Freeze vs LR.** To limit drift you can freeze modules (§3) and/or use a low LR + short
+  schedule + gentle aug. Freezing everything is rejected — keep at least one module trainable.
 - **Don't reuse the source `output_dir`** — a dir with existing checkpoints auto-resumes *that* run
   and ignores `finetune_from`.
 - **Confirm `ema`, not `raw`** in the startup log — `raw` means you pointed at a `best_ckpt`/export

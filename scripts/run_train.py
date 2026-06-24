@@ -141,6 +141,16 @@ def _validate_config(config, output_dir: str) -> None:
                 f"task.finetune_from not found: '{finetune}' (looked for '{finetune}.index')."
             )
 
+    freeze = getattr(task, 'freeze_modules', None) or []
+    _valid_modules = {'backbone', 'decoder', 'head'}
+    bad = [m for m in freeze if m not in _valid_modules]
+    if bad:
+        errors.append(f"task.freeze_modules has unknown module(s) {bad}; "
+                      f"valid: {sorted(_valid_modules)}.")
+    if set(freeze) >= _valid_modules:
+        errors.append("task.freeze_modules freezes every module — nothing to train. "
+                      "Leave at least one (e.g. the head) unfrozen.")
+
     ckpt = task.init_checkpoint
     if ckpt:
         index_file = ckpt + ".index"
