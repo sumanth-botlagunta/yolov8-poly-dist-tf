@@ -440,30 +440,44 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
     _warn_unknown_keys(t, _TRAINER_KEYS, "trainer", ignored=_TRAINER_KEYS_IGNORED)
     opt_raw    = t.get("optimizer_config", {})
     ema_raw    = opt_raw.get("ema", {})
-    lr_raw     = opt_raw.get("learning_rate", {}).get(
-        "cosine", opt_raw.get("learning_rate", {})
-    )
-    sgd_raw    = opt_raw.get("optimizer", {}).get(
-        "sgd_torch", opt_raw.get("optimizer", {})
-    )
-    # NOTE: the legacy trainer.warmup.* block is not parsed — warmup is driven solely
-    # by OptimizerConfig.warmup_steps (sgd_torch.warmup_steps below). See the removed
-    # WarmupConfig; a stray trainer.warmup block in old YAML is silently ignored.
+    # The optimizer/schedule TYPE selects which nested param block to read. The current
+    # YAML nests `optimizer.sgd_torch` / `learning_rate.cosine` with no `type` key, so
+    # the defaults ('sgd' / 'cosine') reproduce exactly today's parse. New types read
+    # their own block, e.g. `optimizer: {type: adamw, adamw: {...}}`.
+    lr_block   = opt_raw.get("learning_rate", {})
+    lr_type    = lr_block.get("type", "cosine")
+    lr_raw     = lr_block.get(lr_type, lr_block.get("cosine", lr_block))
+    opt_block  = opt_raw.get("optimizer", {})
+    opt_type   = opt_block.get("type", "sgd")
+    # 'sgd_torch' is the legacy block name for the sgd optimizer.
+    sgd_raw    = opt_block.get("sgd_torch", opt_block.get(opt_type, opt_block))
+    # NOTE: the legacy trainer.warmup.* block is not parsed — SGD momentum/bias warmup is
+    # driven solely by OptimizerConfig.warmup_steps (sgd_torch.warmup_steps below); LR
+    # warmup is LrScheduleConfig.warmup_steps. A stray trainer.warmup block is ignored.
 
     ema_cfg    = EmaConfig(
         average_decay=ema_raw.get("average_decay", 0.9999),
         dynamic_decay=ema_raw.get("dynamic_decay", True),
     )
     lr_cfg     = LrScheduleConfig(
+        type=lr_type,
         initial_learning_rate=lr_raw.get("initial_learning_rate", 0.01),
         decay_steps=lr_raw.get("decay_steps", 635400),
         alpha=lr_raw.get("alpha", 0.01),
+        step_size=lr_raw.get("step_size", 30000),
+        gamma=lr_raw.get("gamma", 0.1),
+        power=lr_raw.get("power", 1.0),
+        warmup_steps=lr_raw.get("warmup_steps", 0),
+        warmup_init_lr=lr_raw.get("warmup_init_lr", 0.0),
     )
     opt_cfg    = OptimizerConfig(
+        type=opt_type,
         momentum=sgd_raw.get("momentum", 0.937),
         momentum_start=sgd_raw.get("momentum_start", 0.8),
         nesterov=sgd_raw.get("nesterov", True),
         weight_decay=sgd_raw.get("weight_decay", 0.0005),
+        beta_1=sgd_raw.get("beta_1", 0.9),
+        beta_2=sgd_raw.get("beta_2", 0.999),
         warmup_steps=sgd_raw.get("warmup_steps", 7164),
         ema=ema_cfg,
         learning_rate=lr_cfg,

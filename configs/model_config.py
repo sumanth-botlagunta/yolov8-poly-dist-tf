@@ -264,19 +264,38 @@ class EmaConfig:
 
 @dataclasses.dataclass
 class LrScheduleConfig:
+    # type selects the schedule builder (optimizers/factory.py:LR_SCHEDULES). Default
+    # 'cosine' = the current tf.keras CosineDecay; alternatives: linear, step,
+    # polynomial, constant. New types are additive — the cosine path is unchanged.
+    type: str = "cosine"
     initial_learning_rate: float = 0.01
     decay_steps: int = 635400
     alpha: float = 0.01
+    # step decay: lr *= gamma every step_size steps. polynomial: decay power.
+    step_size: int = 30000
+    gamma: float = 0.1
+    power: float = 1.0
+    # Optional linear LR warmup wrapped around the base schedule (0 = OFF, the default,
+    # so cosine/SGD keep using SGDTorch's own momentum+bias warmup unchanged).
+    warmup_steps: int = 0
+    warmup_init_lr: float = 0.0
 
 
 @dataclasses.dataclass
 class OptimizerConfig:
+    # type selects the optimizer builder (optimizers/factory.py:OPTIMIZERS). Default
+    # 'sgd' = the current SGDTorch (3 param groups + momentum/bias warmup); alternatives:
+    # adamw, adam. The sgd path is unchanged.
+    type: str = "sgd"
     momentum: float = 0.937
     momentum_start: float = 0.8
     nesterov: bool = True
     weight_decay: float = 0.0005
-    # The sole warmup control. The legacy nested WarmupConfig (trainer.warmup.*) was
-    # never read — warmup is driven entirely by this field — and has been removed.
+    # Adam/AdamW moment coefficients (ignored by SGD).
+    beta_1: float = 0.9
+    beta_2: float = 0.999
+    # SGD momentum/bias warmup length (the legacy nested WarmupConfig was never read and
+    # has been removed). NOT the LR warmup — that lives on LrScheduleConfig.warmup_steps.
     warmup_steps: int = 7164
     ema: EmaConfig = dataclasses.field(default_factory=EmaConfig)
     learning_rate: LrScheduleConfig = dataclasses.field(default_factory=LrScheduleConfig)

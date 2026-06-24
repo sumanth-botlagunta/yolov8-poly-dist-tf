@@ -102,36 +102,27 @@ class YoloV8Task:
         return reader(input_context)
 
     def build_optimizer(self) -> Any:
-        """Build SGD with cosine LR schedule, warmup, and EMA wrapper.
+        """Build the optimizer + LR schedule (config-selectable) wrapped in EMA.
 
         Requires build_model() to have been called first (EMA needs model.variables).
-        Returns an ExponentialMovingAverage wrapping SGDTorch.
+        The optimizer and schedule are chosen by ``optimizer.type`` / ``learning_rate.type``
+        (optimizers/factory.py); the defaults ('sgd' / 'cosine') reproduce the previous
+        SGDTorch + CosineDecay path exactly. Returns an ExponentialMovingAverage wrapping
+        the chosen optimizer.
         """
-        from optimizers.sgd_warmup import SGDTorch
+        from optimizers.factory import build_core_optimizer, build_lr_schedule
         from optimizers.ema import ExponentialMovingAverage
 
         opt_cfg = self._config.trainer.optimizer_config
         lr_cfg  = opt_cfg.learning_rate
         ema_cfg = opt_cfg.ema
 
-        lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
-            initial_learning_rate=lr_cfg.initial_learning_rate,
-            decay_steps=lr_cfg.decay_steps,
-            alpha=lr_cfg.alpha,
-        )
-
-        sgd = SGDTorch(
-            lr_fn=lr_schedule,
-            momentum=opt_cfg.momentum,
-            momentum_start=opt_cfg.momentum_start,
-            nesterov=opt_cfg.nesterov,
-            weight_decay=opt_cfg.weight_decay,
-            warmup_steps=opt_cfg.warmup_steps,
-            bias_lr_scale=self._config.task.smart_bias_lr,
-        )
+        lr_schedule = build_lr_schedule(lr_cfg)
+        core = build_core_optimizer(
+            opt_cfg, lr_schedule, bias_lr_scale=self._config.task.smart_bias_lr)
 
         ema = ExponentialMovingAverage(
-            optimizer=sgd,
+            optimizer=core,
             model=self._model,
             average_decay=ema_cfg.average_decay,
             dynamic_decay=ema_cfg.dynamic_decay,
