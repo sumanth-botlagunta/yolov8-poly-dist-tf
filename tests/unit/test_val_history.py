@@ -72,6 +72,37 @@ def test_metric_of_falls_back_to_mean_f1(tmp_path):
     assert abs(val_history.metric_of(rec, 'F1score50') - 0.66) < 1e-9
 
 
+def test_revalidation_collapses_to_latest(tmp_path):
+    # validating the same epoch twice appends two lines; views collapse to the latest.
+    p = str(tmp_path / 'val_history.jsonl')
+    val_history.append_record(p, _report(0.40), epoch=5, step=5000,
+                              metrics={'F1score50': 0.40})
+    val_history.append_record(p, _report(0.55), epoch=5, step=5000,
+                              metrics={'F1score50': 0.55})   # re-validation
+    recs = val_history.load_records(p)
+    assert len(recs) == 2                                    # append-only log keeps both
+    collapsed = val_history.latest_per_epoch(recs)
+    assert len(collapsed) == 1                               # one canonical row
+    assert collapsed[0]['metrics']['F1score50'] == 0.55      # the latest wins
+    # select() already returns the latest; best ignores the stale duplicate
+    assert val_history.select(recs, epoch=5)['metrics']['F1score50'] == 0.55
+    assert val_history.best_record(recs)['metrics']['F1score50'] == 0.55
+
+
+def test_best_prefers_latest_not_stale_higher(tmp_path):
+    # a stale high duplicate must NOT beat the epoch's own re-validated (lower) value
+    p = str(tmp_path / 'val_history.jsonl')
+    val_history.append_record(p, _report(0.90), epoch=1, step=1000,
+                              metrics={'F1score50': 0.90})   # stale, later corrected
+    val_history.append_record(p, _report(0.50), epoch=1, step=1000,
+                              metrics={'F1score50': 0.50})   # re-validation
+    val_history.append_record(p, _report(0.70), epoch=2, step=2000,
+                              metrics={'F1score50': 0.70})
+    recs = val_history.load_records(p)
+    best = val_history.best_record(recs)
+    assert best['epoch'] == 2 and best['metrics']['F1score50'] == 0.70
+
+
 def test_resolve_path_accepts_dir(tmp_path):
     assert val_history.resolve_path(str(tmp_path)).endswith('val_history.jsonl')
     f = str(tmp_path / 'val_history.jsonl')

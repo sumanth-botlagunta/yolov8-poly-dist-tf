@@ -57,7 +57,7 @@ def _headline_row(rec):
     return row
 
 
-def _print_table(records, sort_col):
+def _print_table(records, sort_col, dropped=0):
     rows = [_headline_row(r) for r in records]
     try:
         rows.sort(key=lambda r: (r.get(sort_col) is None, r.get(sort_col)))
@@ -69,7 +69,8 @@ def _print_table(records, sort_col):
         print('  '.join(
             (f'{r[c]:>10.4f}' if isinstance(r.get(c), float) else f'{str(r.get(c, "")):>10}')
             for c in cols))
-    print(f"\n{len(rows)} epochs")
+    note = f"  ({dropped} re-validated epoch(s) collapsed to latest; --raw to show all)" if dropped else ""
+    print(f"\n{len(rows)} epochs{note}")
 
 
 def _render_selected(rec, fmt, best_only):
@@ -126,6 +127,8 @@ def main():
     ap.add_argument('--best-only', action='store_true')
     ap.add_argument('-o', '--out')
     ap.add_argument('--export-csv')
+    ap.add_argument('--raw', action='store_true',
+                    help='do not collapse re-validated epochs (show every appended line)')
     a = ap.parse_args()
 
     jsonl = val_history.resolve_path(a.path)
@@ -133,13 +136,18 @@ def main():
     if not records:
         sys.exit(f"no records in {jsonl}")
 
+    # Collapse re-validations to one canonical (latest) row per epoch for the trend /
+    # export views; --raw keeps the full append-only log.
+    view = records if a.raw else val_history.latest_per_epoch(records)
+    dropped = len(records) - len(view)
+
     if a.export_csv:
-        _export_csv(records, a.export_csv)
+        _export_csv(view, a.export_csv)
         return
 
     has_selector = a.epoch is not None or a.step is not None or a.checkpoint or a.best
     if a.list or not has_selector:
-        _print_table(records, a.sort)
+        _print_table(view, a.sort, dropped)
         return
 
     if a.best:

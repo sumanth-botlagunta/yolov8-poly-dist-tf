@@ -82,6 +82,31 @@ def load_records(jsonl_path: str) -> List[dict]:
     return out
 
 
+def latest_per_epoch(records: List[dict]) -> List[dict]:
+    """Collapse re-validations: keep only the LAST record per epoch (in file order).
+
+    The store is append-only, so validating the same checkpoint twice writes two lines
+    with the same ``epoch``. For trend / best / export views we want one canonical row
+    per epoch — the most recent (a re-validation supersedes). Records without an
+    ``epoch`` fall back to ``step`` then to a per-record identity, so nothing is dropped
+    spuriously. Order is preserved (first appearance of each key).
+    """
+    out: Dict = {}
+    order: List = []
+    for i, r in enumerate(records):
+        ep = r.get('epoch')
+        if ep is not None:
+            key = ('epoch', int(ep))
+        elif r.get('step') is not None:
+            key = ('step', int(r['step']))
+        else:
+            key = ('idx', i)
+        if key not in out:
+            order.append(key)
+        out[key] = r       # later record wins
+    return [out[k] for k in order]
+
+
 def metric_of(record: dict, key: str = 'F1score50') -> Optional[float]:
     """Headline metric for a record. Prefers ``metrics[key]``; for the default
     F1score50 falls back to the report's ``mean.f1`` (they coincide by construction)."""
@@ -96,8 +121,12 @@ def metric_of(record: dict, key: str = 'F1score50') -> Optional[float]:
 
 
 def best_record(records: List[dict], key: str = 'F1score50') -> Optional[dict]:
-    """The record maximizing ``key`` (None if none have it)."""
-    scored = [(metric_of(r, key), r) for r in records]
+    """The record maximizing ``key`` (None if none have it).
+
+    Collapses re-validations first (``latest_per_epoch``) so a stale duplicate of an
+    epoch cannot win over its own re-validated value.
+    """
+    scored = [(metric_of(r, key), r) for r in latest_per_epoch(records)]
     scored = [(v, r) for v, r in scored if v is not None]
     if not scored:
         return None
