@@ -66,7 +66,7 @@ Turn the device raw outputs into a COCO predictions JSON, then score it the same
 # edit the SPLITS list in-file (printed at startup), or pass --splits
 python -m tools.device.gen_pred_json_from_dlc \
     --raw_root /path/to/netrun/output --transform_pkl /path/to/letterbox_transform.pkl \
-    --output_json device_predictions.json --box_order legacy
+    --output_json device_predictions.json --box_order yfirst
 ```
 Run the SavedModel on the **same** images (host twin) for an apples-to-apples reference:
 ```bash
@@ -90,7 +90,8 @@ python -m tools.device.debug.diagnose_device_export --config <cfg> --checkpoint 
 # per-layer DLC-vs-reference comparison (snpe-net-run --debug dumps)
 python -m tools.device.debug.compare_dlc_debug ...
 ```
-The usual culprits, in order: **box channel order** (transposed boxes → use `--box_order legacy`),
+The usual culprits, in order: **box channel order** (transposed boxes → match `--box_order` to the
+export; `yfirst` is the legacy/DLC order and the default),
 **un-folded BatchNorm** (quantizes badly — `check_snpe_ready` flags it), and **the calibration set**
 (too small/biased → poor int8). See [device_export.md](../device_export.md) for the contract.
 

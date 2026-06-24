@@ -3,7 +3,7 @@
 
 This is the exact format produced by ``eval/metrics_report.py:write_txt``: a "best
 confidence per category" table — each category's best F1 / precision / recall over the
-``arange(0.05, 1.0, 0.05)`` confidence grid — plus the mean line and the full
+``arange(0.1, 1.0, 0.05)`` confidence grid — plus the mean line and the full
 all-confidence sweep. Input is a single report JSON carrying the ``mean`` / ``best_conf``
 / ``all_conf`` keys — the ``<ckpt>_val.json`` written by ``tools/eval.py --output_dir``,
 or one extracted with ``tools/val_history.py --epoch N --format json``.
