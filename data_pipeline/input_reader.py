@@ -541,6 +541,7 @@ def build_input_reader_from_config(
             shear=mosaic_cfg.shear,
             perspective=mosaic_cfg.perspective,
             translate=mosaic_cfg.translate,
+            rotate_prob=mosaic_cfg.rotate_prob,
             group_size=mosaic_cfg.group_size,
             decodes_per_output=mosaic_cfg.decodes_per_output,
         )

@@ -154,6 +154,9 @@ def _validate_config(config, output_dir: str) -> None:
                 f"mosaic.group_size ({g}) must be a multiple of "
                 f"mosaic.decodes_per_output ({r})"
             )
+        rp = getattr(mosaic_cfg, "rotate_prob", 0.10)
+        if not 0.0 <= rp <= 1.0:
+            errors.append(f"mosaic.rotate_prob ({rp}) must be in [0, 1]")
 
     # --- output directory writable ---
     try:

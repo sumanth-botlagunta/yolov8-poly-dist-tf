@@ -500,6 +500,49 @@ class TestWarpScaleBounds(unittest.TestCase):
         self.assertAlmostEqual(float(M[0, 0]), 1.0, places=5)
 
 
+class TestRotationGating(unittest.TestCase):
+    """rotate_prob gates rotation: most outputs stay upright (angle forced to 0),
+    only a fraction rotate. With scale gain fixed at 1.0 and shear=0, the matrix
+    off-diagonal M[0,1] = -sin(angle); it is exactly 0 iff the output is upright.
+    """
+
+    @staticmethod
+    def _offdiag(rotate_prob, degrees=30.0):
+        from data_pipeline.augmentations import make_perspective_matrix
+        M = make_perspective_matrix(
+            h_in=64, w_in=64, target_h=64, target_w=64,
+            degrees=degrees, translate=0.0, shear=0.0, perspective=0.0,
+            scale_min=1.0, scale_max=1.0, rotate_prob=rotate_prob,
+        )
+        return float(M[0, 1]), float(M[1, 0])
+
+    def test_rotate_prob_zero_is_always_upright(self):
+        for _ in range(200):
+            o01, o10 = self._offdiag(rotate_prob=0.0)
+            self.assertEqual(o01, 0.0)   # no rotation cross-terms, ever
+            self.assertEqual(o10, 0.0)
+
+    def test_rotate_prob_one_always_rotates(self):
+        # legacy always-on path: essentially every draw has a nonzero angle
+        rotated = sum(1 for _ in range(200) if abs(self._offdiag(1.0)[0]) > 1e-6)
+        self.assertGreater(rotated, 190)
+
+    def test_rotate_prob_fraction_matches(self):
+        tf.random.set_seed(0)
+        n, p = 400, 0.3
+        rotated = sum(1 for _ in range(n) if abs(self._offdiag(p)[0]) > 1e-6)
+        frac = rotated / n
+        # ~0.3 expected; loose 3-sigma band so it is not flaky
+        self.assertGreater(frac, 0.20)
+        self.assertLess(frac, 0.40)
+
+    def test_default_mosaic_is_mostly_upright(self):
+        # The Mosaic default (rotate_prob=0.10, shear=0) produces upright outputs.
+        m = Mosaic(output_size=[32, 32], with_polygons=True)
+        self.assertEqual(m._shear, 0.0)
+        self.assertAlmostEqual(m._rotate_prob, 0.10)
+
+
 class TestFilteredAnnsMissingFields(unittest.TestCase):
     """Pinning test: _filtered_anns tolerates absent per-box side fields.
 

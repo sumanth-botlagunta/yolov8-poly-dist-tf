@@ -175,6 +175,7 @@ def make_perspective_matrix(
     perspective: float = 0.0,
     scale_min: Optional[float] = None,
     scale_max: Optional[float] = None,
+    rotate_prob: float = 1.0,
 ) -> tf.Tensor:
     """Build the random 3x3 (INPUT-px → OUTPUT-px) perspective matrix.
 
@@ -194,6 +195,13 @@ def make_perspective_matrix(
             the symmetric ``scale`` magnitude form would widen them to
             [1−max(0.9, 0.6), 1.9] = [0.1, 1.9], shrinking some images to 1%
             area (mostly-gray frames).
+        rotate_prob: probability that rotation is applied at all. With
+            probability ``1 - rotate_prob`` the rotation angle is forced to 0 so
+            the output stays upright; otherwise the angle is drawn from
+            [-degrees, degrees]. Default 1.0 = always rotate (legacy behaviour,
+            exact RNG draw order preserved). Mosaic passes a small value (e.g.
+            0.10) so most outputs are upright with rare ± rotation — matching the
+            real YOLO mosaic, where ``degrees`` defaults to 0.
 
     Returns:
         float32 [3, 3] input→output affine/perspective matrix M.
@@ -220,8 +228,14 @@ def make_perspective_matrix(
     P = _mat([one, zero, zero,
               zero, one, zero,
               px,  py,  one])
-    # Rotation + scale (combined).
-    ang = tf.random.uniform([], -degrees, degrees) * deg2rad
+    # Rotation + scale (combined). Rotation is gated by rotate_prob: with
+    # probability (1 - rotate_prob) the angle is forced to 0 so the output stays
+    # upright. rotate_prob >= 1.0 keeps the legacy single-draw path exactly (used
+    # by any caller that wants always-on rotation).
+    ang = tf.random.uniform([], -degrees, degrees)
+    if rotate_prob < 1.0:
+        ang = tf.where(tf.random.uniform([]) < rotate_prob, ang, tf.zeros([]))
+    ang = ang * deg2rad
     if scale_min is not None and scale_max is not None:
         sgn = tf.random.uniform([], scale_min, scale_max)
     else:
@@ -372,6 +386,7 @@ def random_perspective(
     min_side: float = 0.005,
     scale_min: Optional[float] = None,
     scale_max: Optional[float] = None,
+    rotate_prob: float = 1.0,
 ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
     """Full-affine geometric augmentation (Ultralytics random_perspective).
 
@@ -403,6 +418,8 @@ def random_perspective(
         min_side: min normalized side length to keep a box.
         scale_min / scale_max: explicit scale-gain bounds (override ``scale``);
             see ``make_perspective_matrix``.
+        rotate_prob: probability rotation is applied; ``1 - rotate_prob`` of the
+            time the angle is forced to 0 (upright). See ``make_perspective_matrix``.
 
     Returns:
         (image_out uint8 [target_h, target_w, 3], boxes_out [N,4] normalized to OUTPUT,
@@ -417,6 +434,7 @@ def random_perspective(
         degrees=degrees, translate=translate, scale=scale,
         shear=shear, perspective=perspective,
         scale_min=scale_min, scale_max=scale_max,
+        rotate_prob=rotate_prob,
     )
     image_out = apply_perspective_image(image, M, target_h, target_w)
     boxes_clip, keep, polygons_out = transform_boxes_polygons(

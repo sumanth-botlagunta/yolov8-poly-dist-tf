@@ -1,11 +1,20 @@
 """Mosaic and MixUp augmentation combining multiple images.
 
 Mosaic (Ultralytics-style) stitches 4 images into a 2×-size canvas at a random
-center — each image is placed at full scale toward the center with overflow
-cropped (no letterbox padding) — then a single ``random_perspective`` (rotation +
-scale + shear + translate) warps and crops the canvas back to the output size.
-The same ``random_perspective`` is applied to non-mosaic single images, so it is
-the one geometric transform in the pipeline (the parser no longer does affine).
+center, then a single ``random_perspective`` warps/crops the canvas back to the
+output size. The same ``random_perspective`` is applied to non-mosaic single
+images, so it is the one geometric transform in the pipeline (the parser no longer
+does affine).
+
+Placement is **upright** (matching the real YOLO mosaic): each source image is
+resized so its long side equals the output size and placed full toward the cell's
+center corner (overflow cropped, no letterbox padding) — a CONSISTENT per-image
+scale, not a random one. Size variety comes only from the single canvas→output
+warp's scale gain ``[aug_scale_min, aug_scale_max]`` (default stock ``[0.5, 1.5]``).
+Rotation is **rare**: the warp rotates only with probability ``rotate_prob``
+(default 0.10) by ±``degrees``; the rest of the time the angle is 0 so tiles read as
+upright panels. The split center shifts H+V (``mosaic_center``), so the visible crop
+of each tile varies and boxes/polygons are cut at the moving edges.
 
 Group / image-diversity semantics
 ---------------------------------
@@ -39,10 +48,15 @@ Configuration (parser.mosaic in the experiment YAML):
     decodes_per_output: 4    (R: 4 = stock YOLO / no reuse; lower = more reuse, less decode)
     mosaic_center: 0.25      (half-range of the split point as a fraction; the
                               2× canvas split lands in [H(1-2c), H(1+2c)])
-    aug_scale_min / aug_scale_max: per-image scale range AND the random_perspective
-                              scale-gain bounds.
-    degrees: 10.0            (rotation ±, degrees)
-    shear: 2.0               (shear ±, degrees)
+    aug_scale_min / aug_scale_max: the canvas→output warp scale-gain bounds
+                              (default stock [0.5, 1.5]). NOTE: per-image placement
+                              scale is no longer random — it is fixed so the long
+                              side fills the output (consistent upright tiles).
+    degrees: 10.0            (rotation ± magnitude, degrees — applied only when the
+                              rotate_prob coin fires)
+    rotate_prob: 0.10        (probability a given output is rotated at all; the rest
+                              stay upright)
+    shear: 0.0               (shear ±, degrees; 0 = no shear, the default)
     perspective: 0.0         (perspective coefficient ±; 0 disables)
     translate: 0.1           (translation ± as a fraction of output size)
     area_thresh: 0.5         (min visible box-area fraction to keep)
@@ -212,14 +226,15 @@ class Mosaic:
         letter_box: bool = True,
         mosaic_crop_mode: str = "scale",
         mosaic_center: float = 0.25,
-        aug_scale_min: float = 0.4,
-        aug_scale_max: float = 1.9,
+        aug_scale_min: float = 0.5,
+        aug_scale_max: float = 1.5,
         area_thresh: float = 0.5,
         with_polygons: bool = True,
         degrees: float = 10.0,
-        shear: float = 2.0,
+        shear: float = 0.0,
         perspective: float = 0.0,
         translate: float = 0.1,
+        rotate_prob: float = 0.10,
         group_size: int = 32,
         decodes_per_output: int = 4,
     ):
@@ -238,6 +253,7 @@ class Mosaic:
         self._shear       = shear
         self._perspective = perspective
         self._translate   = translate
+        self._rotate_prob = rotate_prob
         # Image-diversity controls (see module docstring). A group of `group_size`
         # decoded images yields `outputs_per_group = group_size // decodes_per_output`
         # emitted samples; each mosaic draws 4 source images from the group.
@@ -348,6 +364,7 @@ class Mosaic:
             shear=self._shear,
             perspective=self._perspective,
             area_thresh=self._area_thresh,
+            rotate_prob=self._rotate_prob,
         )
 
     @staticmethod
@@ -452,6 +469,7 @@ class Mosaic:
             scale_max=self._scale_max,
             shear=self._shear,
             perspective=self._perspective,
+            rotate_prob=self._rotate_prob,
         )
 
         # Per quadrant: draw the per-image scale, resize, and place into its
@@ -466,9 +484,17 @@ class Mosaic:
             w_in = tf.shape(img)[1]
             h_in_f = tf.cast(h_in, tf.float32)
             w_in_f = tf.cast(w_in, tf.float32)
-            scale = tf.random.uniform([], self._scale_min, self._scale_max)
-            nh = tf.maximum(tf.cast(tf.round(h_in_f * scale), tf.int32), 1)
-            nw = tf.maximum(tf.cast(tf.round(w_in_f * scale), tf.int32), 1)
+            # Upright placement at a CONSISTENT scale (stock YOLO): resize so the
+            # image's long side equals the output size, then place it full toward the
+            # cell's center corner (overflow cropped by _place_in_cell). The previous
+            # per-image random scale [aug_scale_min, aug_scale_max] made each tile a
+            # different size (the "messy" look); size variety now comes only from the
+            # single canvas->output warp (the [aug_scale_min, aug_scale_max] crop gain
+            # in M). Rotation is rare (rotate_prob), so tiles read as upright panels.
+            long_side = tf.maximum(h_in_f, w_in_f)
+            place_scale = tf.cast(H, tf.float32) / long_side
+            nh = tf.maximum(tf.cast(tf.round(h_in_f * place_scale), tf.int32), 1)
+            nw = tf.maximum(tf.cast(tf.round(w_in_f * place_scale), tf.int32), 1)
             R = tf.cast(
                 tf.image.resize(tf.cast(img, tf.float32), [nh, nw], method='bilinear'),
                 tf.uint8,

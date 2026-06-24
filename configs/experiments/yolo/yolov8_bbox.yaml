@@ -139,20 +139,23 @@ task:
         mosaic_frequency: 0.5
         mixup_frequency: 0.0
         mosaic_center: 0.25   # explicit; matches Mosaic.__init__ + poly_dist tier (was 0.2)
-        aug_scale_min: 0.4
-        aug_scale_max: 1.9
+        # Canvas->output warp scale gain (stock YOLO [0.5, 1.5]) — the only source of
+        # per-sample size variety. Per-image placement scale is fixed (upright tiles).
+        aug_scale_min: 0.5
+        aug_scale_max: 1.5
         mosaic_crop_mode: scale
         area_thresh: 0.5
         jitter: 0.0
         group_size: 32
         decodes_per_output: 4   # R: 4 = stock-YOLO (no reuse); lower = more reuse, less decode
         # random_perspective (full-affine) strength applied after mosaic assembly
-        # AND to non-mosaic single images. degrees/shear in degrees; translate as a
-        # fraction of output size. These are the LIVE affine knobs (forwarded to
-        # Mosaic in data_pipeline/input_reader.py); aug_rand_translate above is NOT
-        # the affine translate. Shown here so they are visible/editable in config.
+        # AND to non-mosaic single images. Images are upright by default: rotation
+        # fires only on rotate_prob of outputs (±degrees), shear is off (0). These are
+        # the LIVE affine knobs (forwarded to Mosaic in data_pipeline/input_reader.py);
+        # aug_rand_translate above is NOT the affine translate.
         degrees: 10.0
-        shear: 2.0
+        rotate_prob: 0.10
+        shear: 0.0
         translate: 0.1
 
   validation_data:

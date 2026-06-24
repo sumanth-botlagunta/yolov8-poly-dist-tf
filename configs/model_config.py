@@ -146,8 +146,11 @@ class MosaicConfig:
     # dataclass previously defaulted to 0.2, silently disagreeing with the runtime
     # default whenever a tier YAML omitted mosaic_center.
     mosaic_center: float = 0.25
-    aug_scale_min: float = 0.4
-    aug_scale_max: float = 1.9
+    # Canvas->output warp scale-gain bounds (stock YOLO [0.5, 1.5]). This is the
+    # ONLY source of per-sample size variety now — per-image placement scale is
+    # fixed (consistent upright tiles), see data_pipeline/mosaic.py.
+    aug_scale_min: float = 0.5
+    aug_scale_max: float = 1.5
     mosaic_crop_mode: str = "scale"
     area_thresh: float = 0.5
     jitter: float = 0.0
@@ -165,8 +168,12 @@ class MosaicConfig:
     # non-mosaic single images. degrees/shear in degrees; translate as a fraction of
     # output size; perspective coefficient (0 disables). scale gain uses
     # aug_scale_min/aug_scale_max (scale ∈ [aug_scale_min, aug_scale_max]).
+    # Rotation is gated by rotate_prob: a fraction (1 - rotate_prob) of outputs stay
+    # upright (angle forced to 0); only rotate_prob of them rotate by ±degrees. shear
+    # defaults to 0 (no shear) so the corrected mosaic shows upright panels.
     degrees: float = 10.0
-    shear: float = 2.0
+    rotate_prob: float = 0.10
+    shear: float = 0.0
     perspective: float = 0.0
     translate: float = 0.1
 
