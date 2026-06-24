@@ -27,6 +27,35 @@ from typing import Dict, Optional
 
 import tensorflow as tf
 
+
+# Activation names that are NOT built-in Keras strings, mapped to a callable. Everything
+# else (relu, silu/swish, gelu, leaky_relu, mish, tanh, sigmoid, ...) resolves through
+# tf.keras.layers.Activation directly.
+_EXTRA_ACTIVATIONS = {
+    # MobileNetV3 hard-swish: x * relu6(x + 3) / 6.
+    "hardswish":  lambda x: x * tf.nn.relu6(x + 3.0) / 6.0,
+    "hard_swish": lambda x: x * tf.nn.relu6(x + 3.0) / 6.0,
+}
+
+
+def resolve_activation(name: str) -> tf.keras.layers.Layer:
+    """Return an Activation layer for ``name`` (config-selectable, validated).
+
+    Standard names resolve via Keras (``relu`` — the default — ``silu``/``swish``,
+    ``gelu``, ``leaky_relu``, ``mish``, ...). ``hardswish`` is provided as a callable
+    since it is not a Keras built-in. An unknown name raises a clear error instead of
+    Keras's generic one. ``relu`` returns exactly ``Activation('relu')`` (unchanged).
+    """
+    if name in _EXTRA_ACTIVATIONS:
+        return tf.keras.layers.Activation(_EXTRA_ACTIVATIONS[name], name=name)
+    try:
+        return tf.keras.layers.Activation(name)
+    except (ValueError, KeyError):
+        raise ValueError(
+            f"Unknown activation '{name}'. Supported: relu, silu/swish, gelu, "
+            f"leaky_relu, mish, hardswish, elu, tanh, sigmoid (any Keras activation)."
+        )
+
 from configs.registry import BACKBONES
 
 
@@ -77,7 +106,7 @@ class _ConvBnAct(tf.keras.layers.Layer):
         self.bn = tf.keras.layers.BatchNormalization(
             momentum=norm_momentum, epsilon=norm_epsilon, synchronized=use_sync_bn
         )
-        self.act = tf.keras.layers.Activation(activation)
+        self.act = resolve_activation(activation)
 
     def call(self, x: tf.Tensor, training: bool = False) -> tf.Tensor:
         if self._pad is not None:
