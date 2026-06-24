@@ -138,7 +138,7 @@ hardcoded path exactly. Alternatives are additive.
 | `beta_1` / `beta_2` | 0.9 / 0.999 | Adam/AdamW moment coefficients (ignored by SGD). |
 | `momentum` / `momentum_start` | 0.937 / 0.8 | Nesterov momentum (warms from start → momentum). |
 | `weight_decay` | `0.0005` | Applied to weight tensors (`kernel`) only, not biases/BN — per SGDTorch's three param groups. |
-| `warmup_steps` | `7164` | SGD momentum/bias warmup; BN/bias groups ramp DOWN from `smart_bias_lr` (design_register entry 2). |
+| `warmup_steps` | `7164`† | SGD momentum/bias warmup; BN/bias groups ramp DOWN from `smart_bias_lr` (design_register entry 2). †Dataclass default; the shipped `yolov8_poly_dist.yaml` overrides it to `6354` (= 3 × the corrected 2118 steps/epoch). |
 | `learning_rate.type` | `cosine` | Schedule: `cosine` (default) · `linear` · `step` · `polynomial` · `constant`. |
 | `learning_rate.initial_learning_rate` / `decay_steps` / `alpha` | 0.01 / 635400 / 0.01 | `decay_steps` should equal `steps_per_loop × epochs` (`run_train` warns otherwise). |
 | `learning_rate.step_size` / `gamma` / `power` | 30000 / 0.1 / 1.0 | Used by `step` (gamma every step_size) / `polynomial` (power) schedules. |

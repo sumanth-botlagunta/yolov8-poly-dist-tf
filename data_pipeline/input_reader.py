@@ -584,7 +584,10 @@ def build_input_reader_from_config(
             is_training=True,
             decoder=dist_decoder,
             parser=dist_parser,
-            seed=data_cfg.seed,
+            # +3 so the distance stream's shuffle is independent of the detection
+            # stream's three shuffle seeds (seed, seed+1 cnp, seed+2 post-unbatch);
+            # a shared seed correlates the two zipped streams' per-epoch orderings.
+            seed=(data_cfg.seed + 3) if data_cfg.seed is not None else None,
             shuffle_buffer_size=dist_cfg.shuffle_buffer_size,
             drop_remainder=dist_cfg.drop_remainder,
         )

@@ -3,10 +3,13 @@
 Training augmentation pipeline order:
     1. Skip is_crowd annotations (if skip_crowd_during_training=True)
     2. Random horizontal flip (with polygon transformation)
-    3. Jitter and scale (affine transformation)
-    4. Clip boxes and polygons to image bounds
-    5. Preprocess polygons to PolyYOLO format
-    6. Build labels dictionary
+    3. Clip boxes and polygons to image bounds
+    4. Preprocess polygons to PolyYOLO format
+    5. Build labels dictionary
+
+    The geometric affine (random_perspective: rotate/scale/shear/translate) is NO
+    LONGER applied here — it runs upstream in the mosaic stage (data_pipeline/mosaic.py)
+    for both the 4-image mosaic and non-mosaic single images.
 
 Colour augmentation (normalize /255 → HSV jitter → albumentations) is NO LONGER
 done here. The parser now emits a uint8 image so the whole pipeline carries

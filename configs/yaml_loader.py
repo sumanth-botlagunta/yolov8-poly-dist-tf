@@ -1,7 +1,8 @@
 """Load experiment configuration from a YAML file into dataclass trees.
 
-The YAML structure mirrors docs/experiment_config.yaml.  A hand-rolled mapper (NOT dacite) maps
-the parsed dict onto the typed dataclasses defined in configs/model_config.py.
+The YAML structure mirrors the experiment YAML (configs/experiments/yolo/*.yaml).
+A hand-rolled mapper (NOT dacite) maps the parsed dict onto the typed dataclasses
+defined in configs/model_config.py.
 
 Usage:
     from configs.yaml_loader import load_config, load_config_from_dict
@@ -105,12 +106,11 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
 
 
 def load_config_from_dict(raw: Dict[str, Any]) -> ExperimentConfig:
-    """Convert a raw YAML dict (from docs/experiment_config.yaml layout) to
-    ExperimentConfig.
+    """Convert a raw YAML dict (experiment-YAML layout) to ExperimentConfig.
 
-    The YAML produced by docs/experiment_config.yaml has a deeply-nested
-    structure (runtime / task / trainer at the top level).  We extract the
-    task, trainer, and runtime subtrees and map them onto the dataclasses.
+    The experiment YAML has a deeply-nested structure (runtime / task / trainer at
+    the top level).  We extract the task, trainer, and runtime subtrees and map
+    them onto the dataclasses.
     """
     task_cfg    = _build_task_config(raw.get("task", {}))
     trainer_cfg = _build_trainer_config(raw.get("trainer", {}))
@@ -151,16 +151,20 @@ def _fill_derived_fields(config: ExperimentConfig) -> None:
 
 _RUNTIME_KEYS = frozenset({
     "distribution_strategy", "num_gpus", "mixed_precision_dtype", "run_eagerly",
-    "enable_xla", "num_cores_per_replica", "num_packs",
+    "enable_xla",
     "inter_op_threads", "intra_op_threads",
+})
+
+# Vestigial TF-Vision runtime keys: no RuntimeConfig field, read nowhere. Listed as
+# ignored (not recognized) so a stray YAML value is dropped without warning and
+# without implying it does anything.
+_RUNTIME_KEYS_IGNORED = frozenset({
+    "per_gpu_thread_count", "num_cores_per_replica", "num_packs",
 })
 
 
 def _build_runtime_config(r: Dict[str, Any]) -> RuntimeConfig:
-    # per_gpu_thread_count is a known vestigial TF-Vision key (not used here).
-    _warn_unknown_keys(
-        r, _RUNTIME_KEYS, "runtime", ignored=frozenset({"per_gpu_thread_count"})
-    )
+    _warn_unknown_keys(r, _RUNTIME_KEYS, "runtime", ignored=_RUNTIME_KEYS_IGNORED)
     return RuntimeConfig(
         distribution_strategy=r.get("distribution_strategy", "mirrored"),
         num_gpus=r.get("num_gpus", -1),
@@ -316,7 +320,7 @@ _DATA_KEYS = frozenset({
     "tfds_name", "tfds_split", "tfds_data_dir", "global_batch_size", "is_training",
     "shuffle_buffer_size", "drop_remainder", "tfds_sampling_weights",
     "prob_copy_n_paste", "tfds_for_cnp", "tfds_for_cnp_split", "seed",
-    "with_polygons", "with_distance", "poly_eval_gt_policy", "class_remap_json_path",
+    "with_polygons", "with_distance", "class_remap_json_path",
     "private_threadpool_size", "parser", "distance_data",
 })
 
@@ -324,6 +328,11 @@ _DATA_KEYS = frozenset({
 # consume (TF-Vision vestigial flags / download toggles handled elsewhere).
 _DATA_KEYS_IGNORED = frozenset({
     "tfds_download",
+    # poly_eval_gt_policy: vestigial. The polygon eval GT is always the PolyYOLO
+    # radial format; this key has no DataConfig field and is read nowhere. Listed
+    # here (not in _DATA_KEYS) so a stray YAML value is silently dropped without
+    # implying it is a functional knob.
+    "poly_eval_gt_policy",
 })
 
 

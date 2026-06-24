@@ -204,7 +204,6 @@ class PolygonEvaluator:
         self._mask_ious:  List[float] = []
         self._n_matched   = 0
         self._n_gt_total  = 0
-        self._n_dt_total  = 0
 
     # ------------------------------------------------------------------
     # Accumulation
@@ -243,8 +242,6 @@ class PolygonEvaluator:
             n_det = int(num_detections[i])
             n_g   = int(n_gt[i])
 
-            self._n_dt_total += n_det
-
             if n_g == 0 or n_det == 0:
                 # Still count valid (non-crowd/dontcare) GT toward the denominator.
                 self._n_gt_total += _count_eval_gt(n_g, i, gt_is_crowd, gt_is_dontcare)
@@ -262,7 +259,6 @@ class PolygonEvaluator:
             gt_keep_idx = np.nonzero(keep_gt)[0]                # map filtered→original
             iou_mat = _bbox_iou_matrix(db, gb)         # [n_det, n_keep]
 
-            matched_dt = set()
             matched_gt = set()
 
             # Greedy match by descending score. For each detection pick the best GT
@@ -276,7 +272,6 @@ class PolygonEvaluator:
                     ious[list(matched_gt)] = -1.0
                 best_gt = int(ious.argmax())
                 if ious[best_gt] >= self._iou_thresh:
-                    matched_dt.add(di)
                     matched_gt.add(best_gt)
                     self._n_matched += 1
 
@@ -358,4 +353,3 @@ class PolygonEvaluator:
         self._mask_ious.clear()
         self._n_matched  = 0
         self._n_gt_total = 0
-        self._n_dt_total = 0

@@ -1,7 +1,8 @@
 """Configuration dataclasses for the YOLOv8 polygon + distance model.
 
-These mirror the YAML structure in docs/experiment_config.yaml and can be
-populated by parsing the YAML or constructed programmatically.
+These mirror the structure of the experiment YAML (e.g.
+configs/experiments/yolo/yolov8_poly_dist.yaml) and can be populated by parsing
+the YAML or constructed programmatically.
 
 Dataclasses:
     RuntimeConfig
