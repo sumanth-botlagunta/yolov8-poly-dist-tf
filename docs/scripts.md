@@ -48,15 +48,19 @@ python -m tools.eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --a
 python -m tools.eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --watch --watch_dir /run --interval 300
 ```
 
-### `python -m tools.infer` — overlays on arbitrary images
-Loads a checkpoint **or** a SavedModel, draws box+polygon overlays, prints class/score/distance.
+### `python -m tools.infer` — folder inference: predictions JSON + visuals
+Loads a checkpoint **or** a SavedModel and runs over a folder of images, emitting a COCO-style
+predictions JSON and/or annotated images, in the model-input or original-image coordinate space.
 - `--config` + `--checkpoint`, **or** `--saved_model` (one source required).
 - `--images` (req) — an image file or a directory of images.
-- `--output_dir` — where annotated PNGs are written (default `/tmp/infer_out`).
-- `--score` — min confidence to draw (default 0.25). `--no_poly` — boxes only.
+- `--emit` — `visual` | `json` | `both` (default `both`).
+- `--draw_on` — `original` (map detections back to source pixels, default) | `model` (the exported 672/416 size).
+- `--output_dir` — where annotated PNGs + `predictions.json` are written. `--predictions_json` overrides the JSON path.
+- `--score` — min confidence to keep/draw (default 0.25). `--no_poly` — boxes only.
 - `--input_size` — override the square input size (0 = read from config/SavedModel).
 ```bash
-python -m tools.infer --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000 --images /imgs --output_dir /tmp/out
+python -m tools.infer --saved_model /export/saved_model --images /imgs \
+    --output_dir /tmp/out --emit both --draw_on original
 ```
 
 ## Export
@@ -148,6 +152,15 @@ Reads `<run>/val_history.jsonl` (one report appended per epoch). No SQL, no DB.
 python -m tools.val_history /run --list
 python -m tools.val_history /run --best --format txt -o best.txt
 python -m tools.val_history /run --epoch 42 --format json
+```
+
+### `python -m tools.val_report_txt` — render a single report JSON to the ckpt-format txt
+Standalone sibling of `val_history`: renders one validation report JSON (a `<ckpt>_val.json`
+from `tools.eval --output_dir`, or one extracted via `val_history --format json`) into the exact
+ckpt-format `.txt` (best-conf-per-category table + mean + all-conf sweep). `--best-only` keeps just
+the best table.
+```bash
+python -m tools.val_report_txt /run/ckpt-99000_val.json --best-only
 ```
 
 ### `python -m tools.pipeline.export_val_metrics` — export validation metrics to xlsx/parquet

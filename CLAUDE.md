@@ -86,6 +86,11 @@ Loss gains from config: iou=7.5, cls=0.5, dfl=1.5, dist=1.0, poly_dist=0.45, pol
 poly_conf=0.2, with an overall `poly_gain` multiplier (default 0.5) applied to the summed
 polygon loss.
 
+The box and cls losses are **config-selectable** (`losses/tal_loss.py`): `losses.box_iou_type`
+= `ciou` (default) / `giou` / `diou` / `eiou` / `siou`; `losses.cls_loss_type` = `bce` (default) /
+`focal` / `varifocal`; `losses.label_smoothing` (default 0). Defaults reproduce the CIoU+BCE path
+byte-identically. Polygon/distance losses are unchanged.
+
 **Loss normalization conventions** (`losses/tal_loss.py`, `losses/polygon_loss.py`):
 - Box CIoU, DFL, and cls divide by `target_scores_sum = max(sum(target_scores), 1)`; box and
   DFL are additionally weighted per-anchor by `sum(target_scores, -1)`.
@@ -112,6 +117,8 @@ Distance loss: L1 on log-scale, masked to samples where `gt_distance > -10.0` (i
 ### Optimizer
 
 SGD with Nesterov momentum (0.937), cosine LR decay (initial=0.01, alpha=0.01) over the full `train_steps` (`optimizers/sgd_warmup.py`). EMA with dynamic decay: `min(0.9999, (1+step)/(10+step))` (`optimizers/ema.py`). EMA weights are swapped in for evaluation and swapped back afterward.
+
+The optimizer and LR schedule are **config-selectable** via a registry (`optimizers/factory.py`): `optimizer.type` = `sgd_torch` (default) / `adamw` / `adam`; `learning_rate.type` = `cosine` (default) / `linear` / `step` / `polynomial` / `constant`, plus an optional linear LR-warmup. Defaults reproduce the SGD+cosine path byte-identically. Gradient clipping is `task.gradient_clip_norm` (SGD clips per-call; keras optimizers set `global_clipnorm`).
 
 ## Actual File Layout
 

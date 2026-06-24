@@ -62,7 +62,10 @@ See [configuration.md](configuration.md) for the fields.
   validation, merge the zipped detection+distance stream, save checkpoints at epoch end, handle
   SIGTERM for preemption, and auto-resume from the newest checkpoint across both `output_dir/`
   (epoch-boundary saves) and `output_dir/resume/` (mid-epoch interruption saves, rotated, max 2);
-  whichever has the higher global step wins.
+  whichever has the higher global step wins. It also drives a live progress bar
+  (`tools/shared/progress.py`), appends each validation to `<run>/val_history.jsonl`, and — when
+  `mosaic.close_mosaic_epochs > 0` — rebuilds a mosaic-free training stream for the final N epochs
+  (`_maybe_close_mosaic`, Ultralytics close_mosaic).
 - `viz_utils.py` — renders box/polygon overlays for TensorBoard image summaries.
 
 **Epoch accounting**: when `steps_per_loop > 0` (the normal case — computed as

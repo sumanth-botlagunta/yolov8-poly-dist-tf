@@ -118,10 +118,16 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
   `ImageProjectiveTransformV3` costs several times more per output pixel than
   `tf.image.resize` there, and the composed form pays 4 full warps per mosaic). Both
   formulations are geometrically identical — the label math never changed.
-- The warp's scale gain is drawn from the **explicit** `[aug_scale_min, aug_scale_max]`
-  config bounds (`make_perspective_matrix(scale_min=, scale_max=)`). The earlier symmetric
-  magnitude form widened the configured `[0.4, 1.9]` to `[0.1, 1.9]`, occasionally shrinking
-  content to ~1% area — the "mostly-gray frame" bug, since fixed.
+- The warp's scale gain is the **canvas→output crop gain**, drawn from the explicit
+  `[aug_scale_min, aug_scale_max]` config bounds (`make_perspective_matrix(scale_min=, scale_max=)`),
+  default stock YOLO **`[0.5, 1.5]`**. This is the **only** source of per-sample size variety:
+  per-image placement scale is fixed (each source resized so its long side = output, then placed
+  upright). The earlier per-image random scale (`[0.4, 1.9]`) made each tile a different size; it
+  was replaced by the upright formulation.
+- **Tiles are upright by default.** Rotation fires only on `rotate_prob` of outputs (default 0.10,
+  ±`degrees`=10); `shear` defaults to 0. The split center shifts H+V (`mosaic_center`), so each
+  tile's visible crop varies and boxes/polygons are cut at the moving edges. `close_mosaic_epochs`
+  (default 0) disables mosaic + mixup for the final N epochs (Ultralytics close_mosaic).
 
 ## Performance notes
 - Every `.map` uses `num_parallel_calls=AUTOTUNE`.

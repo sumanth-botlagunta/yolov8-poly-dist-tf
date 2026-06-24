@@ -1,7 +1,8 @@
 # Metrics Glossary
 
 What each metric printed by `python -m tools.eval` (and logged to TensorBoard `val/...` during
-training) means. Computed by `eval/coco_metrics.py`, `eval/polygon_metrics.py`, and
+training) means. Computed by `eval/coco_metrics.py` + `eval/coco_eval_custom.py` (the custom
+COCOeval that adds the F1 confidence sweep and don't-care handling), `eval/polygon_metrics.py`, and
 `eval/distance_metrics.py`.
 
 ## Detection (COCO)
@@ -11,7 +12,7 @@ training) means. Computed by `eval/coco_metrics.py`, `eval/polygon_metrics.py`, 
 | `mAP` | Mean Average Precision averaged over IoU thresholds **0.50:0.95** (the primary COCO metric). |
 | `mAP50` | Average Precision at a single IoU threshold of **0.5** (looser, more forgiving). |
 | `AR100` | Average Recall with up to **100 detections** per image. |
-| `F1score50` | **Macro-averaged peak F1** at IoU 0.5: for each class, the max `2pr/(p+r)` over the PR curve; then averaged over classes. This is the **best-checkpoint selection metric** (`trainer.best_checkpoint_eval_metric`). |
+| `F1score50` | **Macro-averaged best F1** at IoU 0.5, **maxDets=10**: `eval/coco_eval_custom.py:COCOevalCustom` sweeps a confidence threshold grid (`np.arange(0.1, 1.0, 0.05)`) on the cumulative precision/recall (with a hallucination-GT recall correction), takes each class's best `2pr/(p+r)`, then averages over classes with a valid PR point. This is the **best-checkpoint selection metric** (`trainer.best_checkpoint_eval_metric`). |
 | `precision50` | Mean precision at each class's peak-F1 operating point (the same point `F1score50` uses). |
 | `recall50` | Mean recall at each class's peak-F1 operating point. |
 

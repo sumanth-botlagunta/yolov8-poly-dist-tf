@@ -18,7 +18,8 @@ levels `"3"`, `"4"`, `"5"`.
 
 ## Decoder — `models/decoder.py`
 FPN-PAN with C2f stacks (top-down + bottom-up), producing fused features per level for the
-head. Activation is ReLU throughout.
+head. Activation is **ReLU by default**, config-selectable via `task.model.norm_activation.activation`
+(`relu` · `silu`/`swish` · `gelu` · `leaky_relu` · `mish` · `hardswish`).
 
 ## Heads — `models/head.py:YoloV8Head`
 Six per-pixel branches, each emitted at all 3 FPN levels:
