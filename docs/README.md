@@ -4,7 +4,19 @@ Developer documentation for the **YOLOv8 Polygon + Distance (TensorFlow)** codeb
 For a quick start (setup, training/eval/export commands), see the top-level
 [README.md](../README.md).
 
-## Contents
+## Guides (task-oriented — start here)
+
+Step-by-step procedures for the core flows. The reference docs below are the deep-dives.
+
+| Guide | Walks you through |
+|-------|-------------------|
+| [guides/training.md](guides/training.md) | Launching, monitoring, resuming, and stopping a training run end to end. |
+| [guides/validation.md](guides/validation.md) | Evaluating a checkpoint, reading the metrics, and picking the best one. |
+| [guides/finetuning.md](guides/finetuning.md) | Warm-starting a new run from an existing checkpoint and tuning it. |
+| [guides/deployment.md](guides/deployment.md) | SavedModel → SNPE/DLC export, quantization, and verifying device == host. |
+| [guides/inference.md](guides/inference.md) | Running a checkpoint/SavedModel on a folder of images (predictions JSON + visuals). |
+
+## Reference
 
 | Doc | Covers |
 |-----|--------|
