@@ -57,8 +57,6 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
-_PROGRESS_EVERY = 5000
-
 
 def _parse_name_version(spec: str) -> Tuple[str, Optional[str]]:
     """Split a ``name:version`` (or bare ``name``) spec."""
@@ -219,15 +217,17 @@ def reencode_one(
     # Verify counts per split against the source.
     out_builder = tfds.builder(f"{out_name}:{out_version}", data_dir=data_dir)
     print(f"[{out_name}] verifying example counts ...")
+    from tools.shared.progress import Progress
     for split in requested_splits:
         out_n = int(out_builder.info.splits[split].num_examples)
         src_n = src_counts[split]
-        # Light progress re-iteration so long writes show life on big splits.
+        # Progress re-iteration so long writes show life on big splits.
         seen = 0
+        vbar = Progress(total=out_n, desc=f"verify {out_name}/{split}", unit='ex')
         for _ in out_builder.as_dataset(split=split, shuffle_files=False):
             seen += 1
-            if seen % _PROGRESS_EVERY == 0:
-                print(f"[{out_name}/{split}] scanned {seen} examples ...")
+            vbar.update(1)
+        vbar.close()
         print(f"[{out_name}/{split}] examples: source={src_n} "
               f"output_info={out_n} scanned={seen}")
         assert out_n == src_n == seen, (

@@ -261,7 +261,10 @@ def main():
     preds = []
     N = sum((H // s) * (W // s) for s in _STRIDES)
     missing_tf = miss_raw = done = 0
+    from tools.shared.progress import Progress
+    pbar = Progress(total=len(work), desc='Decoding DLC outputs', unit='img')
     for idx, rdir in work:
+        pbar.update(1)
         key = '%06d' % idx
         entry = tinfo.get(key)
         if entry is None:
@@ -289,6 +292,7 @@ def main():
                 'score': round(float(score[j]), 5),
             })
 
+    pbar.close()
     with open(a.output_json, 'w') as f:
         json.dump(preds, f)
     print(f"\nwrote {len(preds)} detections over {done} images -> {a.output_json}")

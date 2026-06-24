@@ -131,6 +131,8 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
     total_batches = 0
     img_id_base = 0   # running image-id counter (val uses drop_remainder=False)
 
+    from tools.shared.progress import Progress
+    pbar = Progress(total=None, desc='Evaluating', unit='batch')   # val_ds length unknown
     for step, (images, labels) in enumerate(val_ds):
         # Eval parser emits uint8; the model needs float32 [0, 1] (feeding
         # uint8 raises on the float32 conv kernels).
@@ -204,9 +206,9 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
             img_id_base += B
 
         total_batches += 1
-        if step % 50 == 0:
-            log.info("Evaluated %d / ? batches...", total_batches)
+        pbar.update(1)
 
+    pbar.close()
     log.info("Evaluation complete: %d batches total.", total_batches)
 
     metrics = coco_ev.evaluate()

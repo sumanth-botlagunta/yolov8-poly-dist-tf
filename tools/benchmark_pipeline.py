@@ -85,6 +85,8 @@ def _run_benchmark(ds, n_steps: int) -> dict:
     start_total = time.perf_counter()
     prev = time.perf_counter()
 
+    from tools.shared.progress import Progress
+    pbar = Progress(total=n_steps, desc='Benchmark', unit='batch')
     for i, batch in enumerate(ds.take(n_steps)):
         imgs = _images_of(batch)
         _ = imgs.numpy()[0, 0, 0, 0]              # force materialization
@@ -94,10 +96,9 @@ def _run_benchmark(ds, n_steps: int) -> dict:
 
         batch_size = int(imgs.shape[0])
         total_images += batch_size
-        if (i + 1) % 10 == 0:
-            recent = step_times[-10:]
-            imgs_sec = batch_size / (sum(recent) / len(recent))
-            log.info("Step %3d/%d — %.1f imgs/sec (recent avg)", i + 1, n_steps, imgs_sec)
+        recent = step_times[-10:]
+        pbar.update(1, status=f"{batch_size / (sum(recent) / len(recent)):.1f} img/s")
+    pbar.close()
 
     elapsed = time.perf_counter() - start_total
     step_arr = np.array(step_times)
