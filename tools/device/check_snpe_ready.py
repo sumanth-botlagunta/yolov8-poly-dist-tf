@@ -1,16 +1,24 @@
-"""One-shot check: is the SNPE export actually picking up the StridedSlice fix?
+"""One-shot pre-conversion check for the SNPE export: un-folded BatchNorm + StridedSlice.
 
-`snpe-tensorflow-to-dlc` failing in StridedSliceLayerBuilder means the graph it reads
-still contains a StridedSlice op. The fix lives in models/backbone.py (C2f -> tf.split)
-and models/decoder.py (static FPN resize). If the export still emits StridedSlice, the
-code being IMPORTED is not the patched code — almost always because the repo is
-pip-installed and `import models.*` resolves to site-packages, not your pulled tree.
+Two faults make `snpe-tensorflow-to-dlc` produce a DLC that quantizes badly or fails:
+
+  1. UN-FOLDED BATCHNORM. If the converted graph still contains FusedBatchNormV3 (instead
+     of BN folded into the preceding Conv2D, or expressed as Mul/Sub/Rsqrt/AddV2 constants),
+     the converter warns `can only merge 1 encoding for src op: .../FusedBatchNormV3
+     .../Conv2D, but found 0` and leaves a STANDALONE BN layer. In float that runs fine; once
+     QUANTIZED, that BN (a per-channel scale forced into one per-tensor int8 encoding) craters
+     and the error cascades downstream -> the classic "BatchNorm layers are the worst diverged"
+     pattern. Fold BN before conversion.
+
+  2. StridedSlice. `snpe-tensorflow-to-dlc` failing in StridedSliceLayerBuilder means the graph
+     still contains a StridedSlice op. The fix lives in models/backbone.py (C2f -> tf.split)
+     and models/decoder.py (static FPN resize); if it persists, the IMPORTED code is not the
+     patched tree (often a pip-installed `models.*` shadowing your checkout).
 
 This script prints, with zero ambiguity:
-  1. WHICH models/backbone.py and models/decoder.py are actually imported (their paths),
-     and whether each carries the fix marker.
-  2. For a given exported saved_model, how many StridedSlice ops it contains
-     (main graph + every nested function), with a PASS/FAIL verdict.
+  1. WHICH models/backbone.py and models/decoder.py are imported, and whether each has the fix.
+  2. For an exported saved_model: an op-type histogram, the count of FusedBatchNorm* ops, and
+     the count of StridedSlice ops (main graph + every nested function), each with a verdict.
 
 Usage:
     python tools/device/check_snpe_ready.py [path/to/exported/saved_model]
@@ -18,6 +26,12 @@ Usage:
 
 import inspect
 import sys
+from collections import Counter
+
+# TF op names for an un-folded (inference) batch-norm — none of these should survive into a
+# graph that is about to be quantized; they must be folded into Conv2D / expressed as constants.
+_BN_OPS = ('FusedBatchNormV3', 'FusedBatchNormV2', 'FusedBatchNorm',
+           'BatchNormWithGlobalNormalization', 'BatchNorm')
 
 
 def _check_sources():
@@ -40,31 +54,56 @@ def _check_sources():
     return b_ok and d_ok
 
 
+def _all_nodes(gd):
+    """Every node in the graph: the main graph plus every nested function body."""
+    nodes = list(gd.node)
+    for f in gd.library.function:
+        nodes.extend(f.node_def)
+    return nodes
+
+
 def _scan_saved_model(path):
     from tensorflow.python.saved_model import loader_impl
     gd = loader_impl.parse_saved_model(path).meta_graphs[0].graph_def
+    nodes = _all_nodes(gd)
+    hist = Counter(n.op for n in nodes)
 
-    def strided(nodes):
-        ss = [n for n in nodes if n.op == "StridedSlice"]
-        bad = [n.name for n in ss
-               if n.attr["ellipsis_mask"].i or n.attr["new_axis_mask"].i]
-        return ss, bad
-
-    ss, bad = strided(gd.node)
-    total = len(ss)
-    for f in gd.library.function:
-        fss, _ = strided(f.node_def)
-        total += len(fss)
     print(f"\n=== exported graph: {path} ===")
-    print(f"  StridedSlice ops (main+functions): {total}")
+    print(f"  total ops (main+functions): {len(nodes)}")
+    print("  op-type histogram (top 15):")
+    for op, c in hist.most_common(15):
+        print(f"     {op:28s} {c}")
+
+    # ---- un-folded BatchNorm (the encoding-merge / quantization-cascade fault) ----
+    bn = [n for n in nodes if n.op in _BN_OPS]
+    print(f"\n  un-folded BatchNorm ops ({'/'.join(_BN_OPS[:3])}...): {len(bn)}")
+    if bn:
+        for n in bn[:8]:
+            print(f"     {n.op}: {n.name}")
+        if len(bn) > 8:
+            print(f"     ... (+{len(bn) - 8} more)")
+    folded = hist.get('Mul', 0) and (hist.get('Rsqrt', 0) or hist.get('Sub', 0))
+    print("  BN VERDICT:", "CLEAN — no FusedBatchNorm* (BN folded into Conv / constants)"
+          if not bn else
+          "*** UN-FOLDED BN PRESENT *** -> the 'merge 1 encoding ... found 0' warning; these "
+          "quantize badly. Fold BN into Conv before snpe-tensorflow-to-dlc.")
+    if bn and folded:
+        print("     (note: Mul/Rsqrt/Sub constants ALSO present — folding is partial; some BN "
+              "folded, some not. Re-export so NONE survive.)")
+
+    # ---- StridedSlice (the SNPE builder / stale-code fault) ----
+    ss = [n for n in nodes if n.op == "StridedSlice"]
+    bad = [n.name for n in ss if n.attr["ellipsis_mask"].i or n.attr["new_axis_mask"].i]
+    print(f"\n  StridedSlice ops (main+functions): {len(ss)}"
+          + (f"  ({len(bad)} with ellipsis/new_axis mask)" if bad else ""))
     if ss:
         print("  example StridedSlice names:")
-        for n in ss[:8]:
+        for n in ss[:6]:
             print("     ", n.name,
                   f"(ellipsis={n.attr['ellipsis_mask'].i} new_axis={n.attr['new_axis_mask'].i})")
-    print("  VERDICT:", "CLEAN — SNPE StridedSliceLayerBuilder cannot fire"
-          if total == 0 else "STALE/OLD — re-export with the patched code (see module paths above)")
-    return total == 0
+    print("  SS VERDICT:", "CLEAN — SNPE StridedSliceLayerBuilder cannot fire"
+          if not ss else "STALE/OLD — re-export with the patched code (see module paths above)")
+    return (len(ss) == 0) and (len(bn) == 0)
 
 
 if __name__ == "__main__":
@@ -75,5 +114,7 @@ if __name__ == "__main__":
     else:
         print("\n(no saved_model path given — pass one to scan the exported graph)")
     print("\nSUMMARY:",
-          "code patched AND graph clean — good to convert" if (code_ok and sm_ok)
-          else "MISMATCH — the imported code or the scanned graph is not the patched version")
+          "graph is SNPE-ready (BN folded, no StridedSlice) — good to convert/quantize"
+          if (code_ok and sm_ok)
+          else "NOT READY — fix the FAIL verdict(s) above (fold BatchNorm into Conv, and/or "
+               "re-export the patched StridedSlice-free code) before converting/quantizing")

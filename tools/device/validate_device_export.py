@@ -53,6 +53,9 @@ try:
     flags.DEFINE_integer('num_images', 500, 'How many val images to score (-1 = all).')
     flags.DEFINE_float('iou_thr', 0.5, 'IoU threshold for the direct precision/recall/F1.')
     flags.DEFINE_bool('normalize_baked', True, 'SavedModel bakes /255 (feed raw [0,255]).')
+    flags.DEFINE_string('box_order', 'yfirst', "box head order of the device SavedModel: "
+                        "'yfirst' (legacy/DLC default, --legacy_box_order; reordered to "
+                        "x-first to compare to the golden) or 'xfirst' (--legacy_box_order=False).")
 except flags.DuplicateFlagError:
     pass
 log = logging.getLogger(__name__)
@@ -68,10 +71,16 @@ def _anchor_grid(Hl, Wl, s):
 
 
 def _reconstruct(dev_out, H, W, num_classes, max_boxes=300,
-                 score_thresh=0.05, nms_thresh=0.65, poly_size=24):
+                 score_thresh=0.05, nms_thresh=0.65, poly_size=24, box_order='yfirst'):
     """Rebuild deploy-dict detections from device outputs, as the on-device decoder must:
-    box[N,4] LTRB pre-stride → stride+anchor → yxyx; cls raw → sigmoid → top-1 → NMS."""
-    box = dev_out['box'].numpy()                 # [N,4] l,t,r,b pre-stride
+    box[N,4] LTRB pre-stride → stride+anchor → yxyx; cls raw → sigmoid → top-1 → NMS.
+
+    box_order: 'yfirst' ([t,l,b,r] — the legacy/DLC export default, --legacy_box_order) is
+    reordered to x-first before decode; 'xfirst' assumes [l,t,r,b] (a --legacy_box_order=False
+    export). A mismatch transposes every box."""
+    box = dev_out['box'].numpy()                 # pre-stride; [t,l,b,r] if yfirst else [l,t,r,b]
+    if box_order == 'yfirst':
+        box = box[:, [1, 0, 3, 2]]               # -> [l,t,r,b]
     cls = dev_out['cls'].numpy()                 # [N,num_classes] raw logits
     boxes, off = [], 0
     for s in _STRIDES:
@@ -219,7 +228,8 @@ def main(_):
         imgs = tf.cast(images, tf.float32)
         for i in range(B):
             raw_in = imgs[i:i + 1] if FLAGS.normalize_baked else imgs[i:i + 1] / 255.0
-            dpred = _reconstruct(dev_serving(input_image=raw_in), H, W, nc)
+            dpred = _reconstruct(dev_serving(input_image=raw_in), H, W, nc,
+                                 box_order=FLAGS.box_order)
             lbl_i = {k: v[i:i + 1] for k, v in labels.items()}
             ev_d.update(dpred, lbl_i)
             rec_g.append(_collect(gpred, labels, i))

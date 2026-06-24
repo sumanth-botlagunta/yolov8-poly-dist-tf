@@ -131,8 +131,18 @@ def _greedy_nms(boxes, scores, iou_thr):
     return keep
 
 
-def _decode(box, cls, H, W, conf_thr, nms_iou, num_classes, max_boxes=300):
-    """DFL-decoded box[N,4] + raw cls[N,nc] -> detections in 672x416 PIXEL coords."""
+def _decode(box, cls, H, W, conf_thr, nms_iou, num_classes, max_boxes=300,
+            box_order='yfirst'):
+    """DFL-decoded box[N,4] + raw cls[N,nc] -> detections in 672x416 PIXEL coords.
+
+    box_order: channel order of the box head. 'yfirst' ([t,l,b,r] — the legacy/DLC order
+    that export_device_dlc emits by default with --legacy_box_order) is reordered to
+    x-first [l,t,r,b] before the decode below. 'xfirst' assumes [l,t,r,b] already (an
+    export with --legacy_box_order=False). A MISMATCH TRANSPOSES EVERY BOX — the classic
+    host/device gap.
+    """
+    if box_order == 'yfirst':
+        box = box[:, [1, 0, 3, 2]]            # [t,l,b,r] -> [l,t,r,b]
     axy, st = _anchors(H, W)
     lt, rb = box[:, :2], box[:, 2:]
     x1y1 = (axy - lt) * st
@@ -188,6 +198,11 @@ def main():
                          "string ('') to force the flat Result_* layout.")
     ap.add_argument('--input_size', default='672,416', help='H,W')
     ap.add_argument('--num_classes', type=int, default=39)
+    ap.add_argument('--box_order', default='yfirst', choices=['yfirst', 'xfirst'],
+                    help="box head channel order of the DLC raws. 'yfirst' = the legacy/DLC "
+                         "order ([t,l,b,r], export_device_dlc --legacy_box_order default), "
+                         "reordered to x-first before decode. Use 'xfirst' ONLY for raws from "
+                         "an export with --legacy_box_order=False. Mismatch transposes every box.")
     ap.add_argument('--conf_threshold', type=float, default=0.001)
     ap.add_argument('--nms_iou', type=float, default=0.65)
     ap.add_argument('--category_offset', type=int, default=0,
@@ -258,7 +273,8 @@ def main():
             continue
         box = np.fromfile(pb, np.float32).reshape(N, 4)
         cls = np.fromfile(pc, np.float32).reshape(N, a.num_classes)
-        xyxy, score, klass = _decode(box, cls, H, W, a.conf_threshold, a.nms_iou, a.num_classes)
+        xyxy, score, klass = _decode(box, cls, H, W, a.conf_threshold, a.nms_iou,
+                                     a.num_classes, box_order=a.box_order)
         done += 1
         if len(xyxy) == 0:
             continue

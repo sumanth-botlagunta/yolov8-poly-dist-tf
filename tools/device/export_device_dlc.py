@@ -371,6 +371,109 @@ def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16, debug_taps=F
     return serving_fn
 
 
+# Inference batch-norm op names — none of these may survive into a graph that is about to
+# be quantized; each is folded into its preceding Conv2D by _fold_batch_norms below.
+_BN_OPS = ('FusedBatchNormV3', 'FusedBatchNormV2', 'FusedBatchNorm')
+
+
+def _fold_batch_norms(gd):
+    """Fold inference BatchNorm into the preceding Conv2D, in place on a FROZEN GraphDef.
+
+    Why: a standalone FusedBatchNormV3 left in the graph makes snpe-tensorflow-to-dlc warn
+    ``can only merge 1 encoding for src op: .../FusedBatchNormV3 .../Conv2D, but found 0`` and
+    keeps a separate BN layer. In float that runs exactly; once QUANTIZED, the BN's per-channel
+    scale (gamma/sqrt(var+eps)) is forced into ONE per-tensor int8 activation encoding, crushing
+    narrow-range channels and cascading downstream (the "BatchNorm layers are the worst-diverged"
+    pattern). Folding the scale into the conv's per-channel WEIGHTS lets SNPE quantize it
+    per-channel correctly — no standalone BN, no bad encoding.
+
+    Math (BN inference): y = (x - mean) * gamma/sqrt(var+eps) + beta. With ``s = gamma/sqrt(var+eps)``
+    and a preceding ``conv(x) [+ bias]``: fold ``W' = W * s`` (per output channel) and
+    ``bias' = (bias - mean) * s + beta``, then replace BN with a BiasAdd. Numerically identical
+    to the original (verified to ~1e-6 on synthetic conv-BN and conv-bias-BN graphs).
+
+    Safe by construction: only folds when the conv output feeds ONLY this BN (else scaling the
+    shared conv weights would corrupt the other consumers) and all params are constants (true
+    after convert_variables_to_constants_v2). Anything else is skipped, not corrupted. Returns
+    (gd, folded_count, skipped_count).
+    """
+    import numpy as np
+    from tensorflow.python.framework import tensor_util
+
+    nodes = {n.name: n for n in gd.node}
+
+    def base(s):
+        return s.split(':')[0].lstrip('^')
+
+    consumers = {}
+    for n in gd.node:
+        for inp in n.input:
+            consumers.setdefault(base(inp), []).append(n.name)
+
+    def deref(name):
+        n = nodes.get(base(name)); seen = set()
+        while n is not None and n.op == 'Identity' and n.name not in seen:
+            seen.add(n.name); n = nodes.get(base(n.input[0]))
+        return n
+
+    def const_of(name):
+        n = deref(name)
+        if n is None or n.op != 'Const':
+            return None, None
+        return tensor_util.MakeNdarray(n.attr['value'].tensor), n
+
+    remove = set(); folded = skipped = 0
+    for bn in [n for n in gd.node if n.op in _BN_OPS]:
+        prod = deref(bn.input[0]); conv = None; bias_node = None
+        if prod is not None and prod.op in ('Conv2D', 'DepthwiseConv2dNative'):
+            conv = prod
+        elif prod is not None and prod.op in ('BiasAdd', 'AddV2', 'Add'):
+            inner = deref(prod.input[0])
+            if inner is not None and inner.op in ('Conv2D', 'DepthwiseConv2dNative'):
+                conv = inner; bias_node = prod
+        if conv is None:
+            skipped += 1; continue
+        allowed = {bn.name} | ({bias_node.name} if bias_node else set())
+        if any(c not in allowed for c in consumers.get(conv.name, [])):
+            skipped += 1; continue              # conv feeds something else — folding would corrupt it
+        if bias_node and any(c != bn.name for c in consumers.get(bias_node.name, [])):
+            skipped += 1; continue
+        W, Wn = const_of(conv.input[1]); g, _ = const_of(bn.input[1]); b, _ = const_of(bn.input[2])
+        m, _ = const_of(bn.input[3]); v, _ = const_of(bn.input[4])
+        if any(x is None for x in (W, g, b, m, v)):
+            skipped += 1; continue
+        eps = bn.attr['epsilon'].f if bn.attr['epsilon'].f > 0 else 1e-3
+        s = (g / np.sqrt(v + eps)).astype(np.float32)
+        b0 = np.zeros_like(s)
+        if bias_node is not None:
+            bv, _ = const_of(bias_node.input[1])
+            if bv is not None:
+                b0 = bv.astype(np.float32)
+        if conv.op == 'Conv2D':
+            newW = (W * s.reshape(1, 1, 1, -1)).astype(np.float32)
+        else:                                    # DepthwiseConv2dNative [kh,kw,cin,mult]
+            kh, kw, cin, mult = W.shape
+            newW = (W * s.reshape(1, 1, cin, mult)).astype(np.float32)
+        newb = ((b0 - m) * s + b).astype(np.float32)
+        Wn.attr['value'].tensor.CopyFrom(tensor_util.make_tensor_proto(newW))
+        bc = gd.node.add(); bc.op = 'Const'; bc.name = bn.name + '/fold_bias'
+        bc.attr['dtype'].type = tf.float32.as_datatype_enum
+        bc.attr['value'].tensor.CopyFrom(tensor_util.make_tensor_proto(newb))
+        ba = gd.node.add(); ba.op = 'BiasAdd'; ba.name = bn.name + '/fold_ba'
+        ba.input.extend([conv.name, bc.name]); ba.attr['T'].type = tf.float32.as_datatype_enum
+        if 'data_format' in conv.attr:
+            ba.attr['data_format'].CopyFrom(conv.attr['data_format'])
+        for n in gd.node:                        # rewire BN's (output-0) consumers to the BiasAdd
+            for i, inp in enumerate(n.input):
+                if base(inp) == bn.name and inp.split(':')[-1] in ('0', bn.name):
+                    n.input[i] = ba.name
+        remove.add(bn.name); folded += 1
+
+    keep = [n for n in gd.node if n.name not in remove]
+    del gd.node[:]; gd.node.extend(keep)
+    return gd, folded, skipped
+
+
 def _save_named_savedmodel(serving_fn, head_names, output_dir):
     """Freeze ``serving_fn``, promote each tagged head op to a clean top-level node
     named exactly box/cls/..., and write a v1 SavedModel (SNPE-ready graph)."""
@@ -380,6 +483,15 @@ def _save_named_savedmodel(serving_fn, head_names, output_dir):
     cf     = serving_fn.get_concrete_function()
     frozen = convert_variables_to_constants_v2(cf)
     gd     = frozen.graph.as_graph_def()
+
+    # Fold inference BatchNorm into the preceding conv so the DLC has NO standalone
+    # FusedBatchNormV3 (which quantizes badly — see _fold_batch_norms). Numerically identical.
+    gd, folded, skipped = _fold_batch_norms(gd)
+    log.info("BatchNorm fold: folded %d BN into conv, skipped %d", folded, skipped)
+    remaining = [n.name for n in gd.node if n.op in _BN_OPS]
+    if remaining:
+        log.warning("BN fold: %d FusedBatchNorm* op(s) did NOT fold (will quantize poorly): %s",
+                    len(remaining), remaining[:5])
 
     op_names = {n.name for n in gd.node}
     for name in head_names:
@@ -426,6 +538,13 @@ def _verify(saved_model_dir, model, H, W, n_anchors, head_chan, do_norm,
     missing = [t for t in (['input_image'] + head_names) if t not in op_names]
     assert not missing, f"top-level op(s) absent from GraphDef (SNPE --out_node would fail): {missing}"
     log.info("[ok] top-level graph ops present for SNPE: %s", ['input_image'] + head_names)
+
+    # 0b) No standalone BatchNorm may survive — folded into conv by _fold_batch_norms.
+    #     A surviving FusedBatchNorm* is the "merge 1 encoding ... found 0" converter warning
+    #     and quantizes badly (per-channel scale forced into one per-tensor int8 encoding).
+    bn = [n.name for n in sm.meta_graphs[0].graph_def.node if n.op in _BN_OPS]
+    assert not bn, f"un-folded BatchNorm in exported graph (will quantize poorly): {bn[:5]}"
+    log.info("[ok] no standalone FusedBatchNorm* — BN folded into conv (quantizes per-channel)")
 
     loaded = tf.saved_model.load(saved_model_dir)
     fn = loaded.signatures['serving_default']

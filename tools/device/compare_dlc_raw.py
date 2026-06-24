@@ -68,8 +68,13 @@ def _anchors_strides(H, W):
     return np.concatenate(pts, 0), np.concatenate(strd, 0)
 
 
-def _decode_box(box, H, W):
-    """box [N,4]=ltrb (grid units) -> normalized yxyx (YoloV8LayerModified convention)."""
+def _decode_box(box, H, W, box_order='yfirst'):
+    """box [N,4] (grid units) -> normalized yxyx (YoloV8LayerModified convention).
+
+    box_order: 'yfirst' ([t,l,b,r] — the legacy/DLC export default, --legacy_box_order) is
+    reordered to x-first [l,t,r,b] before decode; 'xfirst' assumes [l,t,r,b]."""
+    if box_order == 'yfirst':
+        box = box[:, [1, 0, 3, 2]]
     ap, st = _anchors_strides(H, W)
     lt, rb = box[:, :2], box[:, 2:]
     axy = ap[:, ::-1]
@@ -89,6 +94,11 @@ def main():
     ap.add_argument('--nodes', default=','.join(_DEFAULT_NODES),
                     help='comma list of node names to compare')
     ap.add_argument('--samples', type=int, default=6, help='sample values to print per node')
+    ap.add_argument('--box_order', default='yfirst', choices=['yfirst', 'xfirst'],
+                    help="box head order of both raw sets ('yfirst' = legacy/DLC default, "
+                         "reordered to x-first before the decoded-box printout; 'xfirst' for "
+                         "--legacy_box_order=False). Affects only the decoded-box display, "
+                         "not the per-node raw diff.")
     a = ap.parse_args()
     H, W = (int(x) for x in a.input_size.split(','))
     N = sum((H // s) * (W // s) for s in (8, 16, 32))
@@ -159,8 +169,8 @@ def main():
     # ---- decoded box geometry ----
     if box_pair:
         print("\nDECODED BOX (ltrb grid -> normalized yxyx):")
-        dl = _decode_box(box_pair['A'], H, W)
-        dn = _decode_box(box_pair['B'], H, W)
+        dl = _decode_box(box_pair['A'], H, W, box_order=a.box_order)
+        dn = _decode_box(box_pair['B'], H, W, box_order=a.box_order)
         dd = np.abs(dl - dn)
         print(f"   max|diff|={dd.max():.4e}  mean|diff|={dd.mean():.4e}")
         for r in (0, 1, 2):

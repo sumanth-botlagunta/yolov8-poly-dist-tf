@@ -39,6 +39,9 @@ try:
     flags.DEFINE_bool('draw_gt', True, 'Overlay ground-truth boxes (white).')
     flags.DEFINE_bool('draw_poly', True, 'Overlay predicted polygon contours.')
     flags.DEFINE_integer('seed', 0, 'Shuffle seed for image selection.')
+    flags.DEFINE_string('box_order', 'yfirst', "box head order of the SavedModel: 'yfirst' "
+                        "(legacy/DLC default, --legacy_box_order; reordered to x-first before "
+                        "decode) or 'xfirst' (--legacy_box_order=False).")
 except flags.DuplicateFlagError:
     pass
 log = logging.getLogger(__name__)
@@ -67,10 +70,15 @@ def _anchor_grid(Hl, Wl, s):
 
 
 def _reconstruct_full(dev_out, H, W, nc, poly_size, max_boxes=300,
-                      score_thresh=0.05, nms_thresh=0.65):
+                      score_thresh=0.05, nms_thresh=0.65, box_order='yfirst'):
     """Full deploy-dict (boxes + activated polygons) from device outputs, carrying the
-    polygon heads through the same top-1 / per-class NMS the on-device decoder uses."""
+    polygon heads through the same top-1 / per-class NMS the on-device decoder uses.
+
+    box_order: 'yfirst' ([t,l,b,r] — the legacy/DLC export default) is reordered to x-first
+    before decode; 'xfirst' assumes [l,t,r,b] (a --legacy_box_order=False export)."""
     box = dev_out['box'].numpy()
+    if box_order == 'yfirst':
+        box = box[:, [1, 0, 3, 2]]               # [t,l,b,r] -> [l,t,r,b]
     cls = dev_out['cls'].numpy()
     pa = dev_out['poly_angle'].numpy() if 'poly_angle' in dev_out else None
     pd = dev_out['poly_dist'].numpy() if 'poly_dist' in dev_out else None
@@ -163,7 +171,7 @@ def main(_):
         imgs = tf.cast(images, tf.float32)
         for i in range(B):
             out = serving(input_image=imgs[i:i + 1])     # the real SavedModel, raw [0,255] in
-            pred = _reconstruct_full(out, H, W, nc, poly_size)
+            pred = _reconstruct_full(out, H, W, nc, poly_size, box_order=FLAGS.box_order)
             # display threshold (NMS already ran at 0.05; filter for a clean overlay)
             keep = pred['confidence'] >= FLAGS.score_thresh
             pred = {'bbox': pred['bbox'][keep], 'classes': pred['classes'][keep],
