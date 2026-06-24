@@ -578,5 +578,68 @@ class TestFilteredAnnsMissingFields(unittest.TestCase):
         self.assertEqual(out["groundtruth_is_crowd"].shape[0], 2)
 
 
+class TestMixUp(unittest.TestCase):
+    """MixUp (mosaic.py): the augmentation must actually fire when
+    mixup_frequency > 0 (it was previously implemented but never wired into
+    mosaic_fn, so the knob was a no-op)."""
+
+    @staticmethod
+    def _proc(val, nbox):
+        """A processed result dict (mosaic/single output format)."""
+        return {
+            "image":  tf.fill([16, 16, 3], tf.constant(val, tf.uint8)),
+            "height": tf.constant(16, tf.int32), "width": tf.constant(16, tf.int32),
+            "source_id": tf.constant("x"),
+            "groundtruth_boxes":    tf.zeros([nbox, 4]),
+            "groundtruth_classes":  tf.zeros([nbox], tf.int64),
+            "groundtruth_is_crowd": tf.zeros([nbox], tf.bool),
+            "groundtruth_area":     tf.ones([nbox]),
+            "groundtruth_dontcare": tf.zeros([nbox], tf.int64),
+            "groundtruth_dists":    tf.fill([nbox], -1.0),
+            "groundtruth_polygons": tf.fill([nbox, _MAXV], -1.0),
+        }
+
+    def test_mixup_blends_image_and_concatenates_labels(self):
+        """_mixup blends with a Beta(32,32)~0.5 weight (image strictly between the two
+        solids) and concatenates both inputs' instance rows."""
+        m = Mosaic(output_size=[16, 16], with_polygons=True)
+        one, two = self._proc(100, 3), self._proc(200, 5)
+        means = [float(tf.reduce_mean(tf.cast(m._mixup(one, two)["image"], tf.float32)))
+                 for _ in range(100)]
+        self.assertGreater(min(means), 100.0)   # strictly blended, not a pure source
+        self.assertLess(max(means), 200.0)
+        self.assertAlmostEqual(sum(means) / len(means), 150.0, delta=10.0)  # ~0.5 mix
+        r = m._mixup(one, two)
+        for key in ("groundtruth_boxes", "groundtruth_polygons", "groundtruth_classes",
+                    "groundtruth_dists"):
+            self.assertEqual(r[key].shape[0], 8, key)   # 3 + 5 concatenated
+
+    def test_mixup_frequency_zero_is_unwired(self):
+        """At the default mixup_frequency=0.0 the output is a plain mosaic (no blend
+        path added) — keys/shape identical to a non-mixup mosaic."""
+        g = _make_group(8, h=64, w=64, n=2)
+        base = Mosaic(output_size=[64, 64], mosaic_frequency=1.0, mixup_frequency=0.0,
+                      with_polygons=True, group_size=8, decodes_per_output=4)
+        out = base.mosaic_fn(is_training=True)(g)
+        self.assertEqual(tuple(out["image"].shape), (2, 64, 64, 3))
+
+    def test_mixup_frequency_one_fires(self):
+        """mixup_frequency=1.0 concatenates a second mosaic's labels every output, so
+        the mean surviving instance count is markedly higher than mixup off."""
+        def mean_inst(freq, trials=10):
+            tot = 0
+            for _ in range(trials):
+                m = Mosaic(output_size=[64, 64], mosaic_frequency=1.0, mixup_frequency=freq,
+                           with_polygons=True, aug_scale_min=1.0, aug_scale_max=1.0,
+                           group_size=8, decodes_per_output=4)
+                b = m.mosaic_fn(is_training=True)(_make_group(8, h=64, w=64, n=4))[
+                    "groundtruth_boxes"].numpy()
+                tot += b.any(axis=-1).sum()   # non-padded rows (padding is all-zero)
+            return tot / trials
+        off, on = mean_inst(0.0), mean_inst(1.0)
+        self.assertGreater(on, off * 1.4,
+                           f"MixUp did not fire: off={off:.1f} on={on:.1f}")
+
+
 if __name__ == "__main__":
     unittest.main()

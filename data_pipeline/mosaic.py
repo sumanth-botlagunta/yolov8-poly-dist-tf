@@ -43,7 +43,8 @@ them).
 
 Configuration (parser.mosaic in the experiment YAML):
     mosaic_frequency: 0.5
-    mixup_frequency: 0.0
+    mixup_frequency: 0.0     (per-output probability of blending the mosaic with a
+                              second mosaic — Ultralytics MixUp; 0 = off, the default)
     group_size: 32           (mosaic source pool per group)
     decodes_per_output: 4    (R: 4 = stock YOLO / no reuse; lower = more reuse, less decode)
     mosaic_center: 0.25      (half-range of the split point as a fraction; the
@@ -332,6 +333,24 @@ class Mosaic:
                     lambda ex=examples: self._mosaic(ex[0], ex[1], ex[2], ex[3]),
                     lambda ex=examples: self._single(ex[0]),
                 )
+                # MixUp (Ultralytics): with probability mixup_frequency, blend this
+                # output with a SECOND mosaic built from a distant window of the same
+                # group (offset by G//2 so its 4 sources differ from the primary) and
+                # concatenate their labels. Gated by a PYTHON check on the config
+                # constant, so at the default mixup_frequency=0.0 the partner ops are
+                # never added to the graph — byte-identical to the no-mixup pipeline.
+                # The partner mosaic is built inside the true branch, so it only
+                # executes when the coin fires.
+                if self._mixup_freq > 0:
+                    pidx = [perm[(R * j + G // 2 + k) % G] for k in range(4)]
+                    pex = [_select(batch, pidx[k]) for k in range(4)]
+                    do_mixup = tf.random.uniform([]) < self._mixup_freq
+                    out_j = tf.cond(
+                        do_mixup,
+                        lambda p=out_j, e=pex: self._mixup(
+                            p, self._mosaic(e[0], e[1], e[2], e[3])),
+                        lambda p=out_j: p,
+                    )
                 results.append(out_j)
             return _stack_results(results)
 
@@ -581,8 +600,18 @@ class Mosaic:
         one: Dict[str, tf.Tensor],
         two: Dict[str, tf.Tensor],
     ) -> Dict[str, tf.Tensor]:
-        """Blend two images with a beta-distributed weight."""
-        r = tf.random.uniform([])
+        """Blend two images with a Beta(32, 32) weight and concatenate their labels.
+
+        Beta(32, 32) concentrates the mix ratio tightly around 0.5 (Ultralytics' MixUp
+        recipe), sampled as ``g1/(g1+g2)`` with ``gi ~ Gamma(32)``. Both inputs are
+        already at the output size (mosaic/single results), so the resize is a no-op
+        safeguard. Labels (boxes/classes/polygons/dist/…) from both are concatenated;
+        the downstream parser caps at ``max_num_instances`` and builds the radial
+        polygon target from the union.
+        """
+        g1 = tf.random.gamma([], 32.0)
+        g2 = tf.random.gamma([], 32.0)
+        r = g1 / (g1 + g2)
         img1 = tf.cast(one['image'], tf.float32)
         img2 = tf.cast(two['image'], tf.float32)
 
