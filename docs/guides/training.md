@@ -84,6 +84,10 @@ all true by construction. See [training.md](../training.md#epoch-semantics).
   locations (higher global step wins). To resume from a specific one: `--resume_from <prefix>`.
 - **Stop cleanly** under the supervisor: `touch /path/to/run_dir/STOP`. The current run finishes
   its step/epoch and exits without a restart. (Remove the `STOP` file before relaunching.)
+- **Provenance** — at startup the run dir gets `params.yaml` (the full resolved config) and
+  `run_metadata.json` (the git commit + `run.diff` if the tree was dirty, the command line, the
+  resolved TFDS dataset versions, and the environment). Together they make every checkpoint
+  reproducible: `git checkout <commit>`, apply `run.diff`, use `params.yaml`, those dataset versions.
 
 ## 6. Close-mosaic (optional, sharpens final accuracy)
 

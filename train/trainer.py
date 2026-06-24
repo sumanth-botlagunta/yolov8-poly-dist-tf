@@ -522,6 +522,17 @@ class YoloV8Trainer:
             yaml.dump(dataclasses.asdict(self._config), _f, default_flow_style=False)
         log.info("Full resolved config saved to %s", params_path)
 
+        # Provenance: code (git commit + dirty diff) + data (resolved TFDS versions) +
+        # invocation + environment, so the run dir alone answers "what produced this".
+        try:
+            from datetime import datetime
+            from train.run_metadata import write_run_metadata
+            write_run_metadata(self._output_dir, self._config,
+                               resume_from=self._resume_from,
+                               started_at=datetime.now().astimezone().isoformat())
+        except Exception as _e:                    # pragma: no cover - never fatal
+            log.warning("run metadata skipped: %s", _e)
+
         self._log_startup_info()
 
     # ------------------------------------------------------------------
