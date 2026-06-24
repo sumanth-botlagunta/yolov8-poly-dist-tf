@@ -59,14 +59,24 @@ _LEVEL_STRIDES = {"3": 8, "4": 16, "5": 32}
 # CIoU helper (module-level to avoid closure overhead)
 # ---------------------------------------------------------------------------
 
-def _ciou_loss(b1: tf.Tensor, b2: tf.Tensor, eps: float = 1e-7) -> tf.Tensor:
-    """Complete IoU loss between two sets of xyxy boxes.
+def _bbox_iou_loss(b1: tf.Tensor, b2: tf.Tensor, iou_type: str = "ciou",
+                   eps: float = 1e-7) -> tf.Tensor:
+    """IoU-family box loss between two sets of xyxy boxes.
+
+    ``iou_type`` selects the penalty added to plain IoU:
+        iou   — 1 - IoU
+        giou  — Generalized IoU (enclosing-area penalty)
+        diou  — Distance IoU (center-distance penalty)
+        ciou  — Complete IoU (center distance + aspect-ratio) — the DEFAULT and the
+                exact previous computation (byte-identical)
+        eiou  — Efficient IoU (center + width + height penalties)
+        siou  — SCYLLA IoU (angle + distance + shape cost)
 
     Args:
         b1, b2: float32 [..., 4]  xyxy in the same coordinate system.
 
     Returns:
-        float32 [...]  per-box CIoU loss in [0, 2].
+        float32 [...]  per-box loss (0 = perfect overlap).
     """
     ix1 = tf.maximum(b1[..., 0], b2[..., 0])
     iy1 = tf.maximum(b1[..., 1], b2[..., 1])
@@ -79,32 +89,78 @@ def _ciou_loss(b1: tf.Tensor, b2: tf.Tensor, eps: float = 1e-7) -> tf.Tensor:
     union = a1 + a2 - inter + eps
     iou = inter / union
 
-    # Center distance squared
+    if iou_type == "iou":
+        return 1.0 - iou
+
+    # Center coordinates / distance² and the enclosing box (shared by the rest).
     cx1 = (b1[..., 0] + b1[..., 2]) * 0.5
     cy1 = (b1[..., 1] + b1[..., 3]) * 0.5
     cx2 = (b2[..., 0] + b2[..., 2]) * 0.5
     cy2 = (b2[..., 1] + b2[..., 3]) * 0.5
     rho2 = tf.square(cx1 - cx2) + tf.square(cy1 - cy2)
 
-    # Enclosing box diagonal squared
     ex1 = tf.minimum(b1[..., 0], b2[..., 0])
     ey1 = tf.minimum(b1[..., 1], b2[..., 1])
     ex2 = tf.maximum(b1[..., 2], b2[..., 2])
     ey2 = tf.maximum(b1[..., 3], b2[..., 3])
-    c2  = tf.square(ex2 - ex1) + tf.square(ey2 - ey1) + eps
 
-    # Aspect-ratio consistency penalty
+    if iou_type == "giou":
+        enclose_area = (ex2 - ex1) * (ey2 - ey1) + eps
+        giou = iou - (enclose_area - union) / enclose_area
+        return 1.0 - giou
+
+    c2 = tf.square(ex2 - ex1) + tf.square(ey2 - ey1) + eps
+
+    if iou_type == "diou":
+        return 1.0 - (iou - rho2 / c2)
+
     w1 = b1[..., 2] - b1[..., 0]
     h1 = b1[..., 3] - b1[..., 1]
     w2 = b2[..., 2] - b2[..., 0]
     h2 = b2[..., 3] - b2[..., 1]
-    v      = (4.0 / (math.pi ** 2)) * tf.square(
+
+    if iou_type == "eiou":
+        cw2 = tf.square(ex2 - ex1) + eps
+        ch2 = tf.square(ey2 - ey1) + eps
+        eiou = iou - rho2 / c2 - tf.square(w1 - w2) / cw2 - tf.square(h1 - h2) / ch2
+        return 1.0 - eiou
+
+    if iou_type == "siou":
+        # Angle cost: prefer aligning along the shorter center offset.
+        s_cw = cx2 - cx1
+        s_ch = cy2 - cy1
+        sigma = tf.sqrt(tf.square(s_cw) + tf.square(s_ch)) + eps
+        sin_a = tf.abs(s_ch) / sigma
+        sin_b = tf.abs(s_cw) / sigma
+        thr = tf.sqrt(2.0) / 2.0
+        sin_alpha = tf.where(sin_a > thr, sin_b, sin_a)
+        angle_cost = tf.cos(2.0 * tf.asin(tf.clip_by_value(sin_alpha, -1.0, 1.0)) - math.pi / 2.0)
+        # Distance cost (gamma weighted by the angle cost).
+        cw = ex2 - ex1 + eps
+        ch = ey2 - ey1 + eps
+        rho_x = tf.square(s_cw / cw)
+        rho_y = tf.square(s_ch / ch)
+        gamma = 2.0 - angle_cost
+        dist_cost = (1.0 - tf.exp(-gamma * rho_x)) + (1.0 - tf.exp(-gamma * rho_y))
+        # Shape cost.
+        omega_w = tf.abs(w1 - w2) / (tf.maximum(w1, w2) + eps)
+        omega_h = tf.abs(h1 - h2) / (tf.maximum(h1, h2) + eps)
+        shape_cost = tf.pow(1.0 - tf.exp(-omega_w), 4.0) + tf.pow(1.0 - tf.exp(-omega_h), 4.0)
+        siou = iou - 0.5 * (dist_cost + shape_cost)
+        return 1.0 - siou
+
+    # Default: ciou — EXACTLY the previous computation (keep byte-identical).
+    v = (4.0 / (math.pi ** 2)) * tf.square(
         tf.math.atan2(w2, h2 + eps) - tf.math.atan2(w1, h1 + eps)
     )
     alpha_v = v / (1.0 - iou + v + eps)
-
     ciou = iou - rho2 / c2 - alpha_v * v
     return 1.0 - ciou
+
+
+def _ciou_loss(b1: tf.Tensor, b2: tf.Tensor, eps: float = 1e-7) -> tf.Tensor:
+    """Complete IoU loss (back-compat alias for ``_bbox_iou_loss(..., 'ciou')``)."""
+    return _bbox_iou_loss(b1, b2, "ciou", eps)
 
 
 # ---------------------------------------------------------------------------
@@ -131,8 +187,18 @@ class TaskAlignedLossExtended:
         with_distance: bool = True,
         angle_step: int = 15,
         use_acsl: bool = False,
+        box_iou_type: str = "ciou",
+        cls_loss_type: str = "bce",
+        label_smoothing: float = 0.0,
+        focal_gamma: float = 1.5,
+        focal_alpha: float = 0.25,
     ):
         self.num_classes    = num_classes
+        self.box_iou_type   = box_iou_type
+        self.cls_loss_type  = cls_loss_type
+        self.label_smoothing = label_smoothing
+        self.focal_gamma    = focal_gamma
+        self.focal_alpha    = focal_alpha
         self.iou_gain       = iou_gain
         self.cls_gain       = cls_gain
         self.dfl_gain       = dfl_gain
@@ -224,8 +290,8 @@ class TaskAlignedLossExtended:
         fg_float = tf.cast(fg_mask, tf.float32)           # [B, A]
         weight   = tf.reduce_sum(target_scores, axis=-1)  # [B, A]
 
-        # ── CIoU ──────────────────────────────────────────────────────
-        ciou = _ciou_loss(pd_bboxes, target_bboxes)        # [B, A]
+        # ── Box IoU loss (ciou by default; giou/diou/eiou/siou selectable) ──
+        ciou = _bbox_iou_loss(pd_bboxes, target_bboxes, self.box_iou_type)   # [B, A]
         ciou_loss = tf.reduce_sum(ciou * weight * fg_float) / target_scores_sum
 
         # ── DFL ───────────────────────────────────────────────────────
@@ -279,10 +345,33 @@ class TaskAlignedLossExtended:
         fg_mask: tf.Tensor,
         ignore_bg: tf.Tensor,
     ) -> tf.Tensor:
-        """BCE classification loss, with ignore_bg and optional ACSL weighting."""
+        """Classification loss, with ignore_bg masking.
+
+        ``cls_loss_type`` selects the per-element loss (default ``bce`` is byte-identical
+        to the previous behaviour): ``focal`` adds the focal modulating factor,
+        ``varifocal`` (VFL) weights positives by their soft target and negatives by
+        ``alpha · p^gamma``. ``label_smoothing`` (0 = off) softens the BCE targets.
+        """
+        target = target_scores
+        if self.label_smoothing > 0.0:
+            target = target * (1.0 - self.label_smoothing) + 0.5 * self.label_smoothing
+
         bce = tf.nn.sigmoid_cross_entropy_with_logits(
-            labels=target_scores, logits=pred_scores
+            labels=target, logits=pred_scores
         )  # [B, A, C]
+
+        if self.cls_loss_type == "focal":
+            p = tf.sigmoid(pred_scores)
+            p_t = target * p + (1.0 - target) * (1.0 - p)
+            alpha_factor = target * self.focal_alpha + (1.0 - target) * (1.0 - self.focal_alpha)
+            bce = alpha_factor * tf.pow(1.0 - p_t, self.focal_gamma) * bce
+        elif self.cls_loss_type == "varifocal":
+            p = tf.sigmoid(pred_scores)
+            weight = tf.where(target > 0.0, target,
+                              self.focal_alpha * tf.pow(p, self.focal_gamma))
+            bce = bce * weight
+        # else "bce": unchanged (default)
+
         bce_sum = tf.reduce_sum(bce, axis=-1)   # [B, A]
 
         # ignore_bg=1 → apply loss only on foreground anchors for that image

@@ -134,6 +134,13 @@ class LossConfig:
     tal_alpha: float = 0.5
     tal_beta: float = 6.0
     topk: int = 10
+    # Box IoU loss variant: ciou (default) | giou | diou | eiou | siou.
+    box_iou_type: str = "ciou"
+    # Cls loss variant: bce (default) | focal | varifocal; label_smoothing 0 = off.
+    cls_loss_type: str = "bce"
+    label_smoothing: float = 0.0
+    focal_gamma: float = 1.5
+    focal_alpha: float = 0.25
     acsl: AcslConfig = dataclasses.field(default_factory=AcslConfig)
 
 

@@ -270,6 +270,7 @@ _LOSS_KEYS = frozenset({
     "iou_gain", "cls_gain", "dfl_gain", "dist_gain", "poly_dist_gain",
     "poly_conf_gain", "poly_angle_gain", "poly_gain", "tal_alpha", "tal_beta",
     "topk", "acsl",
+    "box_iou_type", "cls_loss_type", "label_smoothing", "focal_gamma", "focal_alpha",
 })
 
 
@@ -299,6 +300,11 @@ def _build_loss_config(l: Dict[str, Any]) -> LossConfig:
         tal_alpha=l.get("tal_alpha", 0.5),
         tal_beta=l.get("tal_beta", 6.0),
         topk=l.get("topk", 10),
+        box_iou_type=l.get("box_iou_type", "ciou"),
+        cls_loss_type=l.get("cls_loss_type", "bce"),
+        label_smoothing=l.get("label_smoothing", 0.0),
+        focal_gamma=l.get("focal_gamma", 1.5),
+        focal_alpha=l.get("focal_alpha", 0.25),
         acsl=acsl_cfg,
     )
 

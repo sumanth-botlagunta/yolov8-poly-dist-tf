@@ -152,6 +152,11 @@ class YoloV8Task:
             with_distance=task_cfg.with_distance,
             angle_step=task_cfg.model.angle_step,
             use_acsl=loss_cfg.acsl.use_acsl,
+            box_iou_type=loss_cfg.box_iou_type,
+            cls_loss_type=loss_cfg.cls_loss_type,
+            label_smoothing=loss_cfg.label_smoothing,
+            focal_gamma=loss_cfg.focal_gamma,
+            focal_alpha=loss_cfg.focal_alpha,
         )
 
     # ------------------------------------------------------------------
