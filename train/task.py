@@ -111,14 +111,16 @@ class YoloV8Task:
         log.info("Checkpoint migration: %s", stats)
 
     def apply_freezing(self, model: tf.keras.Model) -> None:
-        """Freeze whole modules listed in ``task.freeze_modules`` (set trainable=False).
+        """Freeze whole modules (``task.freeze_modules``) and/or the first N backbone
+        layers (``task.freeze_backbone_layers``) — set ``trainable=False``.
 
         Keras propagates ``trainable=False`` to sublayers and runs frozen BatchNorm in
-        inference mode (running stats held), so a frozen module truly stops learning.
+        inference mode (running stats held), so a frozen layer truly stops learning.
         Idempotent — applied on every start (including resume), before the optimizer is
         built so ``model.trainable_variables`` already excludes the frozen weights.
         """
-        frozen = getattr(self._config.task, 'freeze_modules', None) or []
+        task = self._config.task
+        frozen = getattr(task, 'freeze_modules', None) or []
         for name in frozen:
             module = getattr(model, name, None)
             if module is None:
@@ -126,12 +128,26 @@ class YoloV8Task:
                     f"task.freeze_modules: unknown module '{name}'. "
                     f"Expected one of: backbone, decoder, head.")
             module.trainable = False
-            log.info("Froze module '%s' (%d trainable variables remain across the model).",
-                     name, len(model.trainable_variables))
-        if frozen and not model.trainable_variables:
+            log.info("Froze module '%s'.", name)
+
+        # Partial freezing: the first N top-level backbone layers (in definition order).
+        n_layers = int(getattr(task, 'freeze_backbone_layers', 0) or 0)
+        if n_layers > 0:
+            layers = list(model.backbone.layers)
+            if n_layers > len(layers):
+                raise ValueError(
+                    f"task.freeze_backbone_layers ({n_layers}) exceeds the backbone's "
+                    f"{len(layers)} layers.")
+            names = []
+            for layer in layers[:n_layers]:
+                layer.trainable = False
+                names.append(layer.name)
+            log.info("Froze first %d backbone layers: %s", n_layers, ", ".join(names))
+
+        if (frozen or n_layers) and not model.trainable_variables:
             raise ValueError(
-                "task.freeze_modules froze every trainable variable — nothing left to "
-                "train. Leave at least one module (e.g. the head) unfrozen.")
+                "Freezing left no trainable variables — nothing left to train. Leave at "
+                "least one module / some layers (e.g. the head) unfrozen.")
 
     def prepare_grad_accumulation(self, model: tf.keras.Model) -> None:
         """Create the accumulator variables when ``trainer.grad_accum_steps > 1``.

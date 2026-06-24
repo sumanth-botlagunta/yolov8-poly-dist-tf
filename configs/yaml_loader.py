@@ -185,6 +185,7 @@ def _build_task_config(t: Dict[str, Any]) -> TaskConfig:
         validation_data=val_data_cfg,
         finetune_from=t.get("finetune_from"),
         freeze_modules=t.get("freeze_modules", []),
+        freeze_backbone_layers=t.get("freeze_backbone_layers", 0),
         init_checkpoint=t.get("init_checkpoint"),
         init_checkpoint_modules=t.get("init_checkpoint_modules", ["backbone", "decoder"]),
         num_classes=t.get("num_classes", 39),

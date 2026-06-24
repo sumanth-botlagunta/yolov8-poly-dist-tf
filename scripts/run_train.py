@@ -152,6 +152,9 @@ def _validate_config(config, output_dir: str) -> None:
     if set(freeze) >= _valid_modules:
         errors.append("task.freeze_modules freezes every module — nothing to train. "
                       "Leave at least one (e.g. the head) unfrozen.")
+    if getattr(task, 'freeze_backbone_layers', 0) < 0:
+        errors.append("task.freeze_backbone_layers must be >= 0, got "
+                      f"{task.freeze_backbone_layers}")
 
     ckpt = task.init_checkpoint
     if ckpt:

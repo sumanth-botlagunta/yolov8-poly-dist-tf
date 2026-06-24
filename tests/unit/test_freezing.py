@@ -18,11 +18,49 @@ def _model():
     return m
 
 
-def _apply(model, freeze):
-    cfg = types.SimpleNamespace(task=types.SimpleNamespace(freeze_modules=freeze))
+def _apply(model, freeze=None, backbone_layers=0):
+    cfg = types.SimpleNamespace(task=types.SimpleNamespace(
+        freeze_modules=freeze or [], freeze_backbone_layers=backbone_layers))
     task = T.YoloV8Task.__new__(T.YoloV8Task)
     task._config = cfg
     task.apply_freezing(model)
+
+
+def test_freeze_first_n_backbone_layers():
+    m = _model()
+    first3 = m.backbone.layers[:3]
+    n_all = len(m.trainable_variables)
+    n_first3 = sum(len(l.trainable_variables) for l in first3)
+    _apply(m, backbone_layers=3)
+    assert len(m.trainable_variables) == n_all - n_first3
+    assert not m.backbone.layers[0].trainable          # stem frozen
+    assert m.backbone.layers[3].trainable               # down1 still trains
+    assert m.head.trainable                             # head trains
+
+
+def test_freeze_backbone_layers_zero_is_noop():
+    m = _model()
+    n = len(m.trainable_variables)
+    _apply(m, backbone_layers=0)
+    assert len(m.trainable_variables) == n
+
+
+def test_freeze_too_many_backbone_layers_raises():
+    m = _model()
+    with pytest.raises(ValueError, match="exceeds the backbone"):
+        _apply(m, backbone_layers=999)
+
+
+def test_frozen_backbone_layer_bn_holds_stats():
+    m = _model()
+    _apply(m, backbone_layers=3)
+    bns = [l for l in m.backbone.layers[2].submodules
+           if isinstance(l, tf.keras.layers.BatchNormalization)]
+    if not bns:
+        pytest.skip("no BN")
+    before = bns[0].moving_mean.numpy().copy()
+    _ = m(tf.random.uniform([2, 64, 64, 3]), training=True)
+    assert np.allclose(before, bns[0].moving_mean.numpy())
 
 
 def test_freeze_backbone_excludes_its_vars_from_trainable():

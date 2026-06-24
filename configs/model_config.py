@@ -348,6 +348,12 @@ class TaskConfig:
     # running stats). Common with finetune_from: freeze [backbone] (or [backbone, decoder])
     # to adapt only the head. Empty = nothing frozen (default).
     freeze_modules: List[str] = dataclasses.field(default_factory=list)
+    # Partial freezing by depth: freeze the FIRST N top-level backbone layers (in order:
+    # stem_conv1, stem_conv2, stem_c2f, down1, c2f_p3, down2, c2f_p4, down3, c2f_p5_pre,
+    # sppf). The standard "freeze early layers, fine-tune the rest" recipe. 0 = off (default);
+    # the startup log lists which layers were frozen. Combine with finetune_from for a gentle
+    # partial fine-tune. Use freeze_modules: [backbone] to freeze ALL of it.
+    freeze_backbone_layers: int = 0
     init_checkpoint: Optional[str] = None
     init_checkpoint_modules: List[str] = dataclasses.field(
         default_factory=lambda: ["backbone", "decoder"]

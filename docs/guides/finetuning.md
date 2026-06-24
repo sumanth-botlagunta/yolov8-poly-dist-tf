@@ -91,23 +91,34 @@ Also worth tuning:
 - **Watch `train/update_ratio`** in TensorBoard (`lr·‖grad‖/‖weights‖`): a healthy fine-tune sits
   around `1e-3`; much higher means the LR is too aggressive for the trained weights.
 
-## 3. Optionally freeze modules
+## 3. Optionally freeze layers
 
-To adapt **only the head** (or head + decoder) and keep the feature extractor fixed, freeze whole
-modules — they stop updating entirely and their BatchNorm runs in inference mode (frozen running
-stats):
+Two granularities — frozen weights stop updating entirely, and their BatchNorm runs in inference
+mode (frozen running stats):
 
+**Whole modules** — freeze the entire backbone (or +decoder) to adapt only the head:
 ```yaml
 task:
-  freeze_modules: [backbone]            # or [backbone, decoder]; names: backbone | decoder | head
+  freeze_modules: [backbone]            # subset of: backbone | decoder | head
 ```
 
-- Frozen modules are excluded from `model.trainable_variables`, so no gradients, no optimizer
-  slots, and no EMA drift for them.
-- Leave at least one module unfrozen (rejected at startup otherwise).
+**Partial (by depth)** — the standard "freeze the early layers, fine-tune the rest". Freeze the
+**first N** backbone layers (in order: `stem_conv1, stem_conv2, stem_c2f, down1, c2f_p3, down2,
+c2f_p4, down3, c2f_p5_pre, sppf` — 10 total):
+```yaml
+task:
+  freeze_backbone_layers: 3             # freeze the stem; train the rest of the backbone + head
+```
+Early layers learn generic features that transfer; freezing more (`5`, `7`, …) keeps more of the
+backbone fixed. The startup log lists exactly which layers were frozen. (You can combine both
+fields.)
+
+- Frozen weights are excluded from `model.trainable_variables` — no gradients, no optimizer slots,
+  no EMA drift.
+- Leave at least one module / some layers unfrozen (rejected at startup otherwise).
 - Freezing is applied on **every** start (including resume), so it's a stable property of the run.
-- Pairs naturally with `finetune_from`: freeze `[backbone]` + a low LR to refine the head/decoder on
-  new data with minimal risk to the learned features. Unfreeze (remove the field) for a full fine-tune.
+- Pairs naturally with `finetune_from`: freeze the early backbone + a low LR to refine the deeper
+  layers + head on new data with minimal risk to the learned features.
 
 When to freeze vs just use a low LR: freeze when you're confident the backbone features transfer
 as-is (similar domain) and want speed + stability; use a low LR with nothing frozen when the new
