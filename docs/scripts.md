@@ -42,6 +42,10 @@ path with three modes:
   - `--per_category` — also print the per-class AP/AR table.
   - `--output_json` — write COCO-format detection results to this path.
   - `--output_dir` — write `metrics.json` (+ `per_category_metrics.json`) here.
+  - `--dump_failures` — mine the worst predictions per class (false positives, missed GT,
+    low-IoU matches) and write them as annotated images to `<output_dir>/failures/<NN_name>/`
+    (`--failures_dir` / `--failures_per_class` to tune). Pairs with the `per_class/` TB metrics:
+    see a weak class, then look at *why*.
 - **all** (`--all --watch_dir <dir>`): evaluate every checkpoint already in `<dir>` once,
   appending each result to `<dir>/eval_log.jsonl`.
 - **watch** (`--watch --watch_dir <dir>`): poll `<dir>` and evaluate each new checkpoint as it

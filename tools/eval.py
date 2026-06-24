@@ -68,6 +68,11 @@ try:
     flags.DEFINE_string('watch_dir', None, 'Run directory to scan (for --all / --watch).')
     flags.DEFINE_integer('interval', 300, 'Seconds between polls (--watch mode).')
     flags.DEFINE_integer('max_evals', 0, 'Max evaluations in --watch mode (0 = unlimited).')
+    flags.DEFINE_bool(  'dump_failures', False, 'Mine failure cases (FP / missed-GT / low-IoU) '
+                        'and write the worst per class as annotated images. Single mode.')
+    flags.DEFINE_string('failures_dir', None, 'Where to write failure images '
+                        '(default <output_dir>/failures or /tmp/eval_failures).')
+    flags.DEFINE_integer('failures_per_class', 8, 'Worst cases to keep per class per kind.')
 except flags.DuplicateFlagError:
     pass
 
@@ -89,7 +94,7 @@ def _load_model_from_checkpoint(config, ckpt_path: str) -> tf.keras.Model:
 
 
 def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
-                        collect_json: bool = False):
+                        collect_json: bool = False, failure_collector=None):
     """Evaluate one checkpoint and return (metrics, dt_results).
 
     Shared by every mode. Builds the model, restores EMA weights, runs inference
@@ -138,6 +143,19 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
         # uint8 raises on the float32 conv kernels).
         predictions = model(normalize_images(images), training=False)
         coco_ev.update(predictions, labels)
+
+        if failure_collector is not None:
+            imgs_np = images.numpy()      # uint8 [B,H,W,3] RGB from the eval parser
+            for i in range(imgs_np.shape[0]):
+                failure_collector.update(
+                    imgs_np[i],
+                    {'bbox': predictions['bbox'][i].numpy(),
+                     'classes': predictions['classes'][i].numpy(),
+                     'confidence': predictions['confidence'][i].numpy(),
+                     'num_detections': int(predictions['num_detections'][i])},
+                    {'bbox': labels['bbox'][i].numpy(),
+                     'classes': labels['classes'][i].numpy(),
+                     'n_gt': int(labels['n_gt'][i])})
 
         if dist_ev:
             # Match each GT to its highest-IoU detection (>=0.5) and compare that
@@ -237,12 +255,29 @@ def _run_single(config, task):
     if not FLAGS.checkpoint:
         raise app.UsageError("--checkpoint is required (or use --all / --watch with --watch_dir).")
 
+    failure_collector = None
+    if FLAGS.dump_failures:
+        from eval.failure_mining import FailureCollector
+        try:
+            from configs.class_map import DETECTION_CLASSES
+            names = [str(DETECTION_CLASSES[i]) for i in sorted(DETECTION_CLASSES)]
+        except Exception:
+            names = None
+        failure_collector = FailureCollector(class_names=names,
+                                             per_class=FLAGS.failures_per_class)
+
     metrics, dt_results = evaluate_checkpoint(
         config, task, FLAGS.checkpoint, split=FLAGS.split,
-        collect_json=bool(FLAGS.output_json))
+        collect_json=bool(FLAGS.output_json), failure_collector=failure_collector)
     coco_ev = metrics.pop('_coco_evaluator')
 
     _print_metrics(metrics)
+
+    if failure_collector is not None:
+        fdir = FLAGS.failures_dir or os.path.join(FLAGS.output_dir or '/tmp/eval_failures', 'failures')
+        n = failure_collector.write(fdir)
+        log.info("Failure mining: wrote %d annotated images to %s  (%s)",
+                 n, fdir, failure_collector.summary())
 
     per_cat = None
     if FLAGS.per_category:

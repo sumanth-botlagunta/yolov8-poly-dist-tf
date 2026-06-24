@@ -62,7 +62,26 @@ confidence-threshold sweep (`np.arange(0.1, 1.0, 0.05)`) at IoU 0.5 / maxDets 10
 over classes with a valid PR point (`eval/coco_eval_custom.py`). See [metrics.md](../metrics.md)
 for the full glossary (mAP, AR, polygon mIoU, distance error).
 
-## 5. Render a single report JSON to txt
+## 5. See *why* a class is weak — failure mining
+
+The `per_class/` TensorBoard metrics tell you *which* class is weak; `--dump_failures` shows you
+*why*. It writes the worst predictions per class as annotated images:
+
+```bash
+python -m tools.eval --config <cfg> --checkpoint /run/ckpt-100000 \
+    --output_dir /tmp/eval_out --dump_failures
+```
+For each class it keeps the worst few of each kind and writes them to
+`/tmp/eval_out/failures/<NN_name>/`:
+- **`fp_*`** — confident false positives (a detection with no matching GT; GT green, the FP red).
+- **`fn_*`** — missed GT (no detection matched it; the missed GT in yellow).
+- **`lowiou_*`** — correct class but poorly localized (matched at IoU `[0.5, 0.7)`; box in orange).
+
+Open the folder for a class that's dragging the macro F1 down and you'll usually see the pattern
+(confused with a similar class, consistently mislocalized, a labeling issue, …). Tune with
+`--failures_per_class` and `--failures_dir`.
+
+## 6. Render a single report JSON to txt
 
 If you have a standalone report JSON (e.g. a `<ckpt>_val.json` from step 3):
 ```bash
