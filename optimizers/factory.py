@@ -167,8 +167,9 @@ def build_lr_schedule(lr_cfg):
 # ---------------------------------------------------------------------------
 
 @OPTIMIZERS.register('sgd')
-def _build_sgd(opt_cfg, lr_fn, bias_lr_scale):
-    # The EXACT current optimizer — keep this path byte-identical.
+def _build_sgd(opt_cfg, lr_fn, bias_lr_scale, clip_norm=0.0):
+    # The EXACT current optimizer — keep this path byte-identical. SGDTorch clips via the
+    # clip_norm kwarg the trainer forwards through apply_gradients, so nothing to set here.
     from optimizers.sgd_warmup import SGDTorch
     return SGDTorch(
         lr_fn=lr_fn,
@@ -185,26 +186,39 @@ def _build_sgd(opt_cfg, lr_fn, bias_lr_scale):
 OPTIMIZERS.register('sgd_torch')(_build_sgd)
 
 
+def _keras_clip(clip_norm):
+    # keras optimizers clip at construction via global_clipnorm (None = no clipping).
+    return {'global_clipnorm': clip_norm} if clip_norm and clip_norm > 0.0 else {}
+
+
 @OPTIMIZERS.register('adamw')
-def _build_adamw(opt_cfg, lr_fn, bias_lr_scale):
+def _build_adamw(opt_cfg, lr_fn, bias_lr_scale, clip_norm=0.0):
     # Decoupled weight decay (the common modern default). LR warmup, if any, is in lr_fn.
     return tf.keras.optimizers.AdamW(
         learning_rate=lr_fn,
         weight_decay=opt_cfg.weight_decay,
         beta_1=opt_cfg.beta_1,
         beta_2=opt_cfg.beta_2,
+        **_keras_clip(clip_norm),
     )
 
 
 @OPTIMIZERS.register('adam')
-def _build_adam(opt_cfg, lr_fn, bias_lr_scale):
+def _build_adam(opt_cfg, lr_fn, bias_lr_scale, clip_norm=0.0):
     return tf.keras.optimizers.Adam(
         learning_rate=lr_fn,
         beta_1=opt_cfg.beta_1,
         beta_2=opt_cfg.beta_2,
+        **_keras_clip(clip_norm),
     )
 
 
-def build_core_optimizer(opt_cfg, lr_fn, bias_lr_scale):
-    """Build the (pre-EMA) optimizer for ``opt_cfg`` (``type`` selects the builder)."""
-    return OPTIMIZERS.get(getattr(opt_cfg, 'type', 'sgd'))(opt_cfg, lr_fn, bias_lr_scale)
+def build_core_optimizer(opt_cfg, lr_fn, bias_lr_scale, clip_norm=0.0):
+    """Build the (pre-EMA) optimizer for ``opt_cfg`` (``type`` selects the builder).
+
+    ``clip_norm`` (from ``task.gradient_clip_norm``) is applied where it belongs per
+    optimizer: SGDTorch clips per-call via apply_gradients (so it ignores this), keras
+    optimizers set ``global_clipnorm`` at construction.
+    """
+    return OPTIMIZERS.get(getattr(opt_cfg, 'type', 'sgd'))(
+        opt_cfg, lr_fn, bias_lr_scale, clip_norm=clip_norm)

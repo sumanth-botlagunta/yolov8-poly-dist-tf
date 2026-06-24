@@ -148,6 +148,11 @@ class ExponentialMovingAverage(tf.Module):
                 "model variables. The model must be fully built BEFORE the EMA "
                 "wrapper is constructed."
             )
+        # Only SGDTorch consumes a per-call ``clip_norm`` kwarg; keras optimizers
+        # (adam/adamw) clip via ``global_clipnorm`` set at construction and would raise
+        # on an unexpected kwarg. Drop it for optimizers that don't advertise support.
+        if not getattr(self._optimizer, 'accepts_clip_norm', False):
+            kwargs.pop('clip_norm', None)
         result = self._optimizer.apply_gradients(grads_and_vars, **kwargs)
         # Increment BEFORE computing decay (matches Ultralytics ModelEMA): the first
         # averaging update therefore uses decay = (1+1)/(10+1), not (1+0)/(10+0).

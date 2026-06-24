@@ -50,6 +50,10 @@ class SGDTorch(tf.Module):
             Set to 0.0 to disable (all groups start at schedule LR).
     """
 
+    # This optimizer consumes a per-call ``clip_norm`` kwarg in apply_gradients (the EMA
+    # wrapper forwards it); keras optimizers do not — they clip via global_clipnorm.
+    accepts_clip_norm = True
+
     def __init__(
         self,
         lr_fn: Callable,

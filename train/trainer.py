@@ -79,6 +79,7 @@ class YoloV8Trainer:
         self._optimizer    = None
         self._train_ds     = None
         self._train_iter   = None   # persistent iterator (built lazily in train())
+        self._mosaic_closed = False  # close_mosaic: rebuilt mosaic-free stream yet?
         self._val_ds       = None
         self._ckpt         = None
         self._ckpt_manager = None
@@ -143,6 +144,7 @@ class YoloV8Trainer:
         for epoch in range(start_epoch, total_epochs):
             log.info("─── Epoch %d / %d  (global_step=%d) ───",
                      epoch + 1, total_epochs, int(self._global_step))
+            self._maybe_close_mosaic(epoch, total_epochs)
             epoch_start  = time.time()
             step_times   = []
             step_losses  = {}   # last-step values (for _log_step)
@@ -291,6 +293,38 @@ class YoloV8Trainer:
 
         total_time = time.time() - training_start
         log.info("Training complete. Total time: %s", _fmt_duration(total_time))
+
+    def _maybe_close_mosaic(self, epoch: int, total_epochs: int) -> None:
+        """Disable mosaic + mixup for the final ``close_mosaic_epochs`` epochs.
+
+        At the first epoch ``>= total_epochs - close_mosaic_epochs`` the train stream is
+        rebuilt once with ``mosaic_frequency`` / ``mixup_frequency`` set to 0 (the
+        Ultralytics ``close_mosaic`` trick — training on un-mosaicked images at the end
+        sharpens final accuracy). Step/epoch accounting is unaffected (the trainer still
+        runs a fixed step count from the new iterator). No-op when ``close_mosaic_epochs``
+        is 0 (the default), so behaviour is unchanged unless configured.
+        """
+        import dataclasses
+        mosaic_cfg = getattr(getattr(self._config.task.train_data, 'parser', None),
+                             'mosaic', None)
+        n = getattr(mosaic_cfg, 'close_mosaic_epochs', 0) if mosaic_cfg else 0
+        if n <= 0 or self._mosaic_closed or epoch < total_epochs - n:
+            return
+
+        td = self._config.task.train_data
+        new_mosaic = dataclasses.replace(mosaic_cfg, mosaic_frequency=0.0,
+                                         mixup_frequency=0.0)
+        new_parser = dataclasses.replace(td.parser, mosaic=new_mosaic)
+        new_td = dataclasses.replace(td, parser=new_parser)
+
+        ds = self._task.build_inputs(new_td)
+        if self._distributed:
+            ds = self._strategy.experimental_distribute_dataset(ds)
+        self._train_ds = ds
+        self._train_iter = iter(ds)
+        self._mosaic_closed = True
+        log.info("close_mosaic: disabled mosaic + mixup for the final %d epoch(s) "
+                 "(from epoch %d)", n, epoch + 1)
 
     def _sync_completed_epochs(self, python_step: int, steps_per_loop: int) -> None:
         """Sync ``completed_epochs`` before a save that lands on an epoch boundary.

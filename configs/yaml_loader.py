@@ -388,6 +388,7 @@ def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
         shear=mosaic_raw.get("shear", 0.0),
         perspective=mosaic_raw.get("perspective", 0.0),
         translate=mosaic_raw.get("translate", 0.1),
+        close_mosaic_epochs=mosaic_raw.get("close_mosaic_epochs", 0),
     )
     return ParserConfig(
         angle_step=p.get("angle_step", 15),

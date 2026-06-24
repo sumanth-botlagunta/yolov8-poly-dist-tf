@@ -119,7 +119,9 @@ class YoloV8Task:
 
         lr_schedule = build_lr_schedule(lr_cfg)
         core = build_core_optimizer(
-            opt_cfg, lr_schedule, bias_lr_scale=self._config.task.smart_bias_lr)
+            opt_cfg, lr_schedule,
+            bias_lr_scale=self._config.task.smart_bias_lr,
+            clip_norm=self._config.task.gradient_clip_norm)
 
         ema = ExponentialMovingAverage(
             optimizer=core,

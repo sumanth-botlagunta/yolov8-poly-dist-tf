@@ -183,6 +183,10 @@ class MosaicConfig:
     shear: float = 0.0
     perspective: float = 0.0
     translate: float = 0.1
+    # Disable mosaic + mixup for the final N epochs (Ultralytics close_mosaic). 0 = off.
+    # The trainer rebuilds the train stream with mosaic_frequency/mixup_frequency=0 once
+    # the run reaches (total_epochs - close_mosaic_epochs).
+    close_mosaic_epochs: int = 0
 
 
 @dataclasses.dataclass
