@@ -185,15 +185,16 @@ class TaskAlignedAssigner:
         align_max_per_gt = tf.reduce_max(
             align_spatial, axis=1, keepdims=True
         )  # [B, 1, M]
-        pos_overlaps = tf.reduce_max(
-            iou * tf.cast(candidate_mask, tf.float32), axis=1, keepdims=True
-        )  # [B, 1, M]
+        # iou_cand (= iou * candidate_mask) was already computed above — reuse it
+        # instead of recomputing the same masked-IoU tensor.
+        pos_overlaps = tf.reduce_max(iou_cand, axis=1, keepdims=True)  # [B, 1, M]
         align_norm = (
             align_spatial * pos_overlaps / (align_max_per_gt + self.eps)
         )  # [B, A, M]
 
-        gt_idx_oh    = tf.one_hot(target_gt_idx, M)                           # [B, A, M]
-        assigned_align = tf.reduce_sum(align_norm * gt_idx_oh, axis=-1)       # [B, A]
+        # gather the assigned GT's alignment per anchor (== one_hot(target_gt_idx)·align_norm,
+        # summed over M — bit-identical, but without materializing the [B,A,M] one-hot).
+        assigned_align = tf.gather(align_norm, target_gt_idx, axis=-1, batch_dims=2)  # [B, A]
         assigned_align = assigned_align * tf.cast(fg_mask, tf.float32)
 
         target_scores = (

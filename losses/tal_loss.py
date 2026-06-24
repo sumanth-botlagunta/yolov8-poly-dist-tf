@@ -322,12 +322,11 @@ class TaskAlignedLossExtended:
         fl_idx = tf.cast(tgt_floor, tf.int32)                            # [B, A, 4]
         cl_idx = tf.minimum(fl_idx + 1, self.reg_max - 1)
 
-        # Gather log-probs via one-hot matmul
-        fl_oh = tf.one_hot(fl_idx, self.reg_max)                         # [B, A, 4, R]
-        cl_oh = tf.one_hot(cl_idx, self.reg_max)
-
-        log_p_fl = tf.reduce_sum(pd_log_softmax * fl_oh, axis=-1)        # [B, A, 4]
-        log_p_cl = tf.reduce_sum(pd_log_softmax * cl_oh, axis=-1)
+        # Gather the floor/ceil bin log-probs directly (indices are already clamped to
+        # [0, reg_max-1]). Bit-identical to the previous one-hot×reduce_sum, but without
+        # materializing two [B, A, 4, reg_max] one-hot tensors.
+        log_p_fl = tf.gather(pd_log_softmax, fl_idx, axis=-1, batch_dims=3)  # [B, A, 4]
+        log_p_cl = tf.gather(pd_log_softmax, cl_idx, axis=-1, batch_dims=3)
 
         dfl_raw  = -(weight_left * log_p_fl + weight_right * log_p_cl)   # [B, A, 4]
         dfl_mean = tf.reduce_mean(dfl_raw, axis=-1)                       # [B, A]

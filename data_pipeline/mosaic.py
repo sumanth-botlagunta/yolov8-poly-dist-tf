@@ -495,9 +495,17 @@ class Mosaic:
             place_scale = tf.cast(H, tf.float32) / long_side
             nh = tf.maximum(tf.cast(tf.round(h_in_f * place_scale), tf.int32), 1)
             nw = tf.maximum(tf.cast(tf.round(w_in_f * place_scale), tf.int32), 1)
-            R = tf.cast(
-                tf.image.resize(tf.cast(img, tf.float32), [nh, nw], method='bilinear'),
-                tf.uint8,
+            # Skip the resize when the source is already the placement size (the common
+            # case: images are pre-resized to H² before mosaic, so place_scale == 1 and
+            # the resize is a no-op that still allocates + runs a bilinear kernel over
+            # ~5.4M pixels per quadrant). Returning `img` is bit-identical (a same-size
+            # bilinear resize + uint8 round-trip is the identity on uint8 pixels).
+            R = tf.cond(
+                tf.logical_and(tf.equal(nh, h_in), tf.equal(nw, w_in)),
+                lambda im=img: im,
+                lambda im=img, nh_=nh, nw_=nw: tf.cast(
+                    tf.image.resize(tf.cast(im, tf.float32), [nh_, nw_], method='bilinear'),
+                    tf.uint8),
             )
 
             if i == 0:    # TL
