@@ -22,7 +22,8 @@ import logging
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# repo root is four levels up: tools/device/debug/<file> -> tools/device/debug -> tools/device -> tools -> repo
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from absl import app, flags
 import numpy as np

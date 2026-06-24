@@ -161,10 +161,13 @@ tools/                 # core workflow tools (top level)
   val_history.py        # extract <run>/val_history.jsonl -> txt/json/csv (--epoch/--best/--list)
   val_report_txt.py     # render a single report JSON -> ckpt-format txt
   cloud_diagnose.sh train_supervisor.sh
-  device/              # SNPE/DLC export + on-device diagnostics
+  device/              # SNPE/DLC export — core on-device workflow
     export_device_dlc.py validate_device_export.py gen_pred_json_from_dlc.py
-    diagnose_device_export.py check_snpe_ready.py compare_dlc_raw.py
-    dump_savedmodel_raw.py savedmodel_on_device_raw.py visualize_device_export.py
+    check_snpe_ready.py
+    debug/             # on-device diagnostics (used as needed during DLC debugging)
+      diagnose_device_export.py compare_dlc_raw.py compare_dlc_debug.py
+      compare_dlc_raw_batch.py dump_savedmodel_raw.py savedmodel_on_device_raw.py
+      visualize_device_export.py gen_pred_json_from_savedmodel.py make_calibration_raws.py
   shared/              # utility modules imported by the tools
     runtime_setup.py ckpt_loading.py checkpoint_weight_map.py
     legacy_weight_map_frozen.py _table.py compare_checkpoints.py

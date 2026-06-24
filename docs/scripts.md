@@ -166,12 +166,21 @@ These localize an on-device accuracy gap (DLC vs host). See [device_export.md](d
 |---------|--------------|
 | `python -m tools.device.gen_pred_json_from_dlc` | Build a COCO prediction JSON from DLC/SavedModel raw outputs (edit the `SPLITS` list in-file; `--splits` overrides). `--raw_root --transform_pkl --output_json`. |
 | `python -m tools.device.validate_device_export` | Compare the in-repo model vs the device SavedModel on val images. `--config --checkpoint --saved_model`. |
-| `python -m tools.device.diagnose_device_export` | Localize where the device graph diverges (eager → tf.function → SavedModel). `--config --checkpoint`. |
 | `python -m tools.device.check_snpe_ready` | Scan an exported SavedModel for SNPE-incompatible ops. `<saved_model_dir>`. |
-| `python -m tools.device.dump_savedmodel_raw` | Dump per-node `.raw` outputs in net-run layout. `--saved_model --raw_image`. |
-| `python -m tools.device.compare_dlc_raw` | Node-by-node SavedModel-vs-DLC raw diff (numpy only). `--a --b`. |
-| `python -m tools.device.savedmodel_on_device_raw` | Run the SavedModel on the device's `.raw` bytes, draw detections. `--saved_model --raw`. |
-| `python -m tools.device.visualize_device_export` | Visualize device SavedModel detections at device size. `--config --saved_model`. |
+
+On-device diagnostics live under `tools/device/debug/` (used as needed when a DLC export diverges):
+
+| Command | What it does |
+|---------|--------------|
+| `python -m tools.device.debug.diagnose_device_export` | Localize where the device graph diverges (eager → tf.function → SavedModel). `--config --checkpoint`. |
+| `python -m tools.device.debug.dump_savedmodel_raw` | Dump per-node `.raw` outputs in net-run layout. `--saved_model --raw_image`. |
+| `python -m tools.device.debug.compare_dlc_raw` | Node-by-node SavedModel-vs-DLC raw diff (numpy only). `--a --b`. |
+| `python -m tools.device.debug.compare_dlc_debug` | Recursive per-layer `--debug` tree comparison, ranked by divergence. |
+| `python -m tools.device.debug.compare_dlc_raw_batch` | Aggregate node diffs across many Result folders. |
+| `python -m tools.device.debug.savedmodel_on_device_raw` | Run the SavedModel on the device's `.raw` bytes, draw detections. `--saved_model --raw`. |
+| `python -m tools.device.debug.visualize_device_export` | Visualize device SavedModel detections at device size. `--config --saved_model`. |
+| `python -m tools.device.debug.gen_pred_json_from_savedmodel` | Host twin of gen_pred_json_from_dlc (SavedModel instead of DLC raw). |
+| `python -m tools.device.debug.make_calibration_raws` | Build a calibration `.raw` set + input list for `snpe-dlc-quantize`. |
 
 ## Future / recommended additions
 

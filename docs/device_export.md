@@ -93,7 +93,7 @@ python -m tools.device.export_device_dlc \
 
 # 2. (optional) sanity-check the device SavedModel on host val images before converting
 #    (decodes its raw heads with the in-repo YoloV8Layer and draws detections at 672x416)
-python -m tools.device.visualize_device_export \
+python -m tools.device.debug.visualize_device_export \
     --config      configs/experiments/yolo/yolov8_poly_dist.yaml \
     --saved_model /path/to/epochN_export/saved_model \
     --output_dir  /tmp/device_viz
@@ -141,7 +141,7 @@ fault — a wrong concat/wiring layout, weights dropped in the freeze step, or a
 precision asymmetry (bf16 stems under a leaked `mixed_bfloat16` policy vs the float32
 graph) — produces an O(1) relative error and fails loudly with diagnostics.
 
-To localize a genuine failure, run `tools/device/diagnose_device_export.py` (same flags). It
+To localize a genuine failure, run `tools/device/debug/diagnose_device_export.py` (same flags). It
 runs one image through every export stage (eager → tf.function trace → freeze/re-import
 → reloaded SavedModel) and prints per-head relative error plus a
 `BENIGN(accum)/borderline/REAL-DIVERGENCE` verdict, so you can tell tolerance

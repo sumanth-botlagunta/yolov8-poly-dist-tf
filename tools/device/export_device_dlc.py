@@ -187,7 +187,7 @@ def _assert_close(name, got, ref, rel_tol=2e-2, atol=2e-2):
         f"  rel ~ 1e-3 or below is benign float32 graph accumulation; this is far larger,\n"
         f"  so it indicates a REAL fault: a wrong concat/wiring layout, dropped weights in\n"
         f"  the freeze step, or a precision asymmetry (bf16 stems under a leaked\n"
-        f"  mixed_bfloat16 policy vs the float32 graph). Run tools/device/diagnose_device_export.py\n"
+        f"  mixed_bfloat16 policy vs the float32 graph). Run tools/device/debug/diagnose_device_export.py\n"
         f"  to localize which export stage diverges.")
 
 
