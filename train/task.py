@@ -73,7 +73,27 @@ class YoloV8Task:
         return model
 
     def initialize(self, model: tf.keras.Model) -> None:
-        """Load init checkpoint for backbone + decoder modules."""
+        """Seed the model weights at the start of a fresh run.
+
+        Two mutually-exclusive paths (both no-ops once a run has its own checkpoints —
+        auto-resume then takes over):
+
+        * ``finetune_from`` (fine-tuning): load the FULL model from a trained checkpoint,
+          preferring its **EMA / deployed weights** (``restore_eval_weights`` — the same
+          path eval/export use). The optimizer/EMA/step are NOT loaded; a fresh optimizer
+          is built next, so the config's fine-tune LR schedule / epochs apply from step 0.
+        * ``init_checkpoint`` (transfer-init): migrate the selected modules (default
+          backbone + decoder; random head) from a pretrained/legacy checkpoint.
+        """
+        finetune_from = getattr(self._config.task, 'finetune_from', None)
+        if finetune_from:
+            from tools.shared.ckpt_loading import restore_eval_weights
+            kind = restore_eval_weights(model, finetune_from)
+            log.info("Fine-tune: restored full model (%s weights) from %s — fresh "
+                     "optimizer/EMA/step will be built (new LR schedule applies).",
+                     kind, finetune_from)
+            return
+
         ckpt_path = self._config.task.init_checkpoint
         if not ckpt_path:
             return

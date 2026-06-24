@@ -24,6 +24,10 @@ try:
     flags.DEFINE_string('output_dir', None, 'Output directory for checkpoints and logs.', required=True)
     flags.DEFINE_bool  ('debug',      False, 'Enable eager execution and verbose logging.')
     flags.DEFINE_string('resume_from', None, 'Resume from a specific checkpoint (overrides auto-latest).')
+    flags.DEFINE_string('finetune_from', None,
+                        'Fine-tune: seed a FRESH run from a trained checkpoint (full model, '
+                        'EMA/deployed weights; fresh optimizer/EMA/LR). Overrides the config '
+                        'task.finetune_from. Distinct from --resume_from (same run, continues).')
 except flags.DuplicateFlagError:
     pass
 
@@ -124,6 +128,19 @@ def _validate_config(config, output_dir: str) -> None:
             )
 
     # --- init checkpoint ---
+    finetune = getattr(task, 'finetune_from', None)
+    if finetune:
+        if task.init_checkpoint:
+            errors.append(
+                "task.finetune_from and task.init_checkpoint are mutually exclusive "
+                "(fine-tune loads the FULL model; init_checkpoint is for transfer-init). "
+                "Set only one."
+            )
+        if not os.path.exists(finetune + ".index"):
+            errors.append(
+                f"task.finetune_from not found: '{finetune}' (looked for '{finetune}.index')."
+            )
+
     ckpt = task.init_checkpoint
     if ckpt:
         index_file = ckpt + ".index"
@@ -230,6 +247,8 @@ def main(_):
     _setup_file_logging(os.path.join(FLAGS.output_dir, 'train.log'))
 
     config = load_config(FLAGS.config)
+    if FLAGS.finetune_from:                      # CLI overrides the config field
+        config.task.finetune_from = FLAGS.finetune_from
     _validate_config(config, FLAGS.output_dir)
 
     _apply_runtime_config(config.runtime, FLAGS.debug)

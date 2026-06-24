@@ -52,8 +52,14 @@ python -m tools.trace_shapes \
 
 ## Warm-starting a new run from a previous run (`native`)
 
-To start a fresh run from a checkpoint this codebase produced, point `task.init_checkpoint` at a
-periodic `ckpt-N` or a `best_*` checkpoint. Auto-detection routes it to the `native` strategy:
+> For **fine-tuning** (continue the same task on new data), prefer `task.finetune_from` /
+> `--finetune_from` — it loads the full model from the **EMA/deployed** weights into a fresh
+> optimizer, which is what you want. See [guides/finetuning.md](guides/finetuning.md). Use
+> `init_checkpoint` below for **transfer-init** (a different task / partial-module warm-start).
+
+To warm-start the selected modules from a checkpoint this codebase produced, point
+`task.init_checkpoint` at a periodic `ckpt-N` or a `best_*` checkpoint. Auto-detection routes it to
+the `native` strategy:
 
 ```bash
 python -m tools.checkpoint_migration migrate \

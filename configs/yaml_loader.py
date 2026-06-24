@@ -183,6 +183,7 @@ def _build_task_config(t: Dict[str, Any]) -> TaskConfig:
         losses=loss_cfg,
         train_data=train_data_cfg,
         validation_data=val_data_cfg,
+        finetune_from=t.get("finetune_from"),
         init_checkpoint=t.get("init_checkpoint"),
         init_checkpoint_modules=t.get("init_checkpoint_modules", ["backbone", "decoder"]),
         num_classes=t.get("num_classes", 39),

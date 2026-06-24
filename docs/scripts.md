@@ -16,8 +16,13 @@ Runs the training loop. For long runs prefer the supervisor (next entry).
 - `--output_dir` (req) — where checkpoints, `tb_events/`, and `val_history.jsonl` are written.
 - `--debug` — eager execution + verbose logging (slow; for debugging only).
 - `--resume_from` — resume from a specific checkpoint prefix (overrides the auto-latest).
+- `--finetune_from` — **fine-tune**: seed a fresh run from a trained checkpoint's EMA weights with
+  a fresh optimizer/LR (overrides `task.finetune_from`). Distinct from `--resume_from` (same run,
+  continues). See [guides/finetuning.md](guides/finetuning.md).
 ```bash
 python -m scripts.run_train --config configs/experiments/yolo/yolov8_poly_dist.yaml --output_dir /run
+# fine-tune:
+python -m scripts.run_train --config <finetune.yaml> --output_dir /finetune_run --finetune_from /src_run/ckpt-100000
 ```
 
 ### `bash tools/train_supervisor.sh` — supervised training (recommended for long runs)

@@ -396,10 +396,30 @@ class YoloV8Trainer:
     # Setup
     # ------------------------------------------------------------------
 
+    def _will_resume(self) -> bool:
+        """True if this run already has a checkpoint to resume from (so seed-init should
+        be skipped — the run's own weights win). Makes `finetune_from` / `init_checkpoint`
+        a fresh-start-only seed: a restarted/dropped fine-tune resumes normally from its
+        own checkpoints and never re-reads (or crashes on a moved) source checkpoint."""
+        if self._resume_from:
+            return True
+        for d in (self._output_dir, os.path.join(self._output_dir, 'resume')):
+            if tf.train.latest_checkpoint(d):
+                return True
+        return False
+
     def _setup(self) -> None:
         with self._strategy.scope():
             self._model     = self._task.build_model()
-            self._task.initialize(self._model)
+            # Seed-init (finetune_from / init_checkpoint) only on a truly fresh run. If a
+            # resumable checkpoint exists, _auto_resume restores this run's own weights —
+            # so skipping init here avoids re-loading the source and a dropped fine-tune
+            # just resumes with the normal command.
+            if self._will_resume():
+                log.info("Resumable checkpoint present — skipping seed-init "
+                         "(finetune_from / init_checkpoint); restoring this run's own weights.")
+            else:
+                self._task.initialize(self._model)
             self._optimizer = self._task.build_optimizer()
             self._task._loss_fn = self._task.build_losses()
             # Pre-create optimizer slots in cross-replica context: under

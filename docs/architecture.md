@@ -34,7 +34,10 @@ Six per-pixel branches, each emitted at all 3 FPN levels:
 | `dist` | 1 | log-scale object distance |
 
 **Smart bias init**: class bias = `log(5 / num_classes / (input_size/stride)^2)` with the LIVE input size (672), box bias = `1.0`.
-**Init checkpoint**: only backbone + decoder weights are loaded; the head is randomly initialized.
+**Init checkpoint** (transfer-init): only the selected modules (default backbone + decoder) are
+loaded; the head is randomly initialized. For same-task **fine-tuning** of a trained model use
+`task.finetune_from` (loads the full EMA/deployed weights into a fresh optimizer) — see
+[guides/finetuning.md](guides/finetuning.md).
 
 ## Anchors & strides
 Anchor-free (1 anchor/cell). Anchor points are cell centers: `(i+0.5)·stride`, `(j+0.5)·stride`

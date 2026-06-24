@@ -334,6 +334,10 @@ class TaskConfig:
     losses: LossConfig = dataclasses.field(default_factory=LossConfig)
     train_data: DataConfig = dataclasses.field(default_factory=DataConfig)
     validation_data: DataConfig = dataclasses.field(default_factory=DataConfig)
+    # Fine-tuning: load the FULL model (EMA/deployed weights) from a trained checkpoint
+    # into a fresh optimizer/EMA/step (new LR schedule). Takes precedence over
+    # init_checkpoint; both are no-ops once the run has its own checkpoints (resume wins).
+    finetune_from: Optional[str] = None
     init_checkpoint: Optional[str] = None
     init_checkpoint_modules: List[str] = dataclasses.field(
         default_factory=lambda: ["backbone", "decoder"]

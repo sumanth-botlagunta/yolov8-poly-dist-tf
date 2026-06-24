@@ -1,83 +1,146 @@
-# Guide: Fine-tuning / warm-starting from a checkpoint
+# Guide: Fine-tuning a trained model
 
-How to start a new run from an existing checkpoint — either continuing the same model on more/new
-data, or transferring a pretrained backbone+decoder to a fresh head. This codebase has **no
-layer-freezing mechanism**: the whole model is always trainable, so you steer how much it adapts
-with the learning rate and augmentation, not by freezing weights.
+Fine-tuning = take a model that is already trained and **adapt it to new/more data** with a gentle
+schedule, *without* throwing away what it learned. This codebase has **no layer-freezing
+mechanism** — the whole model is always trainable — so you control how much it moves with the
+**learning rate** (and augmentation), not by freezing weights.
 
-> Fine-tune vs resume: **resume** continues the *same* run from its own latest checkpoint into a
-> *new* `output_dir` (auto, or `--resume_from`). **Fine-tune** starts a *new* run that *warm-starts*
-> its weights from *another* run's checkpoint via `init_checkpoint`. This guide is the latter.
+## First: which workflow do you actually want?
 
-## 1. Choose what to warm-start
+Three things sound similar but are different. Pick the right one — they load different things:
 
-In the experiment YAML (`task:` section):
+| You want to… | Use | What it loads | Optimizer/EMA/step |
+|---|---|---|---|
+| **Continue an interrupted run** (same config, same data) | `--resume_from` / automatic | the run's own latest checkpoint | **kept** — picks up exactly where it stopped |
+| **Adapt a trained model to new data** (this guide) | **`--finetune_from`** | the model's **EMA/deployed weights** | **fresh** — new LR schedule from step 0 |
+| **Reuse a pretrained backbone for a different task** (new classes / new head) | `init_checkpoint` | only the selected modules (default backbone+decoder; **random head**) | fresh |
 
-```yaml
-task:
-  init_checkpoint: /path/to/source_run/ckpt-100000   # a checkpoint prefix
-  init_checkpoint_modules: [backbone, decoder]        # which modules to load
-```
+**Why fine-tune ≠ init_checkpoint** — two real differences, not just naming:
+1. **Which weights.** The weights that actually perform well are the **EMA shadows** (what `eval`
+   and `export` use), stored under `optimizer/` in a `ckpt-N`. `finetune_from` loads *those*.
+   `init_checkpoint` migrates the raw `model/` weights — fine for a backbone transfer, but for
+   continuing a trained model you'd be starting from *worse* weights.
+2. **What's loaded.** `finetune_from` loads the **whole model** (you're keeping the same task);
+   `init_checkpoint` loads a **subset of modules** and randomly initializes the rest (you're
+   changing the task).
 
-| `init_checkpoint_modules` | When to use |
-|---|---|
-| `[backbone, decoder]` (default) | Transfer / new task: load the feature extractor, **randomly init the head** (e.g. different classes, or you want the head to relearn). |
-| `[backbone, decoder, head]` | Continue the *same* architecture/task: load everything and keep training (closest to a soft resume from another run). |
+So: **same task, want it better on new data → `finetune_from`.** Different task / different classes
+→ `init_checkpoint` (see the appendix).
 
-`migrate_checkpoint` auto-detects the checkpoint kind. For a checkpoint produced by **this**
-codebase it uses the `native` strategy (exact, complete restore of the requested modules); legacy
-TF2-Vision checkpoints use `frozen`/`structural`. See
-[checkpoint_migration.md](../checkpoint_migration.md). The migrated weights are written next to the
-source under `migrated/ckpt`, and a coverage guard refuses to proceed if a requested module loaded
-nothing.
+## 1. Start the fine-tune
 
-## 2. Tune the hyperparameters for fine-tuning
-
-Fine-tuning generally wants a **gentler** schedule than a from-scratch run. In the YAML:
-
-- **Lower the LR.** Drop `learning_rate.initial_learning_rate` (e.g. 0.01 → 0.001–0.0005). For a
-  short run a `constant` or short `cosine` schedule is common:
-  ```yaml
-  optimizer_config:
-    learning_rate:
-      type: cosine
-      cosine: { initial_learning_rate: 0.001, alpha: 0.01, decay_steps: <steps_per_loop × epochs> }
-  ```
-  (Optimizer/LR are config-selectable — see [configuration.md](../configuration.md).)
-- **Fewer epochs.** Set `trainer.train_epochs` to a small value, and keep `decay_steps =
-  steps_per_loop × epochs` so the schedule lands its floor at the end.
-- **Gentler augmentation.** Lower `parser.mosaic.mosaic_frequency`, and/or set
-  `close_mosaic_epochs` to disable mosaic for the last epochs so the model settles on clean images.
-- **Reduce momentum warmup** if the run is very short (`optimizer.sgd_torch.warmup_steps`), since a
-  long warmup eats a short schedule.
-
-## 3. Launch
-
-Exactly like a normal run, with a **new** `output_dir` (so you don't overwrite the source run):
+Make a fine-tune config first: **copy your tier YAML** (e.g. `yolov8_poly_dist.yaml`) to
+`yolov8_poly_dist_finetune.yaml`, apply the §2 LR/epoch changes, and point its `train_data` at the
+new data. Then:
 
 ```bash
 python -m scripts.run_train \
     --config configs/experiments/yolo/yolov8_poly_dist_finetune.yaml \
-    --output_dir /path/to/finetune_run
+    --output_dir /path/to/finetune_run \
+    --finetune_from /path/to/source_run/ckpt-<step>
 ```
+or set it in the YAML (the flag overrides the field):
+```yaml
+task:
+  finetune_from: /path/to/source_run/ckpt-<step>
+```
+This loads the full model from the source's **EMA weights**, then builds a **fresh** optimizer +
+EMA + `global_step = 0`, so the fine-tune LR schedule below applies from the start. The startup log
+prints whether it loaded `ema` vs `raw` weights — confirm it says **`ema`**.
 
-At startup the log reports how many variables each module loaded from `init_checkpoint` — confirm
-backbone/decoder (and head, if requested) loaded a non-zero count.
+- Point at a **periodic `ckpt-N`** (it carries the EMA shadows). A `best_ckpt` or an exported
+  SavedModel holds raw weights and loads as `'raw'` — usable, but not the EMA optimum.
+- Use a **new `output_dir`** (don't overwrite the source run).
+- `finetune_from` and `init_checkpoint` are **mutually exclusive** (rejected at startup).
+
+## 2. Learning rate — the most important fine-tune setting
+
+A from-scratch run starts at `initial_learning_rate: 0.01`. That LR on an **already-good** model
+would wreck it in the first few steps. Fine-tuning uses a **much lower** LR so the model refines
+instead of relearning.
+
+| | From scratch | Fine-tune (recommended) |
+|---|---|---|
+| `initial_learning_rate` | `0.01` | **`0.001`** (gentle) … `0.0005` (very gentle) |
+| `train_epochs` | 300 | **10–50** (it's already trained) |
+| schedule (`learning_rate.type`) | `cosine` | `cosine` (decay to a small floor), or `constant` for a short run |
+| `decay_steps` | `steps_per_loop × 300` | **`steps_per_loop × <your epochs>`** (so cosine hits its floor at the end) |
+| `alpha` (cosine floor fraction) | `0.01` | `0.01` |
+| `optimizer.sgd_torch.warmup_steps` | `~6354` (3 epochs) | **small** (e.g. ≤1 epoch) — a long warmup eats a short run |
+
+Recommended fine-tune block (≈20 epochs example):
+```yaml
+trainer:
+  train_epochs: 20
+  optimizer_config:
+    optimizer:
+      sgd_torch: { warmup_steps: 500 }       # short warmup for a short run
+    learning_rate:
+      type: cosine
+      cosine:
+        initial_learning_rate: 0.001         # 10× lower than from-scratch
+        alpha: 0.01
+        decay_steps: <steps_per_loop × 20>   # = train_total_examples // batch × epochs
+```
+> Rule of thumb: start at **1/10th** of the from-scratch LR. If the loss jumps or `F1score50` drops
+> below the source model in the first epoch, the LR is still too high — halve it.
+
+Also worth tuning:
+- **Gentler augmentation** — lower `parser.mosaic.mosaic_frequency`, and set `close_mosaic_epochs`
+  so the last epochs train on un-mosaicked images (the model settles on clean data).
+- **Watch `train/update_ratio`** in TensorBoard (`lr·‖grad‖/‖weights‖`): a healthy fine-tune sits
+  around `1e-3`; much higher means the LR is too aggressive for the trained weights.
+
+## 3. Resuming a dropped / interrupted fine-tune
+
+**Use the normal resume — there is nothing special to do.** A fine-tune run writes its own
+checkpoints to its `output_dir` just like any run, so:
+
+- **Just rerun the same command.** On restart the trainer finds the fine-tune run's own latest
+  checkpoint and **auto-resumes** from it (model + optimizer + EMA + step intact) — it does **not**
+  re-read the source checkpoint. `--finetune_from` is a **fresh-start-only seed**; once the run has
+  a checkpoint it is ignored.
+- You can also **drop `--finetune_from`** on the restart — same result.
+- This means it's **safe even if the source checkpoint was moved/deleted** after the fine-tune
+  started: resume never touches it.
+- To resume from a specific checkpoint of the fine-tune run, use `--resume_from <prefix>` (same as
+  any run).
+
+In short: `--finetune_from` only matters on the **very first** start of a fresh `output_dir`.
+After that, it's an ordinary run — resume normally.
 
 ## 4. Validate
 
-Same as any run — watch `<run>/val_history.jsonl` and the best checkpoint. See the
-[validation guide](validation.md). Compare `F1score50` against the source run to confirm the
-fine-tune helped.
+Watch `<run>/val_history.jsonl` and the best checkpoint (see the [validation guide](validation.md)).
+Compare `F1score50` against the **source** run to confirm the fine-tune actually helped — if it's
+lower, the LR was too high or the new data is hurting.
 
-## Notes / pitfalls
+## Pitfalls
 
-- **No freezing.** If you only want to adapt the head, the practical lever is a low LR + loading
-  `[backbone, decoder, head]`; there is no `trainable=False` switch.
-- **Head reinit when classes change.** If the new task has a different class count, the head shapes
-  differ — use `[backbone, decoder]` so the head is freshly initialized at the new size.
-- **Don't reuse the source `output_dir`** — auto-resume would pick up the source's optimizer state
-  and step count instead of fine-tuning fresh.
+- **No freezing.** No `trainable=False` switch; the lever to limit drift is the low LR + short
+  schedule + gentle aug.
+- **Don't reuse the source `output_dir`** — a dir with existing checkpoints auto-resumes *that* run
+  and ignores `finetune_from`.
+- **Confirm `ema`, not `raw`** in the startup log — `raw` means you pointed at a `best_ckpt`/export
+  and lost the EMA optimum.
+
+---
+
+## Appendix: transfer-init (different task / new head)
+
+If you're changing the task — different class count, or you want the head to relearn — use
+`init_checkpoint` (NOT `finetune_from`) to load just the feature extractor:
+
+```yaml
+task:
+  init_checkpoint: /path/to/source_run/ckpt-100000
+  init_checkpoint_modules: [backbone, decoder]   # head randomly initialized
+```
+`migrate_checkpoint` auto-detects the checkpoint kind (`native` for this codebase's own
+checkpoints, `frozen`/`structural` for legacy TF2-Vision), writes a migrated copy under
+`migrated/ckpt`, and refuses to proceed if a requested module loaded nothing. Add `head` only if its
+shape matches. Like `finetune_from`, this is a fresh-start-only seed — a resumed run ignores it.
+See [checkpoint_migration.md](../checkpoint_migration.md).
 
 ## Related
 - Reference: [checkpoint_migration.md](../checkpoint_migration.md) · [configuration.md](../configuration.md)
