@@ -570,21 +570,26 @@ class YoloV8Trainer:
             logs, global_step=int(self._global_step)
         )
 
-        # Persist the per-category F1 report (best-conf + all-conf sweep) as a
-        # compact JSON + console TXT under <run>/val_metrics/. Once per validation,
-        # tiny, off the train step, never fatal → no training-throughput impact.
+        # Append the per-category F1 report (best-conf + all-conf sweep + headline
+        # scalars) as ONE line to <run>/val_history.jsonl. Replaces the previous
+        # per-epoch json+txt pair (hundreds of files); append is O(line) and off the
+        # train step → no training-throughput impact. Extract any epoch back to the
+        # ckpt-format txt/csv with tools/val_history.py. Never fatal.
         report = getattr(self._task, '_last_val_report', None)
         if report is not None:
             try:
-                from eval.metrics_report import save_canonical
-                if epoch is not None:
-                    report['epoch'] = int(epoch)
-                base = (f'epoch_{int(epoch):04d}' if epoch is not None
-                        else f'step_{int(self._global_step):07d}')
-                paths = save_canonical(report, os.path.join(self._output_dir, 'val_metrics'), base)
-                log.info("Saved validation metrics report -> %s", paths.get('json'))
+                from eval.val_history import append_record
+                jsonl_path = os.path.join(self._output_dir, 'val_history.jsonl')
+                append_record(
+                    jsonl_path, report,
+                    epoch=int(epoch) if epoch is not None else None,
+                    step=int(self._global_step),
+                    metrics=val_metrics,
+                )
+                log.info("Appended validation report -> %s (epoch %s)",
+                         jsonl_path, epoch)
             except Exception as e:           # pragma: no cover - defensive
-                log.warning("Could not save validation metrics report: %s", e)
+                log.warning("Could not append validation report: %s", e)
 
         if summary_images:
             self._log_image_summaries(summary_images, summary_preds, summary_gts)

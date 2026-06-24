@@ -131,9 +131,10 @@ python -m tools.eval \
 ```
 
 Reports mAP / mAP50 / AR100 / F1score50, polygon and distance metrics, and (with
-`--per_category`) a per-class table. During training, per-epoch validation metrics are also
-written to `<run_dir>/val_metrics/`. See [docs/metrics.md](docs/metrics.md) for what each metric
-means.
+`--per_category`) a per-class table. During training, each validation appends one full report
+to `<run_dir>/val_history.jsonl`; pull any epoch (or the best) back into the ckpt-format
+txt/json/csv with `python -m tools.val_history <run_dir> --epoch N` (or `--best`). See
+[docs/metrics.md](docs/metrics.md) for what each metric means.
 
 ---
 

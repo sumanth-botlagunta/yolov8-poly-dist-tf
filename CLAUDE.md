@@ -156,8 +156,10 @@ configs/
 scripts/
   run_train.py         # entry point (config load, validation, strategy, runtime flags)
 tools/                 # core workflow tools (top level)
-  eval.py export_saved_model.py benchmark_pipeline.py
+  eval.py export_saved_model.py benchmark_pipeline.py infer.py
   checkpoint_migration.py trace_shapes.py
+  val_history.py        # extract <run>/val_history.jsonl -> txt/json/csv (--epoch/--best/--list)
+  val_report_txt.py     # render a single report JSON -> ckpt-format txt
   cloud_diagnose.sh train_supervisor.sh
   device/              # SNPE/DLC export + on-device diagnostics
     export_device_dlc.py validate_device_export.py gen_pred_json_from_dlc.py

@@ -15,9 +15,10 @@ training) means. Computed by `eval/coco_metrics.py`, `eval/polygon_metrics.py`, 
 | `precision50` | Mean precision at each class's peak-F1 operating point (the same point `F1score50` uses). |
 | `recall50` | Mean recall at each class's peak-F1 operating point. |
 
-**Per-category** metrics (`--per_category`, and the per-epoch `val_metrics/` report) give the
-peak F1 / precision / recall **per class**, plus the confidence threshold at that peak — useful
-for spotting a few weak classes dragging down the macro average.
+**Per-category** metrics (`--per_category`, and each epoch's entry in `val_history.jsonl`,
+extractable with `tools/val_history.py`) give the peak F1 / precision / recall **per class**,
+plus the confidence threshold at that peak — useful for spotting a few weak classes dragging
+down the macro average.
 
 ## Polygon (`with_polygons`)
 

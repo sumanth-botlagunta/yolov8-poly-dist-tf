@@ -1,6 +1,8 @@
-"""Export saved validation metrics (``val_metrics/epoch_*.json``) to usable / space-efficient
-formats. The trainer writes a compact JSON per validation (off the train step, no throughput
-impact); this offline tool turns one or many of them into:
+"""Export saved validation metrics to usable / space-efficient formats.
+
+The trainer appends one validation report per epoch to ``<run>/val_history.jsonl``
+(``eval/val_history.py``). This offline tool reads that store (or a single report
+JSON) and turns one or many reports into:
 
   * ``.xlsx``    — ONE workbook, TWO sheets: ``best_conf`` (all classes at their best
                    confidence) and ``all_conf`` (all classes at every confidence).
@@ -10,13 +12,17 @@ impact); this offline tool turns one or many of them into:
                    (pandas + pyarrow.)
   * ``.csv``     — plain (two files: ``*_best_conf.csv`` / ``*_all_conf.csv``).
 
-Single epoch:
-    python tools/pipeline/export_val_metrics.py --input <run>/val_metrics/epoch_0042.json \
-        --out_dir /tmp/metrics --formats xlsx,csv
+For a quick txt/json/csv of a single epoch (no pandas), use ``tools/val_history.py``;
+this tool is the xlsx/parquet trend exporter.
 
-Whole run aggregated (recommended for analysis — adds an ``epoch`` column):
-    python tools/pipeline/export_val_metrics.py --input <run>/val_metrics --aggregate \
+Whole run (recommended for trend analysis — adds an ``epoch`` column):
+    python tools/pipeline/export_val_metrics.py --input <run>/val_history.jsonl --aggregate \
         --out_dir /tmp/metrics --formats parquet,xlsx
+
+Single epoch (a report JSON, e.g. a <ckpt>_val.json or one extracted with
+``tools/val_history.py --epoch N --format json``):
+    python tools/pipeline/export_val_metrics.py --input epoch42.json \
+        --out_dir /tmp/metrics --formats xlsx,csv
 
 Requires: pandas, openpyxl (xlsx), pyarrow (parquet). Install: pip install pandas openpyxl pyarrow
 """
@@ -86,7 +92,8 @@ def _write_parquet(path_best, path_all, best, allc):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--input', required=True,
-                    help='a single epoch_*.json OR a val_metrics directory')
+                    help='a val_history.jsonl, a run dir containing it, a legacy '
+                         'val_metrics/ dir, or a single report JSON')
     ap.add_argument('--out_dir', required=True)
     ap.add_argument('--formats', default='xlsx,csv',
                     help='comma list of: xlsx, csv, parquet')
@@ -104,16 +111,30 @@ def main():
     formats = [f.strip() for f in a.formats.split(',') if f.strip()]
     os.makedirs(a.out_dir, exist_ok=True)
 
-    # Resolve input file(s).
+    # Resolve input -> a list of report dicts. Sources, in order of preference:
+    #   * a val_history.jsonl (the run's append-only store; one report per line)
+    #   * a run directory containing val_history.jsonl
+    #   * a directory of legacy per-epoch epoch_*.json / step_*.json reports
+    #   * a single report JSON (e.g. <ckpt>_val.json, or one extracted with
+    #     `tools/val_history.py --format json`)
+    from eval import val_history
     if os.path.isdir(a.input):
-        files = sorted(glob.glob(os.path.join(a.input, 'epoch_*.json')) +
-                       glob.glob(os.path.join(a.input, 'step_*.json')))
-        if not files:
-            raise SystemExit(f"no epoch_*.json / step_*.json under {a.input}")
+        jsonl = os.path.join(a.input, 'val_history.jsonl')
+        if os.path.exists(jsonl):
+            reports = val_history.load_records(jsonl)
+        else:
+            files = sorted(glob.glob(os.path.join(a.input, 'epoch_*.json')) +
+                           glob.glob(os.path.join(a.input, 'step_*.json')))
+            if not files:
+                raise SystemExit(
+                    f"no val_history.jsonl or epoch_*.json / step_*.json under {a.input}")
+            reports = [_load(f) for f in files]
+    elif a.input.endswith('.jsonl'):
+        reports = val_history.load_records(a.input)
     else:
-        files = [a.input]
-
-    reports = [_load(f) for f in files]
+        reports = [_load(a.input)]
+    if not reports:
+        raise SystemExit(f"no reports loaded from {a.input}")
     print(f"loaded {len(reports)} report(s) from {a.input}")
 
     if a.aggregate or len(reports) > 1:

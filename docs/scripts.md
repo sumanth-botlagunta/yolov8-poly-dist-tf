@@ -13,7 +13,7 @@ for the config fields and [checkpoint_migration.md](checkpoint_migration.md) for
 ### `python -m scripts.run_train` — launch training
 Runs the training loop. For long runs prefer the supervisor (next entry).
 - `--config` (req) — experiment YAML.
-- `--output_dir` (req) — where checkpoints, `tb_events/`, and `val_metrics/` are written.
+- `--output_dir` (req) — where checkpoints, `tb_events/`, and `val_history.jsonl` are written.
 - `--debug` — eager execution + verbose logging (slow; for debugging only).
 - `--resume_from` — resume from a specific checkpoint prefix (overrides the auto-latest).
 ```bash
@@ -137,12 +137,25 @@ One-time: stores `<name>_672` TFDS copies (672² JPEG) to cut decode cost.
 python -m tools.pipeline.reencode_tfds_672 --datasets <tfds_name> --data_dir ~/tensorflow_datasets
 ```
 
-### `python -m tools.pipeline.export_val_metrics` — export saved validation metrics
-Reads `val_metrics/*.json` and writes xlsx/csv/parquet for trend analysis.
-- `--input` (req) — a metrics JSON or a `val_metrics/` dir. `--out_dir`, `--basename`.
+### `python -m tools.val_history` — inspect / extract the validation history
+Reads `<run>/val_history.jsonl` (one report appended per epoch). No SQL, no DB.
+- positional `path` — the run dir or the `val_history.jsonl` file.
+- (no selector) / `--list` — trend table: epoch / step / F1score50 / mAP / mAP50 / AR100.
+- `--epoch N` / `--step N` / `--checkpoint SUBSTR` / `--best` — select one record.
+- `--format txt|json|csv` (default txt, the exact ckpt format) — `--best-only`, `-o OUT`.
+- `--export-csv PATH` — whole history → one flat CSV (pandas if installed).
+```bash
+python -m tools.val_history /run --list
+python -m tools.val_history /run --best --format txt -o best.txt
+python -m tools.val_history /run --epoch 42 --format json
+```
+
+### `python -m tools.pipeline.export_val_metrics` — export validation metrics to xlsx/parquet
+Reads `val_history.jsonl` (or a single report JSON) and writes xlsx/csv/parquet for trend analysis.
+- `--input` (req) — a `val_history.jsonl`, a run dir containing it, or a single report JSON. `--out_dir`, `--basename`.
 - `--formats` — comma list (`xlsx,csv,parquet`). `--aggregate` — combine all epochs into one table.
 ```bash
-python -m tools.pipeline.export_val_metrics --input /run/val_metrics --aggregate --formats xlsx,parquet
+python -m tools.pipeline.export_val_metrics --input /run/val_history.jsonl --aggregate --formats xlsx,parquet
 ```
 
 ## Device diagnostics

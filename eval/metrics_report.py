@@ -13,10 +13,14 @@ Excel is written with the **standard library only** (a minimal OOXML zip), so it
 without pandas/openpyxl. Numbers are written as real numeric cells (Excel can sum/sort).
 
 Typical use:
-  * During training the trainer calls :func:`build_report` + :func:`save_canonical`
-    each validation to drop ``val_metrics/epoch_NNNN.json`` (+ ``.txt``) under the run dir.
-  * Offline, ``tools/pipeline/export_val_metrics.py`` reads a JSON and calls
-    :func:`write_csv` / :func:`write_xlsx` / :func:`write_txt`.
+  * During training the trainer calls :func:`build_report` and appends the result
+    (one line per validation) to ``<run>/val_history.jsonl`` via
+    ``eval/val_history.py``; extract any epoch back to txt/json/csv with
+    ``tools/val_history.py``. ``tools/eval.py --output_dir`` still uses
+    :func:`save_canonical` to drop a ``<ckpt>_val.json`` + ``.txt`` pair for a
+    single offline evaluation.
+  * Offline, ``tools/pipeline/export_val_metrics.py`` reads one report JSON and
+    calls :func:`write_csv` / :func:`write_xlsx` / :func:`write_txt`.
 """
 
 from __future__ import annotations
