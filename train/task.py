@@ -207,6 +207,9 @@ class YoloV8Task:
         # Global gradient norm BEFORE clipping — a key debugging signal (spikes →
         # instability; compare against gradient_clip_norm to see if clipping is active).
         grad_norm = tf.linalg.global_norm([g for g in grads if g is not None])
+        # Global weight norm — pairs with grad_norm for the update-to-weight ratio
+        # (logged as train/update_ratio) and shows weight growth vs weight decay.
+        weight_norm = tf.linalg.global_norm(model.trainable_variables)
         # Pass clip_norm INTO the optimizer so clipping happens after the
         # cross-replica gradient sum (clipping here, per-replica, would break
         # single-vs-multi-GPU equivalence). No-op on a single replica.
@@ -226,6 +229,7 @@ class YoloV8Task:
             'poly_dist_loss':  poly_d,
             'poly_conf_loss':  poly_c,
             'grad_norm':       grad_norm,
+            'weight_norm':     weight_norm,
         }
 
     def validation_step(

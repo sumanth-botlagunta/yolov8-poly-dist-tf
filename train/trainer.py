@@ -939,6 +939,18 @@ class YoloV8Trainer:
             self._scalar('train/lr',                   lr,               step=step)
             self._scalar('train/momentum',             momentum,         step=step)
             self._scalar('train/ema_decay',            ema_decay,        step=step)
+            # Update-to-weight ratio (Karpathy): lr·‖grad‖ / ‖weights‖. A healthy SGD
+            # run sits around 1e-3; far above → LR too high, far below → too low / stuck.
+            gnorm = float(losses.get('grad_norm', 0.0))
+            wnorm = float(losses.get('weight_norm', 0.0))
+            self._scalar('train/update_ratio', lr * gnorm / max(wnorm, 1e-12), step=step,
+                         key='update_ratio')
+            # Per-param-group effective LR (SGDTorch only) — makes the bias/BN-vs-weight
+            # warmup ramp visible. Skipped for keras optimizers (no param groups).
+            if hasattr(sgd, 'group_lrs_for_last_step'):
+                lr_bias, lr_weight = sgd.group_lrs_for_last_step()
+                self._scalar('train/lr_bias',   float(lr_bias),   step=step, key='lr_bias')
+                self._scalar('train/lr_weight', float(lr_weight), step=step, key='lr_weight')
             self._scalar('train/step_time_ms',         step_time * 1000, step=step)
             self._scalar('train/data_wait_ms',         data_wait * 1000, step=step)
             self._scalar('train/throughput_img_per_s', throughput,       step=step)

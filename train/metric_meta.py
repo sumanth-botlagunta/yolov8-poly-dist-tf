@@ -89,6 +89,18 @@ METRIC_DESCRIPTIONS = {
     "grad_norm":            "**Gradient Norm** — global L2 norm of all gradients BEFORE "
                             "clipping. Watch for spikes (instability / bad batches); compare "
                             "against `task.gradient_clip_norm` to see if clipping is active.",
+    "weight_norm":          "**Weight Norm** — global L2 norm of all trainable weights. Pairs "
+                            "with grad_norm (→ update_ratio); a steady climb vs a plateau shows "
+                            "whether weight decay is balancing growth.",
+    "update_ratio":         "**Update/Weight Ratio** — `lr·‖grad‖ / ‖weights‖`, the per-step "
+                            "relative update size. A healthy run sits ≈ 1e-3 (Karpathy's "
+                            "rule-of-thumb); ≫ that = LR too high, ≪ = too low / stuck.",
+    "lr_bias":              "**Bias/BN-group LR** — effective LR for the bias + BatchNorm param "
+                            "group (SGDTorch). During warmup it ramps DOWN from `bias_lr_scale` "
+                            "to the schedule LR; flat = warmup over.",
+    "lr_weight":            "**Weight-group LR** — effective LR for the weight (kernel) param "
+                            "group (SGDTorch). During warmup it ramps UP from 0 to the schedule "
+                            "LR; flat = warmup over.",
     "gpu_mem_gb":           "**GPU Memory** (GB) — current device allocation.",
     "gpu_mem_peak_gb":      "**GPU Memory, peak** (GB) — peak device allocation.",
     "time_s":               "**Epoch Time** (s) — wall-clock for the epoch (train + validation).",

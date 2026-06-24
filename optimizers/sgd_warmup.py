@@ -114,6 +114,17 @@ class SGDTorch(tf.Module):
         prev = tf.maximum(self.iterations - 1, 0)
         return tf.cast(self._lr_fn(prev), tf.float32)
 
+    def group_lrs_for_last_step(self) -> Tuple[tf.Tensor, tf.Tensor]:
+        """(bias_group_lr, weight_group_lr) — the effective per-group LRs at the last
+        applied step, for TensorBoard. During warmup the bias/BN group ramps DOWN from
+        ``bias_lr_scale`` while the weight group ramps UP from 0; after warmup both equal
+        the schedule LR. Lets you SEE the momentum/bias warmup actually happening."""
+        prev   = tf.maximum(self.iterations - 1, 0)
+        base   = tf.cast(self._lr_fn(prev), tf.float32)
+        warmup = tf.cast(self._warmup_steps, tf.float32)
+        t      = tf.minimum(tf.cast(prev, tf.float32) / tf.maximum(warmup, 1.0), 1.0)
+        return self._effective_lr(base, t, 1), self._effective_lr(base, t, 2)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------

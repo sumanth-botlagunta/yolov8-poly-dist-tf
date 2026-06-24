@@ -165,7 +165,7 @@ clearly-separated top-level sections so the headline metrics aren't buried under
 
 | Group | Contents |
 |-------|----------|
-| `train/` | per-step loss components, `lr`, `momentum`, `ema_decay`, **`grad_norm`** (pre-clip global gradient norm), `step_time_ms`, `data_wait_ms`, `throughput_img_per_s`. `train/mean/<k>` = epoch means. |
+| `train/` | per-step loss components, `lr`, `momentum`, `ema_decay`, throughput/timing (`step_time_ms`, `data_wait_ms`, `throughput_img_per_s`), and the **debug scalars** below. `train/mean/<k>` = epoch means. |
 | `val/` | the **headline** validation metrics only: `mAP`, `mAP50`, `AR100`, `F1score50`, `precision50`, `recall50`, polygon + distance metrics. |
 | `per_class/<metric>/<NN_name>` | per-category detection metrics, grouped **by metric** so all classes of one metric (e.g. `per_class/ap50/*`) sit together — out of the `val/` group. |
 | `epoch/` | per-epoch timing (`time_s`, `val_time_s`, `eta_s`), `throughput`, `best_<metric>`. |
@@ -176,9 +176,15 @@ keeps TensorBoard's ordering numeric while the class name makes it readable; fil
 `DETECTION_CLASSES` and they propagate to the tags and the image-overlay labels. Image summaries
 are `train/augmentations`, `val/predictions`, `val/ground_truth`.
 
-`grad_norm` and `train/data_wait_ms` are the two most useful debugging scalars: a gradient-norm
-spike flags an unstable step/bad batch (and shows whether `gradient_clip_norm` is active), and a
-high data-wait means the pipeline is input-bound (the GPU is starved).
+### Debugging scalars (`train/`)
+
+| Scalar | What it tells you |
+|--------|-------------------|
+| `grad_norm` | Global L2 norm of gradients **before** clipping. Spikes = unstable step / bad batch; compare vs `gradient_clip_norm` to see if clipping is engaging. |
+| `weight_norm` | Global L2 norm of trainable weights. Steady climb vs plateau shows whether weight decay is balancing growth. |
+| `update_ratio` | `lr·‖grad‖ / ‖weights‖` — the per-step relative update size (Karpathy). Healthy ≈ **1e-3**; ≫ that = LR too high, ≪ = too low / stuck. **The single best "is my LR right" signal.** |
+| `lr_bias` / `lr_weight` | Per-param-group effective LR (SGDTorch). During warmup `lr_bias` ramps **down** from `bias_lr_scale` and `lr_weight` ramps **up** from 0 — so you can SEE the warmup happening; both flatten to the schedule LR after. |
+| `data_wait_ms` | Time the loop blocked waiting for the next batch. High = input-bound (GPU starved); see [data_pipeline.md](../data_pipeline.md). |
 `train/throughput_img_per_s` uses wall-clock time (compute + data wait) over the merged
 batch size (144). Together these allow diagnosing whether the bottleneck is in tf.data or on
 the GPU.
