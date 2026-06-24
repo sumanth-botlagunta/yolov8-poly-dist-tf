@@ -21,7 +21,8 @@ Pure (stop-gradient) label assignment per the Ultralytics YOLOv8 recipe:
    reference; omitting it inflates cls targets).
 
 ## Box loss — `tal_loss.py:_box_loss`
-- **CIoU** (`_ciou_loss`): `1 − (IoU − ρ²/c² − α·v)`.
+- **CIoU** (default): `1 − (IoU − ρ²/c² − α·v)`. The IoU variant is config-selectable via
+  `losses.box_iou_type` (`_bbox_iou_loss`): `ciou` (default) · `giou` · `diou` · `eiou` · `siou`.
 - **DFL**: LTRB targets in feature-map units, clipped to `[0, reg_max−1.001]`, floor/ceil
   log-softmax interpolation, mean over the 4 sides.
 - Both are **weighted per-anchor by `sum(target_scores, -1)`** and divided by
@@ -30,7 +31,9 @@ Pure (stop-gradient) label assignment per the Ultralytics YOLOv8 recipe:
 
 ## Classification — `tal_loss.py:_class_loss`
 BCE-with-logits summed over classes, divided by `target_scores_sum`. `ignore_bg=1` (distance-only
-samples) masks the class loss to foreground anchors only.
+samples) masks the class loss to foreground anchors only. Config-selectable via
+`losses.cls_loss_type`: `bce` (default) · `focal` · `varifocal`; `losses.label_smoothing`
+(default 0) softens the BCE targets. Defaults reproduce the previous BCE exactly.
 
 ## Polygon — `polygon_loss.py`
 Three per-vertex components over the 24 bins. The `conf` channel of the target is the per-bin

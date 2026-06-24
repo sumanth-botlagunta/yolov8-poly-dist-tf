@@ -69,6 +69,10 @@ normalization conventions.
 | `poly_dist_gain` / `poly_angle_gain` / `poly_conf_gain` | 0.45 / 0.4 / 0.2 | Polygon sub-losses. |
 | `poly_gain` | 0.5 | Overall multiplier on the summed polygon loss. |
 | `tal_alpha` / `tal_beta` / `topk` | 0.5 / 6.0 / 10 | Alignment metric `score^α × IoU^β`, top-k. |
+| `box_iou_type` | `ciou` | Box regression loss: `ciou` (default) · `giou` · `diou` · `eiou` · `siou`. |
+| `cls_loss_type` | `bce` | Classification loss: `bce` (default) · `focal` · `varifocal`. |
+| `label_smoothing` | `0.0` | Softens BCE targets (0 = off). |
+| `focal_gamma` / `focal_alpha` | 1.5 / 0.25 | Focal/varifocal parameters (ignored for `bce`). |
 | `acsl.use_acsl` | `false` | Parsed but **not implemented** — `use_acsl: true` raises (design_register entry 11). |
 
 ## `task.train_data` / `validation_data` — `DataConfig`
@@ -104,8 +108,10 @@ for both mosaic and single images (the parser no longer applies a separate affin
 |-------|---------|-------|
 | `mosaic_frequency` | `0.5` | Per-output probability of building a mosaic (vs a single-image warp). |
 | `mosaic_center` | `0.25` | Half-range of the 2× canvas split point. |
-| `aug_scale_min` / `aug_scale_max` | 0.4 / 1.9 | Per-image scale AND the warp scale-gain bounds (explicit, not symmetric-magnitude). |
-| `degrees` / `shear` / `translate` / `perspective` | 10 / 2 / 0.1 / 0 | `random_perspective` strength (degrees; translate as a fraction; perspective 0 disables). |
+| `aug_scale_min` / `aug_scale_max` | 0.5 / 1.5 | Canvas→output warp scale-gain bounds (stock YOLO). The ONLY source of per-sample size variety — per-image placement scale is fixed (upright tiles). |
+| `degrees` / `rotate_prob` | 10 / 0.10 | Rotation ± magnitude (degrees), applied only on `rotate_prob` of outputs; the rest stay upright. |
+| `shear` / `translate` / `perspective` | 0 / 0.1 / 0 | `random_perspective` strength (degrees; translate as a fraction; perspective 0 disables). |
+| `close_mosaic_epochs` | `0` | Disable mosaic + mixup for the final N epochs (Ultralytics close_mosaic; 0 = off). |
 | `group_size` | `32` | Mosaic source pool per group. **Invariant:** multiple of `decodes_per_output`, ≥ 4. |
 | `decodes_per_output` | `4` | **R** — decodes per emitted sample = diversity/throughput knob. **4 = stock-YOLO** (4 distinct images per mosaic, no reuse, ~4× decode); lower = more reuse, less decode (1 = throughput-neutral). See [data_pipeline.md](data_pipeline.md). |
 
@@ -121,13 +127,26 @@ for both mosaic and single images (the parser no longer applies a separate affin
 
 ### `task.trainer.optimizer_config` — `OptimizerConfig`
 
+The optimizer and LR schedule are config-selectable via `type` keys (registry in
+`optimizers/factory.py`); the defaults (`sgd_torch` / `cosine`) reproduce the previous
+hardcoded path exactly. Alternatives are additive.
+
 | Field | Default | Notes |
 |-------|---------|-------|
+| `optimizer.type` | `sgd_torch` | Optimizer: `sgd`/`sgd_torch` (default) · `adamw` · `adam`. |
+| `beta_1` / `beta_2` | 0.9 / 0.999 | Adam/AdamW moment coefficients (ignored by SGD). |
 | `momentum` / `momentum_start` | 0.937 / 0.8 | Nesterov momentum (warms from start → momentum). |
 | `weight_decay` | `0.0005` | Applied to weight tensors (`kernel`) only, not biases/BN — per SGDTorch's three param groups. |
-| `warmup_steps` | `7164` | Linear LR warmup; BN/bias groups ramp DOWN from `smart_bias_lr` (design_register entry 2). |
-| `learning_rate.initial_learning_rate` / `decay_steps` / `alpha` | 0.01 / 635400 / 0.01 | Cosine decay. `decay_steps` should equal `steps_per_loop × epochs` (`run_train` warns otherwise). |
+| `warmup_steps` | `7164` | SGD momentum/bias warmup; BN/bias groups ramp DOWN from `smart_bias_lr` (design_register entry 2). |
+| `learning_rate.type` | `cosine` | Schedule: `cosine` (default) · `linear` · `step` · `polynomial` · `constant`. |
+| `learning_rate.initial_learning_rate` / `decay_steps` / `alpha` | 0.01 / 635400 / 0.01 | `decay_steps` should equal `steps_per_loop × epochs` (`run_train` warns otherwise). |
+| `learning_rate.step_size` / `gamma` / `power` | 30000 / 0.1 / 1.0 | Used by `step` (gamma every step_size) / `polynomial` (power) schedules. |
+| `learning_rate.warmup_steps` / `warmup_init_lr` | 0 / 0.0 | Optional linear LR-warmup wrapper (0 = off; SGD keeps its own momentum/bias warmup). |
 | `ema.average_decay` / `dynamic_decay` | 0.9999 / `true` | EMA `min(0.9999, (1+step)/(10+step))`. EMA weights are swapped in for eval. |
+
+Gradient clipping is `task.gradient_clip_norm` (default `0.0` = off): SGDTorch clips per-call,
+keras optimizers (adam/adamw) set `global_clipnorm`. Activation is `task.model.norm_activation.activation`
+(`relu` default; `silu`/`swish`, `gelu`, `leaky_relu`, `mish`, `hardswish` all supported).
 
 ## `task` checkpoint fields
 

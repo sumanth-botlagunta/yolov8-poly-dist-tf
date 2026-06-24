@@ -36,6 +36,13 @@ Validation at startup (`run_train.py:_validate_config`) checks invariants such a
 `output_poly_size == 360 // angle_step` and that `output_dir` is writable.
 
 ## Optimizer & schedule
+
+The optimizer and LR schedule are **config-selectable** (`optimizer.type` / `learning_rate.type`,
+registry in `optimizers/factory.py`); the defaults below (`sgd_torch` / `cosine`) are the
+historical path and are reproduced byte-identically. Alternatives: optimizers `adamw` / `adam`;
+schedules `linear` / `step` / `polynomial` / `constant`; an optional linear LR-warmup wrapper.
+See [configuration.md](configuration.md) for the fields.
+
 - `optimizers/sgd_warmup.py:SGDTorch` — SGD + Nesterov momentum (0.937), decoupled weight decay,
   **3 param groups** (BN / bias / weights) with momentum warmup. During warmup the weight group's
   LR ramps **up** from 0 while bias/BN ramp **down** from `bias_lr_scale` (an absolute LR,
