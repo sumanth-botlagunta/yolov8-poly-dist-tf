@@ -257,6 +257,15 @@ def _run_single(config, task):
             json.dump({k: float(v) for k, v in metrics.items()}, f, indent=2)
         log.info("Metrics written to %s", metrics_path)
 
+        # Same per-validation report the trainer drops next to checkpoints: best F1 /
+        # precision / recall per category over the 0.05 conf grid, mean line, and the
+        # full sweep -> <base>.json + <base>.txt.
+        from eval import metrics_report
+        base = os.path.basename(FLAGS.checkpoint.rstrip('/')) + '_val'
+        report = metrics_report.build_report(coco_ev)
+        paths = metrics_report.save_canonical(report, FLAGS.output_dir, base)
+        log.info("Validation report written to %s and %s", paths['json'], paths['txt'])
+
         if per_cat is not None:
             pc_path = os.path.join(FLAGS.output_dir, 'per_category_metrics.json')
             with open(pc_path, 'w') as f:
