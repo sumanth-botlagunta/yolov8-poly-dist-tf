@@ -22,7 +22,15 @@ import numpy as np
 import tensorflow as tf
 import yaml
 
+from tools.shared.progress import Progress
+
 log = logging.getLogger(__name__)
+
+# Loss components shown on the training progress bar, in order, with short labels.
+_PROGRESS_LOSSES = [
+    ('total_loss', 'loss'), ('box_loss', 'box'), ('cls_loss', 'cls'),
+    ('dfl_loss', 'dfl'), ('poly_loss', 'poly'), ('dist_loss', 'dist'),
+]
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -183,6 +191,7 @@ class YoloV8Trainer:
             # waiting on the input pipeline. Reporting only the compute time
             # would overstate throughput badly whenever training is input-bound.
             prev_body_end = time.time()
+            pbar = None   # created lazily on the first step (needs the loss keys)
             for inputs in epoch_inputs:
                 data_dt = time.time() - prev_body_end
                 t0 = time.time()
@@ -201,9 +210,32 @@ class YoloV8Trainer:
                     self._log_aug_images(aug_inputs, python_step)
                     _aug_logged = True
 
-                for k, v in step_losses.items():
-                    loss_accum[k] = loss_accum.get(k, 0.0) + float(v)
+                # Sync the step's losses to host ONCE and reuse for both the epoch
+                # accumulator and the progress bar (avoids a second device→host copy).
+                step_vals = {k: float(v) for k, v in step_losses.items()}
+                for k, v in step_vals.items():
+                    loss_accum[k] = loss_accum.get(k, 0.0) + v
                 loss_count += 1
+
+                # Live progress bar (TTY → in-place; cloud log file → periodic line).
+                wall = step_dt + data_dt
+                img_s = self._merged_batch_size / max(wall, 1e-9)
+                if pbar is None:
+                    cols = [(k, s) for k, s in _PROGRESS_LOSSES if k in step_vals]
+                    self._pbar_cols = cols
+                    header = (f"{'Epoch':>10}{'gpu_GB':>8}"
+                              + "".join(f"{s:>9}" for _, s in cols) + f"{'img/s':>9}")
+                    total_steps = steps_this_epoch if spl > 0 else None
+                    pbar = Progress(total=total_steps, unit='step', header=header)
+                try:
+                    mem = tf.config.experimental.get_memory_info('GPU:0')['current'] / 1e9
+                    mem_s = f"{mem:>7.2f}"
+                except Exception:
+                    mem_s = f"{'-':>7}"
+                row = (f"{epoch + 1}/{total_epochs}".rjust(10) + mem_s + " "
+                       + "".join(f"{step_vals[k]:>9.3f}" for k, _ in self._pbar_cols)
+                       + f"{img_s:>9.0f}")
+                pbar.update(1, desc=row)
 
                 if python_step % log_interval == 0:
                     self._log_step(step_losses, python_step, step_dt, data_dt)
@@ -215,6 +247,8 @@ class YoloV8Trainer:
                     last_saved_step = python_step
 
                 if self._shutdown_requested:
+                    if pbar is not None:
+                        pbar.close()
                     if python_step != last_saved_step:
                         self._sync_completed_epochs(python_step, spl)
                         # Interruption save goes to resume/ — keeps the main
@@ -228,6 +262,9 @@ class YoloV8Trainer:
                 # Reset AFTER logging/checkpointing so their cost is not
                 # attributed to the next step's data wait.
                 prev_body_end = time.time()
+
+            if pbar is not None:
+                pbar.close()
 
             # ---- validation (EMA weights) ----
             # try/finally so a failure inside validation can never leave the EMA
@@ -577,10 +614,14 @@ class YoloV8Trainer:
         _GT_KEYS       = ('bbox', 'classes', 'n_gt', 'polygons')
 
         logs = None
+        val_total = getattr(self._config.trainer, 'validation_steps', 0) or None
+        ep_desc = f"Val epoch {epoch}" if epoch is not None else "Validation"
+        vbar = Progress(total=val_total, desc=ep_desc, unit='batch')
         for inputs in self._val_ds:
             images, labels = inputs
             step_out   = self._compiled_val_step(inputs)
             logs       = self._task.aggregate_logs(logs, step_out)
+            vbar.update(1)
 
             if n_collected < n_summary:
                 imgs_np = images.numpy()   # [B, H, W, 3] uint8 from the eval parser
@@ -600,6 +641,7 @@ class YoloV8Trainer:
                     summary_gts.append({k: v[i] for k, v in gts_np.items()})
                 n_collected += take
 
+        vbar.close()
         val_metrics = self._task.reduce_aggregated_logs(
             logs, global_step=int(self._global_step)
         )
@@ -887,7 +929,6 @@ class YoloV8Trainer:
         wall       = step_time + data_wait
         # Merged batch (detection + distance rows) — what the step actually consumed.
         throughput = self._merged_batch_size / max(wall, 1e-9)
-        total_loss = float(losses.get('total_loss', 0.0))
         # Ask the EMA wrapper itself (honors the configured average_decay and
         # dynamic_decay; the old inline formula hardcoded 0.9999).
         ema_decay  = float(self._optimizer._get_decay())
@@ -909,12 +950,10 @@ class YoloV8Trainer:
             except Exception:
                 pass
 
-        log.info(
-            "Step %7d | loss=%.4f  lr=%.2e  mom=%.4f  "
-            "%.0fms compute + %.0fms data wait = %.0fms/step  %.0f img/s",
-            step, total_loss, lr, momentum,
-            step_time * 1000, data_wait * 1000, wall * 1000, throughput,
-        )
+        # Console output is the live progress bar (tools/shared/progress.py); this
+        # method now only writes the per-step TensorBoard scalars. The full
+        # compute-vs-data-wait breakdown lives in TB (train/step_time_ms,
+        # train/data_wait_ms, train/throughput_img_per_s); the bar shows img/s + losses.
 
     def _log_epoch(
         self,
