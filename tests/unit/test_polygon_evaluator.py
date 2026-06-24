@@ -147,6 +147,29 @@ class TestPolygonEvaluator(unittest.TestCase):
         m = ev.evaluate()
         self.assertAlmostEqual(m['poly_recall50'], 1.0, places=2)
 
+    def test_class_aware_matching_rejects_cross_class(self):
+        """A detection overlapping a GT at IoU>=0.5 but of a DIFFERENT class must not
+        be counted as a recall when classes are supplied (COCO semantics). Without
+        classes the same overlap matches (legacy class-agnostic behaviour)."""
+        args = self._single_batch(0.1, 0.1)   # det box == gt box (IoU 1.0)
+        pred_cls = np.array([[1]], dtype=np.int64)   # detection is class 1
+        gt_cls   = np.array([[0]], dtype=np.int64)   # GT is class 0
+
+        # class-agnostic (no classes): cross-class overlap still matches -> recall 1
+        ev0 = PolygonEvaluator(image_size=(_H, _W))
+        ev0.update(*args)
+        self.assertAlmostEqual(ev0.evaluate()['poly_recall50'], 1.0, places=2)
+
+        # class-aware: different class -> no match -> recall 0
+        ev1 = PolygonEvaluator(image_size=(_H, _W))
+        ev1.update(*args, pred_classes=pred_cls, gt_classes=gt_cls)
+        self.assertAlmostEqual(ev1.evaluate()['poly_recall50'], 0.0, places=7)
+
+        # class-aware, SAME class -> matches -> recall 1
+        ev2 = PolygonEvaluator(image_size=(_H, _W))
+        ev2.update(*args, pred_classes=gt_cls, gt_classes=gt_cls)
+        self.assertAlmostEqual(ev2.evaluate()['poly_recall50'], 1.0, places=2)
+
     def test_miou_in_valid_range(self):
         """Mask IoU is always in [0, 1]."""
         ev   = PolygonEvaluator(image_size=(_H, _W))

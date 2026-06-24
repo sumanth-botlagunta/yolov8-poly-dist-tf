@@ -445,6 +445,8 @@ class YoloV8Task:
                 n_gt=labels['n_gt'].numpy(),
                 gt_is_crowd=(ic.numpy() if ic is not None else None),
                 gt_is_dontcare=(idc.numpy() if idc is not None else None),
+                pred_classes=preds['classes'].numpy(),
+                gt_classes=labels['classes'].numpy(),
             )
 
     def aggregate_logs(self, state, step_outputs):
