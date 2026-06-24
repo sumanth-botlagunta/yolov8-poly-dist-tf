@@ -269,15 +269,15 @@ class TestRandomPerspective(unittest.TestCase):
         np.testing.assert_array_equal(pad, [-1.0, -1.0])
 
 
-class TestMosaicComposedWarp(unittest.TestCase):
-    """Regression tests for the composed-affine (single-resample) _mosaic rewrite.
+class TestMosaicCanvasWarp(unittest.TestCase):
+    """Regression tests for the 2×-canvas + single-warp _mosaic formulation.
 
-    The rewrite warps each source image DIRECTLY to the output by composing the
-    per-image scale+placement affine A_i with the global perspective matrix M,
-    then selects per output pixel by quadrant — eliminating the intermediate
-    resizes and the 2× canvas. These tests pin (a) the image quadrant layout under
-    identity geometry, (b) the annotation path, (c) the mask partition, and (d)
-    graph-mode/tf.function compatibility.
+    Each source image is resized at its drawn scale and placed into the appropriate
+    cell of a 2× canvas (twice the output resolution).  A single
+    ``random_perspective`` warp then maps the canvas to the final output frame —
+    eliminating four separate full-frame warps.  These tests pin (a) the image
+    quadrant layout under identity geometry, (b) the annotation path, (c) the mask
+    partition, and (d) graph-mode/tf.function compatibility.
     """
 
     def _det_mosaic(self, out=32):

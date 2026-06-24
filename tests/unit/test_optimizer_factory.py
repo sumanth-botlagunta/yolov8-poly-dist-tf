@@ -84,6 +84,15 @@ def test_warmup_zero_is_passthrough():
         assert float(warm(s)) == float(base(s))
 
 
+def test_polynomial_decay_endpoints():
+    """PolynomialDecay: starts at initial_learning_rate, ends at initial*alpha."""
+    cfg = LrScheduleConfig(type='polynomial', initial_learning_rate=0.01,
+                           decay_steps=1000, alpha=0.1, power=2.0)
+    s = factory.build_lr_schedule(cfg)
+    assert abs(float(s(0)) - 0.01) < 1e-6          # starts at initial_learning_rate
+    assert abs(float(s(1000)) - 0.001) < 1e-6      # ends at initial * alpha = 0.001
+
+
 def test_unknown_type_raises():
     import pytest
     with pytest.raises(KeyError):

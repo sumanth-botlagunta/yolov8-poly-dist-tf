@@ -71,3 +71,20 @@ def test_fmt_time():
     assert _fmt_time(65) == "01:05"
     assert _fmt_time(3661) == "1:01:01"
     assert _fmt_time(float("nan")) == "??:??"
+
+
+def test_tty_render_uses_carriage_return_and_bar():
+    """TTY path must emit \\r (in-place update) and the block char █ (from _bar_str)."""
+
+    class TtyStringIO(io.StringIO):
+        def isatty(self):
+            return True
+
+    buf = TtyStringIO()
+    p = Progress(total=4, stream=buf, file_interval=0.0, min_interval=0.0)
+    for _ in range(4):
+        p.update(1)
+    p.close()
+    out = buf.getvalue()
+    assert "\r" in out, "TTY path must use carriage return"
+    assert "█" in out, "TTY path must include the bar block character"

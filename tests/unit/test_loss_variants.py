@@ -74,3 +74,16 @@ def test_label_smoothing_changes_loss():
     a = float(TaskAlignedLossExtended(label_smoothing=0.0)._class_loss(pred, target, tss, fg, ig))
     b = float(TaskAlignedLossExtended(label_smoothing=0.1)._class_loss(pred, target, tss, fg, ig))
     assert np.isfinite(b) and abs(a - b) > 1e-6
+
+
+def test_focal_gamma_and_alpha_affect_focal_loss():
+    """focal_gamma and focal_alpha must actually change the focal cls loss value."""
+    pred, target, tss, fg, ig = _cls_inputs(8)
+    loss_g15 = float(TaskAlignedLossExtended(
+        cls_loss_type='focal', focal_gamma=1.5)._class_loss(pred, target, tss, fg, ig))
+    loss_g30 = float(TaskAlignedLossExtended(
+        cls_loss_type='focal', focal_gamma=3.0)._class_loss(pred, target, tss, fg, ig))
+    assert np.isfinite(loss_g15) and np.isfinite(loss_g30)
+    assert abs(loss_g15 - loss_g30) > 1e-6, (
+        "focal_gamma=1.5 and focal_gamma=3.0 must produce different loss values"
+    )

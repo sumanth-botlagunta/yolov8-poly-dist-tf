@@ -295,3 +295,47 @@ class TestCopyPasteDecoder:
         assert 'objects' not in data
         result = decoder.decode(data)
         assert result['label'].numpy() == 3
+
+
+# ---------------------------------------------------------------------------
+# SkipDecoding (encoded-image) branch
+# ---------------------------------------------------------------------------
+
+class TestEncodedImageBranch:
+    """The pipeline loads TFDS with SkipDecoding, so decoders receive ENCODED
+    image bytes (tf.string) and must decode them in their string branch.
+    These tests exercise that live path with real JPEG/PNG bytes."""
+
+    def test_polygon_decoder_decodes_jpeg_bytes(self):
+        """PolygonDecoder must accept a JPEG-encoded scalar string for 'image'."""
+        from data_pipeline.tfds_decoders import PolygonDecoder
+        rgb = tf.cast(tf.random.uniform([48, 64, 3], 0, 255), tf.uint8)
+        ex = {
+            'image':    tf.io.encode_jpeg(rgb),   # scalar tf.string
+            'image/id': tf.constant(1, dtype=tf.int64),
+            'objects': {
+                'bbox':  tf.zeros([2, 4], tf.float32),
+                'label': tf.zeros([2], tf.int64),
+            },
+        }
+        out = PolygonDecoder(max_vertices=10938, num_classes=39).decode(ex)
+        assert out['image'].dtype == tf.uint8
+        assert tuple(out['image'].shape) == (48, 64, 3)
+        assert int(out['height']) == 48
+        assert int(out['width']) == 64
+
+    def test_copy_paste_decoder_decodes_rgba_png_bytes(self):
+        """CopyPasteDecoder must accept a PNG-encoded scalar string for 'image'."""
+        from data_pipeline.tfds_decoders import CopyPasteDecoder
+        rgba = tf.cast(tf.random.uniform([32, 32, 4], 0, 255), tf.uint8)
+        ex = {
+            'image':     tf.io.encode_png(rgba),   # scalar tf.string
+            'image/id':  tf.constant(7, dtype=tf.int64),
+            'label':     tf.constant(3, dtype=tf.int64),
+            'obj_id':    tf.constant(99, dtype=tf.int64),
+            'orig_bbox': tf.constant([0.1, 0.1, 0.6, 0.6], dtype=tf.float32),
+            'points':    tf.zeros([3972], dtype=tf.float32) - 1.0,
+        }
+        out = CopyPasteDecoder(num_classes=39).decode(ex)
+        assert out['image'].dtype == tf.uint8
+        assert tuple(out['image'].shape) == (32, 32, 4)

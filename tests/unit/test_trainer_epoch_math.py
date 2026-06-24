@@ -12,7 +12,7 @@ from train.trainer import YoloV8Trainer
 
 
 class TestStepsForEpoch(unittest.TestCase):
-    SPL = 2388  # 305,780 images // 128 batch
+    SPL = 2118  # 271,166 images // 128 batch
 
     def test_fresh_start_runs_full_epoch(self):
         self.assertEqual(YoloV8Trainer._steps_for_epoch(0, self.SPL), self.SPL)
@@ -24,7 +24,7 @@ class TestStepsForEpoch(unittest.TestCase):
             )
 
     def test_mid_epoch_resume_runs_remainder_to_boundary(self):
-        # SIGTERM at step 5000 (mid epoch 3); resume must stop at 3*2388 = 7164.
+        # SIGTERM at step 5000 (mid epoch 3); resume must stop at 3*2118 = 6354.
         start = 5000
         steps = YoloV8Trainer._steps_for_epoch(start, self.SPL)
         self.assertEqual(start + steps, 3 * self.SPL)

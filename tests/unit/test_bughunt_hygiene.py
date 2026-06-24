@@ -4,7 +4,8 @@
     instead of hardcoding 24 (works for configurable angle_step).
   - viz_utils._draw_polygon / render_summary_images take a conf_thresh that
     defaults to the same value PolygonEvaluator scores with (shared constant).
-  - README documents the correct checkpoint_interval default (2118).
+  - README documents checkpoint_interval by formula (train_total_examples //
+    global_batch_size), not a baked step count.
   - export_saved_model docstring documents the output schema.
 """
 
