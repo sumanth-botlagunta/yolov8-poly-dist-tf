@@ -325,6 +325,11 @@ class TrainerConfig:
     best_checkpoint_eval_metric: str = "F1score50"
     best_checkpoint_metric_comp: str = "higher"
     max_to_keep: int = 300
+    # Gradient accumulation: apply the optimizer once every N micro-batches (effective
+    # batch = global_batch_size × N). 1 = OFF (default, byte-identical). The LR schedule
+    # advances per OPTIMIZER UPDATE (every N steps), so with N>1 set decay_steps in terms
+    # of effective steps. Epoch accounting (data passes) is unaffected.
+    grad_accum_steps: int = 1
     optimizer_config: OptimizerConfig = dataclasses.field(default_factory=OptimizerConfig)
 
 

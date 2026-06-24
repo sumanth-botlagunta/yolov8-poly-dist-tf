@@ -42,6 +42,12 @@ class _StubTask:
     def initialize(self, model):
         pass
 
+    def apply_freezing(self, model):
+        pass
+
+    def prepare_grad_accumulation(self, model):
+        pass
+
     def build_losses(self):
         return None
 

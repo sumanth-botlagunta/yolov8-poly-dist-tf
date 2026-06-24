@@ -123,6 +123,7 @@ for both mosaic and single images (the parser no longer applies a separate affin
 | `train_total_examples` | `0` | Used to derive `steps_per_loop = train_total_examples // batch`. |
 | `best_checkpoint_eval_metric` | `F1score50` | Metric for the `best_*` checkpoint (`_comp: higher`). |
 | `max_to_keep` | `300` | Epoch-boundary checkpoints retained. |
+| `grad_accum_steps` | `1` | Gradient accumulation: apply the optimizer once every N micro-batches (**effective batch = `global_batch_size × N`**). `1` = off (byte-identical). With `N>1` the LR schedule advances per *optimizer update* (every N steps), so set `decay_steps` in **effective** steps; epoch accounting (data passes) is unaffected. |
 | `optimizer_config` | `OptimizerConfig` | SGD + warmup + cosine + EMA (below). |
 
 ### `task.trainer.optimizer_config` — `OptimizerConfig`

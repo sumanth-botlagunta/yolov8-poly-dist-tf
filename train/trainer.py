@@ -425,6 +425,9 @@ class YoloV8Trainer:
             self._task.apply_freezing(self._model)
             self._optimizer = self._task.build_optimizer()
             self._task._loss_fn = self._task.build_losses()
+            # Gradient-accumulation accumulators (no-op unless grad_accum_steps > 1) —
+            # created here in cross-replica scope, after freezing fixes trainable_variables.
+            self._task.prepare_grad_accumulation(self._model)
             # Pre-create optimizer slots in cross-replica context: under
             # strategy.run variables cannot be created inside the replica context.
             if hasattr(self._optimizer, 'build'):

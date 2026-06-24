@@ -53,6 +53,9 @@ class YoloV8Task:
         self._config = config
         self._model: Optional[tf.keras.Model] = None
         self._loss_fn = None
+        # Gradient accumulation state (None unless trainer.grad_accum_steps > 1).
+        self._grad_accumulators = None
+        self._accum_counter = None
         # Stashes the per-category F1 report from the last validation pass so the
         # trainer (which owns the output dir + epoch) can persist it. None until a
         # validation pass with a COCO evaluator has run.
@@ -129,6 +132,46 @@ class YoloV8Task:
             raise ValueError(
                 "task.freeze_modules froze every trainable variable — nothing left to "
                 "train. Leave at least one module (e.g. the head) unfrozen.")
+
+    def prepare_grad_accumulation(self, model: tf.keras.Model) -> None:
+        """Create the accumulator variables when ``trainer.grad_accum_steps > 1``.
+
+        One zero-initialized accumulator per trainable variable (so it must run AFTER
+        freezing and optimizer build, when ``trainable_variables`` is final), plus a
+        micro-step counter. ``N == 1`` leaves them None → the unchanged apply path.
+        """
+        n = getattr(self._config.trainer, 'grad_accum_steps', 1)
+        if n <= 1:
+            self._grad_accumulators = None
+            self._accum_counter = None
+            return
+        self._grad_accumulators = [
+            tf.Variable(tf.zeros_like(v), trainable=False, name=f'grad_accum_{i}')
+            for i, v in enumerate(model.trainable_variables)]
+        self._accum_counter = tf.Variable(0, trainable=False, dtype=tf.int64,
+                                          name='grad_accum_counter')
+        log.info("Gradient accumulation ON: apply every %d micro-batches "
+                 "(effective batch = global_batch_size × %d).", n, n)
+
+    def _accumulate_and_maybe_apply(self, grads, model, optimizer, clip_norm, n_accum):
+        """Add this micro-batch's grads to the accumulators; every Nth call, apply the
+        mean accumulated gradient and zero the accumulators (preserves None grads)."""
+        for acc, g in zip(self._grad_accumulators, grads):
+            if g is not None:
+                acc.assign_add(g)
+        self._accum_counter.assign_add(1)
+
+        def _do_apply():
+            scaled = [None if g is None else acc / tf.cast(n_accum, acc.dtype)
+                      for acc, g in zip(self._grad_accumulators, grads)]
+            optimizer.apply_gradients(zip(scaled, model.trainable_variables),
+                                      clip_norm=clip_norm)
+            for acc in self._grad_accumulators:
+                acc.assign(tf.zeros_like(acc))
+            return tf.constant(0)
+
+        tf.cond(tf.equal(self._accum_counter % n_accum, 0), _do_apply,
+                lambda: tf.constant(0))
 
     def build_inputs(
         self,
@@ -257,9 +300,14 @@ class YoloV8Task:
         # cross-replica gradient sum (clipping here, per-replica, would break
         # single-vs-multi-GPU equivalence). No-op on a single replica.
         clip_norm = self._config.task.gradient_clip_norm
-        optimizer.apply_gradients(
-            zip(grads, model.trainable_variables), clip_norm=clip_norm
-        )
+        if self._grad_accumulators is None:
+            # Default path (grad_accum_steps == 1) — apply every step, byte-identical.
+            optimizer.apply_gradients(
+                zip(grads, model.trainable_variables), clip_norm=clip_norm
+            )
+        else:
+            n_accum = self._config.trainer.grad_accum_steps
+            self._accumulate_and_maybe_apply(grads, model, optimizer, clip_norm, n_accum)
 
         return {
             'total_loss':      total,

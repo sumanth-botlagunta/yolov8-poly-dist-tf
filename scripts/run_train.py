@@ -85,6 +85,8 @@ def _validate_config(config, output_dir: str) -> None:
             f"trainer.train_total_examples must be > 0, got {trainer.train_total_examples}. "
             "Set it to the total number of training images."
         )
+    if getattr(trainer, 'grad_accum_steps', 1) < 1:
+        errors.append(f"trainer.grad_accum_steps must be >= 1, got {trainer.grad_accum_steps}")
     if trainer.train_epochs <= 0:
         errors.append(f"trainer.train_epochs must be > 0, got {trainer.train_epochs}")
     if trainer.steps_per_loop <= 0:

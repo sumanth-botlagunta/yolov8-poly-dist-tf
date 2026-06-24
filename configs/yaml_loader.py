@@ -500,6 +500,7 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
         best_checkpoint_eval_metric=t.get("best_checkpoint_eval_metric", "F1score50"),
         best_checkpoint_metric_comp=t.get("best_checkpoint_metric_comp", "higher"),
         max_to_keep=t.get("max_to_keep", 300),
+        grad_accum_steps=t.get("grad_accum_steps", 1),
         optimizer_config=opt_cfg,
     )
 

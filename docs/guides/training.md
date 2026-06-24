@@ -97,6 +97,11 @@ trainer rebuilds a mosaic-free stream at epoch `total - N` (the Ultralytics tric
 - **High `train/data_wait_ms`** — the pipeline is input-bound; the GPU is waiting. See
   [data_pipeline.md](../data_pipeline.md) (the `decodes_per_output` / thread-pool knobs).
 - **OOM** — lower `global_batch_size`; the supervisor auto-restarts and resumes, but fix the cause.
+- **Want a bigger effective batch than fits?** Set `trainer.grad_accum_steps: N` — the optimizer
+  applies once every N micro-batches, so the **effective batch = `global_batch_size × N`** at the
+  memory cost of one micro-batch. Default `1` (off). Note: with `N>1` the LR schedule advances per
+  optimizer update, so set `learning_rate.decay_steps` in *effective* steps. See
+  [configuration.md](../configuration.md).
 - **bf16** — `mixed_bfloat16` only helps on Ampere+ Tensor-Core GPUs; on older GPUs it can be slower.
 
 ## Related
