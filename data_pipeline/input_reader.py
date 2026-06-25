@@ -396,6 +396,12 @@ class InputReader:
                     # tf.string branch decodes inside the parallel decode map.
                     # (A shuffle buffer of decoded images costs MBs per element.)
                     decoders={'image': tfds.decode.SkipDecoding()},
+                    # Tolerate a shard whose real record count is below what
+                    # dataset_info.json declares (e.g. a partially-built set): skip
+                    # TFDS's cardinality assertion and just use what is on disk
+                    # instead of crashing at the epoch boundary. The stream is
+                    # repeated + weighted-sampled, so a small shortfall is harmless.
+                    read_config=tfds.ReadConfig(assert_cardinality=False),
                 )
                 datasets.append(ds)
                 log.info("Loaded TFDS: %s [%s]", name, split)
@@ -419,6 +425,9 @@ class InputReader:
             # Encoded bytes through shuffle (RGBA PNG crops); CopyPasteDecoder's
             # tf.string branch decodes with channels=4 in the parallel map.
             decoders={'image': tfds.decode.SkipDecoding()},
+            # Use whatever records exist even if the on-disk count is below the
+            # declared metadata count (see _load_tfds_datasets).
+            read_config=tfds.ReadConfig(assert_cardinality=False),
         )
         # cnp source shuffle: seed=self._seed+1 — a DISTINCT seed from the detection
         # source shuffle (self._seed) and the post-unbatch shuffle (self._seed+2).
