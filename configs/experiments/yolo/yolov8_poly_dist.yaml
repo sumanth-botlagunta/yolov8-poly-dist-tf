@@ -319,9 +319,12 @@ runtime:
   # Single H100: one_device avoids MirroredStrategy variable wrapping overhead.
   distribution_strategy: one_device
   num_gpus: 1
-  # bfloat16 on H100 Tensor Cores; prediction heads stay float32 (pinned in
-  # models/head.py) and the loss runs in float32 — no loss scaling needed.
-  mixed_precision_dtype: bfloat16
+  # A/B EXPERIMENT (match-old-training): float32 everywhere, matching the old
+  # codebase. Unlikely to be the F1-gap cause (bf16 here already pins heads+loss
+  # to float32, so the penalty is normally <0.5%), but zeroed as a confound so the
+  # match-old reference is precision-exact. Flip back to bfloat16 to measure its
+  # specific cost, or for ~2x faster training once the gap is understood.
+  mixed_precision_dtype: float32
   run_eagerly: false
   enable_xla: false
   num_cores_per_replica: 1
