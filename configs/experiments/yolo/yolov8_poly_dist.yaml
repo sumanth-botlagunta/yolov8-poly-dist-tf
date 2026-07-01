@@ -162,10 +162,12 @@ task:
         mosaic_frequency: 0.5
         mixup_frequency: 0.0
         mosaic_center: 0.25
-        # Canvas->output warp scale gain (stock YOLO [0.5, 1.5]) — the only source of
-        # per-sample size variety. Per-image placement scale is fixed (upright tiles).
-        aug_scale_min: 0.5
-        aug_scale_max: 1.5
+        # A/B EXPERIMENT (match-old-training): OLD-CODEBASE scale gain [0.4, 1.9]
+        # (was [0.5, 1.5]). This wide 4.75x object-size span is the main geometric
+        # augmentation the 0.825 model trained under; restoring it is the
+        # highest-impact change for the F1 gap (scale-variety regularization).
+        aug_scale_min: 0.4
+        aug_scale_max: 1.9
         mosaic_crop_mode: scale
         area_thresh: 0.5
         jitter: 0.0
@@ -177,10 +179,14 @@ task:
         # the affine translate. Images are upright by default: rotation fires only on
         # rotate_prob of outputs (±degrees), shear is off (0), so the mosaic shows
         # upright panels cut at the shifting split center.
-        degrees: 10.0
-        rotate_prob: 0.10
+        # A/B EXPERIMENT (match-old-training): OLD-CODEBASE had NO rotation and NO
+        # translate (degrees 0, rotate_prob 0, translate 0). The NEW pipeline ADDED
+        # these (were 10.0 / 0.10 / 0.1); adding regularizers can't explain a WORSE
+        # result, so zeroed only to match old exactly — scale (above) is the real lever.
+        degrees: 0.0
+        rotate_prob: 0.0
         shear: 0.0
-        translate: 0.1
+        translate: 0.0
     distance_data:
       tfds_name: "servingbot_polygon:1.0.1"
       tfds_split: train
