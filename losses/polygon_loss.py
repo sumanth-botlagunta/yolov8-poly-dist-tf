@@ -140,10 +140,15 @@ def polygon_conf_loss(
     Returns:
         Scalar loss.
     """
-    del vertex_mask  # only the preserved masked form (docstring) uses it
     bce = tf.nn.sigmoid_cross_entropy_with_logits(
         labels=target_conf, logits=pd_conf
     )  # [B, A, V]
-    per_anchor = tf.reduce_mean(bce, axis=-1)            # [B, A] — mean over ALL bins
+    # A/B EXPERIMENT (branch experiment/polygon-match-old): reverted to the
+    # OLD-CODEBASE MASKED form — mean over the valid vertices only. This matches
+    # the polygon conf loss the 0.825 checkpoints trained under. Trade-off: empty
+    # bins get no negative gradient, so the star/spiky-polygon artifact may return
+    # in val overlays. Swap back to `tf.reduce_mean(bce, axis=-1)` to restore the
+    # all-bins form. See docstring above for the full rationale.
+    per_anchor = _masked_vertex_mean(bce, vertex_mask)  # [B, A] — MASKED (old form)
     fg_float = tf.cast(fg_mask, tf.float32)              # [B, A]
     return tf.reduce_sum(per_anchor * fg_float) / num_objs
