@@ -136,24 +136,13 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
     total_batches = 0
     img_id_base = 0   # running image-id counter (val uses drop_remainder=False)
 
-    # Compile ONLY the model forward on `images` (fixed signature → traces ONCE;
-    # batch=None covers every batch size incl. the smaller final one — verified).
-    # eval.py otherwise ran eager, which starves the GPU (op-by-op Python dispatch)
-    # — the real reason standalone eval is far slower than the compiled in-training
-    # validation. Labels are deliberately NOT threaded through: doing so retraced
-    # (recompiled) every batch. The one-time Grappler "E ...Reshape" logs at first
-    # call are harmless (non-fatal graph-optimizer warnings; output is correct).
-    @tf.function(input_signature=[
-        tf.TensorSpec([None, img_size[0], img_size[1], 3], tf.uint8)
-    ])
-    def _predict(images_u8):
-        return model(normalize_images(images_u8), training=False)
-
     from tools.shared.progress import Progress
     pbar = Progress(total=None, desc='Evaluating', unit='batch')   # val_ds length unknown
     for step, (images, labels) in enumerate(val_ds):
-        # images are uint8 [0,255]; _predict casts to float32 [0,255] in-graph.
-        predictions = _predict(images)
+        # Eager forward — the known-good path (~1.7s/batch). Compiling this here ran
+        # far slower on GPU (Grappler graph-opt failures), so it is intentionally NOT
+        # wrapped in a tf.function. normalize_images casts uint8→float32 [0,255].
+        predictions = model(normalize_images(images), training=False)
         coco_ev.update(predictions, labels)
 
         if failure_collector is not None:
