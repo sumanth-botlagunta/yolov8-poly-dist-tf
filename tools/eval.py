@@ -67,6 +67,9 @@ try:
                          '(0 = full split). Match the trainer (validation_steps=60) for a '
                          'fast subset check — enough to confirm a migrated checkpoint '
                          'decodes to non-zero metrics without running the whole set.')
+    flags.DEFINE_bool('profile', False, 'Log a per-phase time breakdown (data wait / '
+                      'forward / coco / dist / poly) for the first 10 batches, to pinpoint '
+                      'the bottleneck when eval runs slow / GPU-idle.')
     flags.DEFINE_bool(  'all',   False, 'Evaluate every existing checkpoint in --watch_dir once.')
     flags.DEFINE_bool(  'watch', False, 'Poll --watch_dir and evaluate each new checkpoint.')
     flags.DEFINE_string('watch_dir', None, 'Run directory to scan (for --all / --watch).')
@@ -141,16 +144,26 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
     img_id_base = 0   # running image-id counter (val uses drop_remainder=False)
 
     max_batches = int(getattr(FLAGS, 'max_batches', 0) or 0)
+    do_profile = bool(getattr(FLAGS, 'profile', False))
     from tools.shared.progress import Progress
     pbar = Progress(total=(max_batches or None), desc='Evaluating', unit='batch')
+    _prev_end = time.perf_counter()
     for step, (images, labels) in enumerate(val_ds):
         if max_batches and step >= max_batches:
             break
-        # Eager forward — the known-good path (~1.7s/batch). Compiling this here ran
-        # far slower on GPU (Grappler graph-opt failures), so it is intentionally NOT
-        # wrapped in a tf.function. normalize_images casts uint8→float32 [0,255].
+        _prof = do_profile and step < 10
+        _tp = {}
+        if _prof:
+            _t0 = time.perf_counter()
+            _tp['data_wait'] = _t0 - _prev_end   # time the iterator blocked = pipeline wait
+        # Eager forward. normalize_images casts uint8→float32 [0,255].
         predictions = model(normalize_images(images), training=False)
+        if _prof:
+            _ = predictions['bbox'].numpy()      # force GPU sync to time the forward alone
+            _t1 = time.perf_counter(); _tp['forward'] = _t1 - _t0
         coco_ev.update(predictions, labels)
+        if _prof:
+            _t2 = time.perf_counter(); _tp['coco'] = _t2 - _t1
 
         if failure_collector is not None:
             imgs_np = images.numpy()      # uint8 [B,H,W,3] RGB from the eval parser
@@ -235,6 +248,16 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
 
         total_batches += 1
         pbar.update(1)
+
+        if _prof:
+            _tend = time.perf_counter()
+            # everything after coco = dist matching + polygon IoU + json
+            _dp = _tend - _t2
+            log.info("[profile] batch %d  data_wait=%.2fs  forward=%.2fs  coco=%.2fs  "
+                     "dist+poly=%.2fs  TOTAL=%.2fs",
+                     step, _tp.get('data_wait', 0.0), _tp.get('forward', 0.0),
+                     _tp.get('coco', 0.0), _dp, _tend - _t0)
+        _prev_end = time.perf_counter()
 
     pbar.close()
     log.info("Evaluation complete: %d batches total.", total_batches)
