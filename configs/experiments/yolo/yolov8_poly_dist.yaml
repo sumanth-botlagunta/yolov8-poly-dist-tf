@@ -99,14 +99,13 @@ task:
       rare_cls: [1, 6, 7, 8, 9, 10, 14, 15, 21, 26, 29, 30, 31, 32, 33, 37]
 
   train_data:
-    # Pre-resized 672² training variants keep decodes_per_output=4 within the
-    # per-epoch time budget. Build them ONCE before the first run:
+    tfds_name: "cleaner_polygon2026:2.0.0,field_misrecog2026:1.0.0,station_misrecog:1.1.0"
+    # Optional pre-resized 672² variants (cheaper decode, e.g. to afford a higher
+    # decodes_per_output). Build ONCE, then swap (training only; keep validation
+    # on the originals):
     #   python -m tools.pipeline.reencode_tfds_672 --data_dir <tfds dir> \
     #     --datasets cleaner_polygon2026:2.0.0,field_misrecog2026:1.0.0,station_misrecog:1.1.0
-    # (training only; validation stays on the originals below)
-    tfds_name: "cleaner_polygon2026_672:2.0.0,field_misrecog2026_672:1.0.0,station_misrecog_672:1.1.0"
-    # Full-resolution fallback if the _672 variants are not built yet:
-    # tfds_name: "cleaner_polygon2026:2.0.0,field_misrecog2026:1.0.0,station_misrecog:1.1.0"
+    # tfds_name: "cleaner_polygon2026_672:2.0.0,field_misrecog2026_672:1.0.0,station_misrecog_672:1.1.0"
     tfds_split: "train,train,train"
     tfds_sampling_weights: [95, 2, 3]
     tfds_data_dir: /home/user/tensorflow_datasets/
@@ -172,7 +171,11 @@ task:
         area_thresh: 0.5
         jitter: 0.0
         group_size: 32
-        decodes_per_output: 4   # R: 4 = stock-YOLO (no reuse); lower = more reuse, less decode
+        # R=1 trades mosaic source diversity for decode throughput (each decoded
+        # image feeds 4 consecutive outputs' windows; R=4 = stock-YOLO no-reuse).
+        # The post-unbatch shuffle buffer auto-scales with outputs/group (1024 at
+        # R=1) to disperse the overlapping windows across batches.
+        decodes_per_output: 1
         # random_perspective (full-affine) strength applied after mosaic assembly
         # AND to non-mosaic single images. These are the LIVE affine knobs (forwarded
         # to Mosaic in data_pipeline/input_reader.py); aug_rand_translate above is NOT
