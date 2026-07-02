@@ -136,12 +136,24 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
     total_batches = 0
     img_id_base = 0   # running image-id counter (val uses drop_remainder=False)
 
+    # Compile the forward pass once (graph mode). eval.py otherwise runs the model
+    # EAGERLY op-by-op — many times slower than the compiled in-training validation
+    # step. Traced a single time via the static input signature; batch=None absorbs
+    # the smaller final batch (val uses drop_remainder=False). uint8 in → cast +
+    # model, all in-graph. Pure speedup: no XLA (NMS-safe), numerically identical to
+    # the eager path, so metrics are unchanged.
+    @tf.function(input_signature=[
+        tf.TensorSpec([None, img_size[0], img_size[1], 3], tf.uint8)
+    ])
+    def _predict(images_u8):
+        return model(normalize_images(images_u8), training=False)
+
     from tools.shared.progress import Progress
     pbar = Progress(total=None, desc='Evaluating', unit='batch')   # val_ds length unknown
     for step, (images, labels) in enumerate(val_ds):
-        # Eval parser emits uint8; normalize_images casts to float32 [0, 255]
+        # Eval parser emits uint8; _predict casts to float32 [0, 255] in-graph
         # (the legacy-scale path — feeding uint8 raises on the float32 conv kernels).
-        predictions = model(normalize_images(images), training=False)
+        predictions = _predict(images)
         coco_ev.update(predictions, labels)
 
         if failure_collector is not None:
