@@ -8,9 +8,12 @@ graph. Weights still restore (dtypes are cast on assign), but the backbone/decod
 then compute in float32 — a different numerical path than training/serving. This
 helper centralizes the policy application so every tool matches the trainer.
 
-This intentionally only sets the *precision policy* (the part that affects model
-numerics). It does not touch XLA, threading, or distribution strategy, which are
-trainer-loop concerns irrelevant to single-process offline inference.
+Besides the precision policy, this also applies the trainer's **thread-pool caps**
+(`apply_eval_thread_config`). On cgroup-capped hosts TF sizes its inter/intra-op
+pools to the visible core count (e.g. 128) while the process may only use a few
+cores — hundreds of threads thrash, which starves the GPU (util ~3%) and makes
+offline eval far slower than the in-training validation that *does* apply the caps.
+XLA and distribution strategy remain trainer-loop concerns not set here.
 """
 
 from __future__ import annotations
@@ -56,3 +59,27 @@ def apply_eval_precision_policy(config) -> str:
         "Unknown mixed_precision_dtype=%r; defaulting to float32 policy.", raw
     )
     return "float32"
+
+
+def apply_eval_thread_config(config) -> None:
+    """Apply the trainer's inter/intra-op thread-pool caps for offline tools.
+
+    Mirrors the threading block of ``scripts/run_train.py:_apply_runtime_config``.
+    Reads ``config.runtime.inter_op_threads`` / ``intra_op_threads`` and caps the
+    TF thread pools. MUST run before any TF op executes (before the model is built
+    or any dataset op runs), or the caps are ignored — TF has already sized its
+    pools. Without this, eval on a cgroup-capped host oversubscribes threads
+    (visible cores >> usable cores) and thrashes, leaving the GPU ~idle. No-op when
+    the config leaves the values at 0 (unset).
+    """
+    import tensorflow as tf
+
+    runtime = getattr(config, "runtime", None)
+    inter = getattr(runtime, "inter_op_threads", 0) if runtime else 0
+    intra = getattr(runtime, "intra_op_threads", 0) if runtime else 0
+    if inter and inter > 0:
+        tf.config.threading.set_inter_op_parallelism_threads(inter)
+        log.info("inter_op_parallelism_threads = %d (matches training)", inter)
+    if intra and intra > 0:
+        tf.config.threading.set_intra_op_parallelism_threads(intra)
+        log.info("intra_op_parallelism_threads = %d (matches training)", intra)

@@ -45,16 +45,6 @@ Flags:
     --max_evals     Stop after this many evaluations in --watch mode (0 = unlimited).
 """
 
-# --- TEMP THREAD-LIMIT TEST (remove after) ---------------------------------
-# Cap numpy/BLAS threads to reduce oversubscription with TF's pools during the
-# per-batch CPU metric work (pycocotools / polygon IoU). MUST run before numpy
-# and tensorflow are imported. Delete this block once the experiment is done.
-import os as _os
-for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
-           "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
-    _os.environ.setdefault(_v, "2")
-# --- END TEMP THREAD-LIMIT TEST --------------------------------------------
-
 import json
 import logging
 import os
@@ -421,10 +411,16 @@ def main(_):
 
     config = load_config(FLAGS.config)
 
-    # Activate the same precision policy the trainer used so a bfloat16-trained
-    # checkpoint is evaluated on the bfloat16 compute path (must run BEFORE the
-    # model is built; the global policy persists for every checkpoint in a loop).
-    from tools.shared.runtime_setup import apply_eval_precision_policy
+    # Apply the SAME thread-pool caps + precision policy the trainer uses. Both MUST
+    # run before any TF op executes (before the model/dataset is built). The thread
+    # caps are what keep the GPU fed: without them, eval on a cgroup-capped host
+    # oversubscribes TF's inter/intra-op pools (visible cores >> usable) and thrashes
+    # (GPU ~3% util), which is why standalone eval was far slower than in-training
+    # validation. The precision policy matches a bfloat16-trained checkpoint's path.
+    from tools.shared.runtime_setup import (
+        apply_eval_precision_policy, apply_eval_thread_config,
+    )
+    apply_eval_thread_config(config)
     apply_eval_precision_policy(config)
 
     task = YoloV8Task(config)
