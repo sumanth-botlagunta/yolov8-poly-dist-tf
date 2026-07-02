@@ -52,7 +52,10 @@ try:
                         required=True)
     flags.DEFINE_integer('num_images', 500, 'How many val images to score (-1 = all).')
     flags.DEFINE_float('iou_thr', 0.5, 'IoU threshold for the direct precision/recall/F1.')
-    flags.DEFINE_bool('normalize_baked', True, 'SavedModel bakes /255 (feed raw [0,255]).')
+    flags.DEFINE_bool('normalize_baked', True,
+                      'Feed the device SavedModel raw [0,255] (default True) — correct for '
+                      'the [0,255]-trained model + not-baked export (the model sees [0,255]). '
+                      'Set False only for a legacy [0,1] model (feeds /255).')
     flags.DEFINE_string('box_order', 'yfirst', "box head order of the device SavedModel: "
                         "'yfirst' (legacy/DLC default, --legacy_box_order; reordered to "
                         "x-first to compare to the golden) or 'xfirst' (--legacy_box_order=False).")

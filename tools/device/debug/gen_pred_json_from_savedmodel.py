@@ -110,7 +110,9 @@ def main():
     ap.add_argument('--interpolation', default='bilinear',
                     choices=['bilinear', 'nearest', 'bicubic', 'area'])
     ap.add_argument('--normalize_baked', default='true', choices=['true', 'false'],
-                    help='SavedModel bakes /255 (feed raw [0,255]); false -> divide by 255 here')
+                    help='Feed the SavedModel raw [0,255] (default true) — correct for the '
+                         '[0,255]-trained model + not-baked export. false -> divide by 255 '
+                         '(legacy [0,1] model).')
     ap.add_argument('--box_order', default='yfirst', choices=['yfirst', 'xfirst'],
                     help="channel order of the SavedModel's box head. 'yfirst' = the "
                          "legacy/DLC order ([t,l,b,r], export_device_dlc --legacy_box_order "

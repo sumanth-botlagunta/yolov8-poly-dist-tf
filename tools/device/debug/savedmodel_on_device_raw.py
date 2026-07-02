@@ -101,8 +101,9 @@ def main():
     ap.add_argument('--dtype', default='float32', choices=['float32', 'uint8'],
                     help='dtype of the .raw image file the device writes')
     ap.add_argument('--normalize_baked', default='true', choices=['true', 'false'],
-                    help='the SavedModel bakes /255 (feed raw [0,255]). If false, this '
-                         'script divides by 255 before feeding.')
+                    help='Feed the SavedModel raw [0,255] (default true) — correct for the '
+                         '[0,255]-trained model + not-baked export. If false, this script '
+                         'divides by 255 before feeding (legacy [0,1] model).')
     ap.add_argument('--box_order', default='yfirst', choices=['yfirst', 'xfirst'],
                     help="box head order of the SavedModel. 'yfirst' = legacy/DLC default "
                          "([t,l,b,r], export_device_dlc --legacy_box_order), reordered to "

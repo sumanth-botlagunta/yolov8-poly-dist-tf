@@ -31,10 +31,12 @@ Legacy contract (reverse-engineered from the on-device tooling — see the
     N = total anchors over the 3 FPN levels for the given input size
         (672×416 → 84·52 + 42·26 + 21·13 = 5733).
 
-Two device-specific transforms vs. the [0,1] export contract:
+Device-specific note (LEGACY-SCALE PATH, branch experiment/legacy-format-match):
   1. ``input_image`` carries raw [0, 255] pixels (the on-device raw-image generator
-     sets ``IMAGE_NROM_FLAG=False``), so this graph divides by 255 internally to
-     feed the model the [0, 1] tensors it was trained on (train.task.normalize_images).
+     sets ``IMAGE_NROM_FLAG=False``); the model is trained on [0, 255]
+     (train.task.normalize_images casts only), so this graph feeds them straight
+     through with NO /255 bake (``--normalize`` default off). Set ``--normalize`` on
+     only to restore a legacy [0, 1] model (bakes /255 in-graph).
   2. The forward pass runs in float32 (NOT the training mixed_bfloat16 policy) so the
      exported GraphDef is a clean float32 graph for the SNPE converter / quantizer.
 

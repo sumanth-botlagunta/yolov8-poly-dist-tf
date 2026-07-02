@@ -37,7 +37,10 @@ try:
     flags.DEFINE_string('config',     None, 'Experiment YAML.', required=True)
     flags.DEFINE_string('checkpoint', None, 'Checkpoint prefix.', required=True)
     flags.DEFINE_string('input_size', '672,416', 'Device H,W.')
-    flags.DEFINE_bool('normalize', True, 'Bake /255 (match the export default).')
+    flags.DEFINE_bool('normalize', False,
+                      'Bake /255 into the graph and feed the eager reference [0,1] '
+                      '(legacy [0,1] model). Default False matches the [0,255]-trained '
+                      'model + not-baked export: eager ref and graph both see [0,255].')
 except flags.DuplicateFlagError:
     pass
 
