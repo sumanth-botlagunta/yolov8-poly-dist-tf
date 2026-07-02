@@ -139,8 +139,8 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
     from tools.shared.progress import Progress
     pbar = Progress(total=None, desc='Evaluating', unit='batch')   # val_ds length unknown
     for step, (images, labels) in enumerate(val_ds):
-        # Eval parser emits uint8; the model needs float32 [0, 1] (feeding
-        # uint8 raises on the float32 conv kernels).
+        # Eval parser emits uint8; normalize_images casts to float32 [0, 255]
+        # (the legacy-scale path — feeding uint8 raises on the float32 conv kernels).
         predictions = model(normalize_images(images), training=False)
         coco_ev.update(predictions, labels)
 
