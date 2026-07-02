@@ -469,8 +469,10 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
     lr_raw     = lr_block.get(lr_type, lr_block.get("cosine", lr_block))
     opt_block  = opt_raw.get("optimizer", {})
     opt_type   = opt_block.get("type", "sgd")
-    # 'sgd_torch' is the legacy block name for the sgd optimizer.
-    sgd_raw    = opt_block.get("sgd_torch", opt_block.get(opt_type, opt_block))
+    # The TYPE-SELECTED block wins; 'sgd_torch' (the legacy block name for sgd)
+    # is only the fallback. The reverse precedence silently read adamw/adam
+    # params from a leftover sgd_torch block when switching optimizer type.
+    sgd_raw    = opt_block.get(opt_type, opt_block.get("sgd_torch", opt_block))
     # NOTE: the legacy trainer.warmup.* block is not parsed — SGD momentum/bias warmup is
     # driven solely by OptimizerConfig.warmup_steps (sgd_torch.warmup_steps below); LR
     # warmup is LrScheduleConfig.warmup_steps. A stray trainer.warmup block is ignored.

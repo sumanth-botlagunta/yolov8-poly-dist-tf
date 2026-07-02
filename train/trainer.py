@@ -289,8 +289,16 @@ class YoloV8Trainer:
                     best_metric_name, sorted(val_metrics.keys()),
                 )
             metric_val = val_metrics.get(best_metric_name, 0.0)
-            if best_metric_name in val_metrics and metric_val > float(self._best_metric):
-                self._best_metric.assign(metric_val)
+            # Honor best_checkpoint_metric_comp: 'higher' (default) keeps the max,
+            # 'lower' keeps the min (e.g. tracking an error metric). _best_metric
+            # stores the value SIGNED so the stored comparison is always "greater
+            # is better": negate under 'lower'. Previously this knob was parsed
+            # but ignored (comparison hardcoded to >).
+            comp = getattr(self._config.trainer, 'best_checkpoint_metric_comp',
+                           'higher')
+            signed = -metric_val if comp == 'lower' else metric_val
+            if best_metric_name in val_metrics and signed > float(self._best_metric):
+                self._best_metric.assign(signed)
                 self._save_best_checkpoint(epoch=epoch + 1, step=python_step)
 
             # Mark this epoch as fully complete BEFORE the epoch-end checkpoint so
@@ -968,8 +976,16 @@ class YoloV8Trainer:
         # not next step's LR. `apply_gradients` increments `iterations` at its end,
         # so `sgd.lr` (which reads the schedule at the current `iterations`) is one
         # step ahead by the time this logs.
-        lr         = float(sgd.lr_for_last_step)
-        momentum   = float(sgd._current_momentum())
+        # SGDTorch-only introspection is hasattr-guarded: keras optimizers
+        # (adamw/adam via optimizers/factory.py) have neither attribute, and an
+        # unguarded read crashed the run at the first logging step.
+        if hasattr(sgd, 'lr_for_last_step'):
+            lr = float(sgd.lr_for_last_step)
+        else:
+            lr_attr = getattr(sgd, 'learning_rate', 0.0)
+            lr = float(lr_attr(sgd.iterations) if callable(lr_attr) else lr_attr)
+        momentum   = (float(sgd._current_momentum())
+                      if hasattr(sgd, '_current_momentum') else 0.0)
         wall       = step_time + data_wait
         # Merged batch (detection + distance rows) — what the step actually consumed.
         throughput = self._merged_batch_size / max(wall, 1e-9)

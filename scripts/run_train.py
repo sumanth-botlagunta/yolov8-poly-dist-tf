@@ -198,6 +198,47 @@ def _validate_config(config, output_dir: str) -> None:
         rp = getattr(mosaic_cfg, "rotate_prob", 0.10)
         if not 0.0 <= rp <= 1.0:
             errors.append(f"mosaic.rotate_prob ({rp}) must be in [0, 1]")
+        if 1 <= r < 4:
+            # Not an error — R<4 is supported — but it silently cuts effective
+            # batch diversity (sliding-window reuse: at R=1 consecutive outputs
+            # share 3/4 source images; measured ~82 near-duplicate-content pairs
+            # per 128-batch vs 0 at R=4). The cheap-decode alternative is the
+            # pre-resized `_672` dataset variants at R=4.
+            logging.warning(
+                "mosaic.decodes_per_output=%d (< 4): sliding-window image reuse "
+                "reduces per-batch diversity and measurably hurts accuracy. "
+                "Prefer decodes_per_output=4 with the pre-resized `_672` TFDS "
+                "variants (tools/pipeline/reencode_tfds_672.py) for throughput.", r)
+
+    # --- validation stream sanity ---
+    vd = getattr(task, "validation_data", None)
+    if vd is not None and getattr(vd, "is_training", False):
+        # is_training=True on the val stream builds the INFINITE training
+        # pipeline; `for inputs in val_ds` then never terminates and the first
+        # epoch's validation hangs forever. DataConfig defaults is_training to
+        # True, so a YAML that drops the key hits exactly this.
+        errors.append(
+            "validation_data.is_training must be false (an infinite training "
+            "stream as the val set hangs validation forever)"
+        )
+    tp = getattr(getattr(task.train_data, "parser", None), "resample_points", 0)
+    vp = getattr(getattr(vd, "parser", None), "resample_points", 0) if vd else 0
+    if tp != vp:
+        logging.warning(
+            "parser.resample_points differs between train (%s) and validation "
+            "(%s): eval polygon GT will be binned from a different vertex "
+            "distribution than training, distorting poly metrics.", tp, vp)
+
+    # --- multi-TFDS sampling weights ---
+    td = task.train_data
+    weights = getattr(td, "tfds_sampling_weights", None)
+    names = [n for n in str(getattr(td, "tfds_name", "")).split(",") if n.strip()]
+    if weights and len(names) > 1 and len(weights) != len(names):
+        errors.append(
+            f"len(tfds_sampling_weights) ({len(weights)}) != number of datasets "
+            f"in tfds_name ({len(names)}) — weights are index-aligned, a "
+            "mismatch crashes deep inside sample_from_datasets"
+        )
 
     # --- output directory writable ---
     try:

@@ -22,9 +22,10 @@ tfds.load (SkipDecoding: images stay ENCODED bytes through shuffle)
                            width-4 window (step R) of one per-group random
                            permutation — R=4 tiles the permutation (4 distinct
                            images, zero cross-output reuse = stock YOLO), R<4
-                           overlaps (reuse 4/R, varied partners). Each output runs
-                           one random_perspective warp.
-   → unbatch → shuffle(max(256, 4·group_size), seed=self._seed+2)  (disperses a
+                           overlaps as a SLIDING window — recurrences land on adjacent
+                           outputs (R=1: consecutive outputs share 3/4 images). Each
+                           output runs one random_perspective warp.
+   → unbatch → shuffle(max(256, 32·outputs_per_group), seed=self._seed+2)  (disperses a
                            group's outputs; distinct seed from the two source shuffles)
    → parser polygon preprocessing  (yolo_parser.py / distance_parser.py)
                            parsers emit uint8 images — colour aug moved to GPU
@@ -137,8 +138,10 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
 - `tf.data.Options(deterministic=False)` is applied to the training stream (removes
   head-of-line blocking). `private_threadpool_size` (DataConfig field, default 0 = all cores)
   caps tf.data's worker count on cgroup-capped machines; `yolov8_poly_dist.yaml` sets it to 13.
-- The post-unbatch `shuffle` (buffer ≥ 256, scaled with `group_size`) disperses each mosaic
-  group's outputs before the final `batch(global_batch_size)`.
+- The post-unbatch `shuffle` (buffer ≥ 256, scaled with `outputs_per_group` =
+  `group_size // decodes_per_output`) disperses each mosaic group's outputs before the final
+  `batch(global_batch_size)` — at R<4 a group emits more, mutually-correlated outputs, so the
+  buffer scales with the output count, not the pool size.
 - **Three pipeline changes target the dominant CPU bottlenecks** (measured on the
   13-core-capped cloud host): pre-resizing before copy-paste (~18 ms·core/img at full-res),
   the mosaic **canvas formulation** (one `random_perspective` warp per output — 4 cheap

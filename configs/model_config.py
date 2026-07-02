@@ -166,10 +166,14 @@ class MosaicConfig:
     # decoded images is mapped to `group_size // decodes_per_output` outputs; each
     # mosaic draws 4 source images from the group. `decodes_per_output` (R) is the
     # number of freshly-decoded images each output consumes AND the data-pipeline
-    # decode multiplier: R=4 is stock-YOLO (4 distinct images per mosaic, no reuse);
-    # R=1 reuses each image 4× (throughput-neutral). Larger group_size = more varied
-    # combinations at the same R. group_size must be a multiple of decodes_per_output
-    # and >= 4 (validated in scripts/run_train.py:_validate_config).
+    # decode multiplier: R=4 is stock-YOLO (4 distinct images per mosaic, no reuse).
+    # WARNING — R<4 is a SLIDING-window reuse, not a spread one: at R=1 consecutive
+    # outputs share 3/4 source images and real training batches end up with many
+    # near-duplicate-content samples (measured ~82 overlapping pairs per batch of
+    # 128 vs 0 at R=4). This measurably cuts effective data diversity; prefer
+    # keeping R=4 and making decode cheaper (pre-resized `_672` dataset variants,
+    # tools/pipeline/reencode_tfds_672.py) over lowering R. group_size must be a
+    # multiple of decodes_per_output and >= 4 (scripts/run_train.py:_validate_config).
     group_size: int = 32
     decodes_per_output: int = 4
     # Full-affine (random_perspective) params applied after mosaic assembly and to

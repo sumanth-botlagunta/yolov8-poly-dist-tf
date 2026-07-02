@@ -26,7 +26,9 @@ from losses.tal_loss import TaskAlignedLossExtended
 # ---------------------------------------------------------------------------
 
 def test_copy_paste_uses_minus_one_sentinel():
-    src = inspect.getsource(CopyAndPasteModule._copy_and_paste)
+    # The compositing body lives in _paste (_copy_and_paste is the min-size
+    # gate wrapper around it).
+    src = inspect.getsource(CopyAndPasteModule._paste)
     assert "> -1.0" in src
     assert "pts[:, 0] >= 0.0" not in src
 

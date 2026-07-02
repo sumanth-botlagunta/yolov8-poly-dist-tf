@@ -6,8 +6,19 @@ Replicates PyTorch-style SGD behavior for three parameter groups:
     Group 2 — Weights    (kernel):                                     WD=weight_decay
 
 Momentum is linearly warmed up from momentum_start → momentum over warmup_steps,
-then held constant. Weight decay is applied as L2 regularization before the
-gradient step: w ← w * (1 − lr * wd).
+then held constant. Weight decay is COUPLED into the gradient before the momentum
+update (exact PyTorch / TF-model-garden SGDTorch semantics):
+
+    g ← g + wd·w          # group-2 (kernel) variables only
+    v ← μ·v + g
+    w ← w − lr·(μ·v + g)  # Nesterov  (or w − lr·v without)
+
+Because the wd·w term accumulates in the velocity buffer, the steady-state shrink
+is ≈ lr·wd/(1−μ) — ~16× stronger at μ=0.937 than the decoupled form
+w ← w·(1−lr·wd) previously used here. The decoupled form silently
+under-regularized the model relative to the legacy optimizer (train loss kept
+falling while val F1 plateaued early, weight_norm climbed, grad_norm rose late —
+the classic sharp-minimum signature). Train-semantics change: fresh runs only.
 
 Classes:
     SGDTorch: SGD optimizer compatible with tf.train.Checkpoint via tf.Module.
@@ -163,9 +174,12 @@ class SGDTorch(tf.Module):
             group  = _classify_var(var.name)
             eff_lr = self._effective_lr(base_lr, t, group)
 
-            if group == 2:
-                # Decoupled weight decay applied before gradient step
-                var.assign(var * (1.0 - eff_lr * self._weight_decay))
+            if group == 2 and self._weight_decay > 0.0:
+                # COUPLED weight decay (torch / model-garden SGDTorch): add wd·w to
+                # the gradient BEFORE the momentum update so it compounds through
+                # the velocity buffer (steady-state shrink ≈ lr·wd/(1−μ), ~16× the
+                # decoupled w·(1−lr·wd) form previously applied here).
+                grad = grad + self._weight_decay * tf.cast(var, grad.dtype)
 
             vel = self._get_or_create_velocity(var)
 

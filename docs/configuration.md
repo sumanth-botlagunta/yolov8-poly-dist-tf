@@ -17,8 +17,10 @@ checked before training.
   in a key name will NOT error; it just won't take effect. Check the dataclass field names here
   when a setting seems to have no effect.
 - **Derived fields** (`train_steps`, `steps_per_loop`, `validation_steps`,
-  `checkpoint_interval`, `learning_rate.decay_steps`) are computed by `_fill_derived_fields`
-  from `train_epochs` and `train_total_examples` — see [training.md](training.md).
+  `checkpoint_interval`) are computed by `_fill_derived_fields` from `train_epochs` and
+  `train_total_examples` — see [training.md](training.md). `learning_rate.decay_steps` is
+  an **explicit YAML value** (not derived); `run_train` warns when it diverges from
+  `train_steps`.
 
 ## Top-level structure
 
@@ -113,7 +115,7 @@ for both mosaic and single images (the parser no longer applies a separate affin
 | `shear` / `translate` / `perspective` | 0 / 0.1 / 0 | `random_perspective` strength (degrees; translate as a fraction; perspective 0 disables). |
 | `close_mosaic_epochs` | `0` | Disable mosaic + mixup for the final N epochs (Ultralytics close_mosaic; 0 = off). |
 | `group_size` | `32` | Mosaic source pool per group. **Invariant:** multiple of `decodes_per_output`, ≥ 4. |
-| `decodes_per_output` | `4` | **R** — decodes per emitted sample = diversity/throughput knob. **4 = stock-YOLO** (4 distinct images per mosaic, no reuse, ~4× decode); lower = more reuse, less decode (1 = throughput-neutral). See [data_pipeline.md](data_pipeline.md). |
+| `decodes_per_output` | `4` | **R** — decodes per emitted sample = diversity/throughput knob. **4 = stock-YOLO** (4 distinct images per mosaic, no reuse, ~4× decode). **R<4 is a sliding-window reuse** (R=1: consecutive outputs share 3/4 images → ~82 near-duplicate pairs per 128-batch, measured) and measurably hurts accuracy; `run_train` warns. Prefer R=4 + pre-resized `_672` datasets for throughput. See [data_pipeline.md](data_pipeline.md). |
 
 ## `task.trainer` — `TrainerConfig`
 

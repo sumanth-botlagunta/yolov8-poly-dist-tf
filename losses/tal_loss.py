@@ -466,6 +466,16 @@ class TaskAlignedLossExtended:
             pd_poly_conf, conf, vertex_mask, poly_fg_b, num_objs
         )
 
+        # Diagnostic only (not part of the loss): |sigmoid(pred) − target| MAE over
+        # valid vertices of fg anchors. The BCE angle loss has a large irreducible
+        # entropy floor (continuous target), so its curve reads flat while the head
+        # learns; this floors at 0. Stashed on self (not returned) so the public
+        # 9-tuple contract — and every test unpacking it — is unchanged.
+        from losses.polygon_loss import polygon_angle_mae
+        self.poly_angle_mae_diag = polygon_angle_mae(
+            pd_poly_angle, target_angle, vertex_mask, poly_fg_b
+        )
+
         poly_total = self.poly_gain * (
             self.poly_angle_gain * angle_loss +
             self.poly_dist_gain  * dist_loss_val +
@@ -645,6 +655,8 @@ class TaskAlignedLossExtended:
         poly_angle_l  = tf.constant(0.0)
         poly_dist_l   = tf.constant(0.0)
         poly_conf_l   = tf.constant(0.0)
+        # Diagnostic default; overwritten inside _polygon_loss when polygons are on.
+        self.poly_angle_mae_diag = tf.constant(0.0)
         if self.with_polygons and pd_poly_angle is not None:
             poly_loss_val, poly_angle_l, poly_dist_l, poly_conf_l = self._polygon_loss(
                 pd_poly_angle, pd_poly_dist, pd_poly_conf,

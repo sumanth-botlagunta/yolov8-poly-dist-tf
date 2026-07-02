@@ -124,7 +124,17 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
     val_ds = task.build_inputs(data_cfg)
 
     img_size = tuple(task_cfg.model.input_size[:2])
-    coco_ev = COCOEvaluator(num_classes=task_cfg.num_classes, image_size=img_size)
+    # Pass the SAME crowd/dontcare flags the trainer's evaluator uses
+    # (train/task.py:_build_eval_state) — building on hardcoded defaults made
+    # this tool silently diverge from val_history.jsonl the day a config
+    # changed those flags.
+    coco_ev = COCOEvaluator(
+        num_classes=task_cfg.num_classes,
+        image_size=img_size,
+        ignore_dontcare=task_cfg.ignore_dontcare,
+        ignore_iscrowds=task_cfg.ignore_iscrowds,
+        iscrowds_labels=task_cfg.iscrowds_labels,
+    )
     # Only evaluate distance when the chosen split actually carries distance GT
     # (distance is a training-only stream — gating on the model flag alone would
     # print a misleading dist_mae=0.0 on a split with no distance labels).

@@ -98,6 +98,39 @@ def polygon_dist_loss(
     return tf.reduce_sum(per_anchor * fg_float) / num_objs
 
 
+def polygon_angle_mae(
+    pd_angle: tf.Tensor,
+    target_angle: tf.Tensor,
+    vertex_mask: tf.Tensor,
+    fg_mask: tf.Tensor,
+) -> tf.Tensor:
+    """Diagnostic: mean |sigmoid(pred) − target| over valid vertices of fg anchors.
+
+    NOT a training loss — a TensorBoard instrument. The BCE angle loss carries a
+    large irreducible entropy floor (BCE of a continuous target is nonzero even at
+    perfect prediction), so its curve looks flat while the head is in fact
+    learning. This MAE floors at 0 and reads ~0.25 at an untrained head
+    (sigmoid≈0.5 vs ~uniform targets), making convergence legible. Averaged per
+    anchor over valid vertices, then averaged over foreground anchors (NOT
+    summed / num_objs, so the value stays in [0, ~0.5] regardless of
+    anchors-per-GT).
+
+    Args:
+        pd_angle:     float32 [batch, anchors, num_vertices]  logits
+        target_angle: float32 [batch, anchors, num_vertices]  offset in [0, 1)
+        vertex_mask:  float32 [batch, anchors, num_vertices]  1.0 on valid bins
+        fg_mask:      bool    [batch, anchors]
+
+    Returns:
+        Scalar diagnostic value.
+    """
+    err = tf.abs(tf.sigmoid(pd_angle) - target_angle)      # [B, A, V]
+    per_anchor = _masked_vertex_mean(err, vertex_mask)     # [B, A]
+    fg_float = tf.cast(fg_mask, tf.float32)
+    n_fg = tf.maximum(tf.reduce_sum(fg_float), 1.0)
+    return tf.reduce_sum(per_anchor * fg_float) / n_fg
+
+
 def polygon_conf_loss(
     pd_conf: tf.Tensor,
     target_conf: tf.Tensor,

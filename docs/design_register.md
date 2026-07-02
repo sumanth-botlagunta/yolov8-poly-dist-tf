@@ -12,9 +12,14 @@ changing them means re-training.
 
 Training drops `is_crowd` annotations at parse time (`parser.skip_crowd_during_training=True`,
 `data_pipeline/yolo_parser.py` / `distance_parser.py`), while COCO evaluation
-(`eval/coco_metrics.py`) follows the standard COCO protocol and *includes* crowd regions in its
-`iscrowd` matching. So the model never sees crowd GT during training but is scored against a metric
-that accounts for crowds. This matches the original PolyYOLO behavior the checkpoints were trained
+(`eval/coco_metrics.py`, `ignore_iscrowds: false`) **counts crowd GT in the recall denominator** —
+which is *stricter than the standard COCO protocol* (stock pycocotools sets `ignore = iscrowd`,
+excluding crowds from recall). Additionally, every GT of the categories in `iscrowds_labels`
+([6,13,24,36,37]) is force-flagged `iscrowd=1` at eval, giving those classes the lenient
+intersection-over-detection-area IoU and multi-match absorption. Net effect: the model never sees
+crowd GT during training but is scored against required crowd GT at eval — an undetected crowd
+region is an unrecoverable false negative that structurally caps those classes' best recall (and
+the macro F1 they carry). This matches the original PolyYOLO behavior the checkpoints were trained
 under. Training on crowd regions instead would change the training data and require a re-train.
 
 ## 2. BN/bias warmup LR ramps DOWN from `bias_lr_scale = 0.1`

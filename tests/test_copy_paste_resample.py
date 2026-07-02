@@ -46,7 +46,7 @@ def _obj_with_wide_polygon(n_pairs):
 def test_wide_object_polygon_is_resampled_not_truncated():
     n_poly_cols = 128                  # background width = 64 verts
     n_pairs = 2000                     # object far wider than the budget
-    cnp = CopyAndPasteModule(prob=1.0)
+    cnp = CopyAndPasteModule(prob=1.0, min_height=0, min_width=0)
     tf.random.set_seed(0)
     out = cnp._copy_and_paste(_bg(n_poly_cols), _obj_with_wide_polygon(n_pairs))
 
@@ -101,7 +101,8 @@ def test_scattered_oob_sentinels_do_not_corrupt_resample():
     n_poly_cols = 128                  # background width = 64 verts
     n_pairs = 2000                     # object far wider than the budget
     cnp = CopyAndPasteModule(
-        prob=1.0, max_resize_ratio=1.0, min_resize_ratio=1.0,
+        prob=1.0, min_height=0, min_width=0,
+        max_resize_ratio=1.0, min_resize_ratio=1.0,
     )
     tf.random.set_seed(0)
     out = cnp._copy_and_paste(
@@ -127,7 +128,7 @@ def test_narrow_object_polygon_is_padded():
     # Object narrower than the bg budget → padded with -1 (unchanged behavior).
     n_poly_cols = 128
     n_pairs = 8
-    cnp = CopyAndPasteModule(prob=1.0)
+    cnp = CopyAndPasteModule(prob=1.0, min_height=0, min_width=0)
     out = cnp._copy_and_paste(_bg(n_poly_cols), _obj_with_wide_polygon(n_pairs))
     polys = out["groundtruth_polygons"].numpy()
     assert polys.shape == (1, n_poly_cols)

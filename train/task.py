@@ -333,6 +333,10 @@ class YoloV8Task:
             'dist_loss':       dist,
             'poly_loss':       poly,
             'poly_angle_loss': poly_a,
+            # Diagnostic (stashed by the loss fn, not in its return tuple): angle
+            # MAE that floors at 0 — the BCE angle loss has a large entropy floor
+            # and reads flat even while the head learns.
+            'poly_angle_mae':  self._loss_fn.poly_angle_mae_diag,
             'poly_dist_loss':  poly_d,
             'poly_conf_loss':  poly_c,
             'grad_norm':       grad_norm,
