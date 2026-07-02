@@ -63,6 +63,10 @@ try:
     flags.DEFINE_string('output_json', None, 'Path to write COCO results JSON.')
     flags.DEFINE_bool(  'per_category', False, 'Print per-category metrics table.')
     flags.DEFINE_string('output_dir',  None, 'Directory to write metrics JSON files.')
+    flags.DEFINE_integer('max_batches', 0, 'Evaluate at most this many val batches '
+                         '(0 = full split). Match the trainer (validation_steps=60) for a '
+                         'fast subset check — enough to confirm a migrated checkpoint '
+                         'decodes to non-zero metrics without running the whole set.')
     flags.DEFINE_bool(  'all',   False, 'Evaluate every existing checkpoint in --watch_dir once.')
     flags.DEFINE_bool(  'watch', False, 'Poll --watch_dir and evaluate each new checkpoint.')
     flags.DEFINE_string('watch_dir', None, 'Run directory to scan (for --all / --watch).')
@@ -136,9 +140,12 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
     total_batches = 0
     img_id_base = 0   # running image-id counter (val uses drop_remainder=False)
 
+    max_batches = int(getattr(FLAGS, 'max_batches', 0) or 0)
     from tools.shared.progress import Progress
-    pbar = Progress(total=None, desc='Evaluating', unit='batch')   # val_ds length unknown
+    pbar = Progress(total=(max_batches or None), desc='Evaluating', unit='batch')
     for step, (images, labels) in enumerate(val_ds):
+        if max_batches and step >= max_batches:
+            break
         # Eager forward — the known-good path (~1.7s/batch). Compiling this here ran
         # far slower on GPU (Grappler graph-opt failures), so it is intentionally NOT
         # wrapped in a tf.function. normalize_images casts uint8→float32 [0,255].
