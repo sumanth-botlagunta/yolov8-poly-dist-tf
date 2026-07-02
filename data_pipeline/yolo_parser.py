@@ -11,12 +11,13 @@ Training augmentation pipeline order:
     LONGER applied here — it runs upstream in the mosaic stage (data_pipeline/mosaic.py)
     for both the 4-image mosaic and non-mosaic single images.
 
-Colour augmentation (normalize /255 → HSV jitter → albumentations) is NO LONGER
-done here. The parser now emits a uint8 image so the whole pipeline carries
-uint8 (4× less host→device memory traffic); the colour pipeline runs once per
-batch on the accelerator inside ``train.task.train_step`` via
-``data_pipeline.batch_color_aug.batch_color_augment`` (eval normalizes /255 in
-``validation_step``). This moves ~20 ms·core/img off the CPU-capped tf.data
+Colour augmentation (HSV jitter → albumentations) is NO LONGER done here. The
+parser now emits a uint8 image so the whole pipeline carries uint8 (4× less
+host→device memory traffic); the colour pipeline runs once per batch on the
+accelerator inside ``train.task.train_step`` via
+``data_pipeline.batch_color_aug.batch_color_augment``. The model is fed the
+[0,255] range (legacy-scale path): colour aug scales back to [0,255], and
+``validation_step`` only casts uint8→float32 (no /255). This moves ~20 ms·core/img off the CPU-capped tf.data
 workers onto the otherwise-idle GPU, with the identical per-image randomness
 distribution.
 

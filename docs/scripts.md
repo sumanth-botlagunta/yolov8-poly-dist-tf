@@ -79,7 +79,8 @@ SavedModel that drop-in-replaces the legacy device DLC. See [device_export.md](d
 - `--config` (req), `--checkpoint` (req), `--output_dir` (req).
 - `--input_size` — `H,W` for the device (e.g. `672,416`).
 - `--verify` — run all contract checks (op names, baked `/255`, decode parity).
-- `--normalize` (default on) — bake `/255` so the graph accepts raw `[0,255]` input.
+- `--normalize` (default **off**) — the model is trained on `[0,255]`, so the graph feeds
+  raw `[0,255]` straight through. Turn on only to bake `/255` for a legacy `[0,1]` model.
 - `--legacy_box_order` (default on) — reorder box channels `[l,t,r,b]→[t,l,b,r]` to match the
   legacy on-device decoder; set `False` only if you decode with this repo / `gen_pred_json`.
 - `--debug_taps` — emit intermediate tap nodes for SavedModel-vs-DLC bisection.
@@ -88,7 +89,7 @@ python -m tools.device.export_device_dlc --config configs/experiments/yolo/yolov
 ```
 
 ### `python -m tools.export_saved_model` — host/server SavedModel
-Deploy SavedModel with NMS baked in; expects `[0,1]` input.
+Deploy SavedModel with NMS baked in; expects `[0,255]` input.
 - `--config` (req), `--checkpoint` (req), `--output_dir` (req).
 - `--tflite` — also run the TFLite converter and write `model.tflite`.
 ```bash

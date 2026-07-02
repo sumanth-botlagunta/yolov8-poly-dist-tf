@@ -6,7 +6,7 @@ conversion → quantization → net-run → result-extraction pipeline keeps wor
 **unchanged**; only the SavedModel path changes.
 
 This is distinct from `tools/export_saved_model.py`, which bakes NMS into the graph and
-emits the post-processed deploy dict for `[0,1]`-normalized input (server/host serving).
+emits the post-processed deploy dict for `[0,255]` input (server/host serving).
 
 ## The legacy device contract
 
@@ -58,12 +58,13 @@ transposed → host 0.68 / device 0.19. The exporter therefore **reorders the bo
 decoder reads each offset on the correct axis. Set `--legacy_box_order=False` only if you
 decode with this repo or `tools/device/gen_pred_json_from_dlc.py` (both expect x-first).
 
-## Two device-specific transforms vs the `[0,1]` host export
+## Device transform vs the `[0,255]` host export
 
-1. **`/255` is baked in** (`--normalize`, default on). The raw-image generator writes
-   raw [0,255] float32 (`IMAGE_NROM_FLAG=False`), so the graph divides by 255 to feed the
-   model the [0,1] it was trained on (`train.task.normalize_images`). See
-   `docs/design_register.md` entry 12.
+1. **No `/255` bake by default** (`--normalize`, default **off**). The model is trained
+   on `[0,255]` (legacy-scale path), and the raw-image generator writes raw [0,255] float32
+   (`IMAGE_NROM_FLAG=False`), so the graph feeds those pixels straight to the model
+   (`train.task.normalize_images` only casts). Pass `--normalize` on **only** to restore a
+   legacy [0,1] model (bakes `/255` in-graph). See `docs/design_register.md` entry 12.
 2. **float32 graph** (not the training `mixed_bfloat16`) so the GraphDef converts cleanly
    in SNPE. The same checkpoint restores into either policy.
 
@@ -119,7 +120,8 @@ snpe-net-run --container model_quant.dlc \
 ```
 
 `--verify` checks, against a built model: top-level op names present (SNPE), signature
-output shapes, that baked-in `/255` reproduces the raw model exactly, and that splitting
+output shapes, that the graph reproduces the raw model exactly (feeding `[0,255]`, or the
+baked `/255` when `--normalize` is on), and that splitting
 the concatenated nodes back to per-level and decoding with the in-repo
 `YoloV8Layer` (the faithful port of the on-device `YoloV8LayerModified`) reproduces the
 deploy path — i.e. the concatenation is the lossless layout the device decoder expects.
@@ -176,6 +178,7 @@ are numerically byte-identical and do not change training or checkpoints.
 all**, and no `Pack`/`Shape`. The remaining ops are all
 standard SNPE-supported: `Conv2D`, `BiasAdd`, `Relu`, `MaxPool`,
 `ResizeNearestNeighbor`, `Mul`/`Sub`/`Rsqrt`/`AddV2` (folded BatchNorm constants),
-`ConcatV2`, `Reshape`, `StridedSlice`, `Squeeze`, `RealDiv` (the baked `/255`).
+`ConcatV2`, `Reshape`, `StridedSlice`, `Squeeze` (plus `RealDiv` only if `--normalize`
+is on to bake `/255`; off by default).
 
 Tests: `tests/test_export_device_dlc.py`.

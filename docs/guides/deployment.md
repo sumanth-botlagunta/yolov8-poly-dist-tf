@@ -2,7 +2,7 @@
 
 End-to-end procedure to take a trained checkpoint to a quantized `.dlc` running on device, and to
 **verify the on-device numbers match the host**. For the *why* behind the device contract (box
-channel order, baked `/255`, float32 graph, BatchNorm fold), see
+channel order, `[0,255]` input (no `/255` bake by default), float32 graph, BatchNorm fold), see
 [device_export.md](../device_export.md).
 
 ## Overview of the pipeline
@@ -22,7 +22,7 @@ python -m tools.device.export_device_dlc \
     --input_size 672,416 \
     --verify
 ```
-This prefers EMA weights, bakes in `/255`, emits a **float32** top-level-named graph, **folds
+This prefers EMA weights, feeds `[0,255]` (no `/255` bake by default), emits a **float32** top-level-named graph, **folds
 BatchNorm into the preceding conv** (so the DLC quantizes correctly), and keeps the legacy box
 channel order (`--legacy_box_order`, default ON — the device decoder is y-first `[t,l,b,r]`).
 `--verify` runs all contract checks (see [device_export.md](../device_export.md#troubleshooting--verify);

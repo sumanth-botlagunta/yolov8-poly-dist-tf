@@ -358,8 +358,8 @@ class YoloV8Task:
         Runs the model in deploy=True mode to obtain decoded detections.
         """
         images, labels = inputs
-        # Parsers now emit uint8; normalize to [0, 1] here. Keep float passthrough
-        # for backward compat (some tests feed already-normalized float images).
+        # Parsers now emit uint8; cast to float32 [0, 255] here (legacy-scale path,
+        # no /255). Float inputs pass through unchanged (some tests feed floats).
         images = normalize_images(images)
         original_deploy = model.deploy
         model.deploy = True

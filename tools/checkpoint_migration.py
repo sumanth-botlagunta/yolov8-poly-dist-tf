@@ -701,6 +701,35 @@ def _detect_strategy(reader) -> str:
     return "structural"
 
 
+_LEGACY_BOX_DFL_GROUPS = 4
+_LEGACY_BOX_ORDER_PERM = (1, 0, 3, 2)  # legacy [t,l,b,r] -> new [l,t,r,b]; self-inverse
+
+
+def _permute_legacy_box_pred(tensor):
+    """Reorder the 4 DFL groups on the last (output-channel) axis of a box_pred
+    kernel ``[..., 4*reg_max]`` or bias ``[4*reg_max]`` from the legacy y-first
+    ``[top, left, bottom, right]`` order to this codebase's x-first
+    ``[left, top, right, bottom]``.
+
+    The legacy codebase pairs ``(y, x)`` anchors + ``dist2bbox(ver=1)`` with box
+    channels ``[t, l, b, r]``; ``models/detection_generator.py`` decodes
+    ``[l, t, r, b]`` with ``(x, y)`` anchors (see the unpack at l.266 and the
+    ``x1 = cx - l`` math at l.269-271). Without this swap every migrated box lands
+    on the wrong axis → zero IoU and a flooded NMS. Permutation ``[1, 0, 3, 2]``
+    over the 4 groups reconciles them; the 16 within-group DFL bins are untouched.
+    It is a self-inverse involution — the exact swap the on-device export applies
+    (``tools/device/export_device_dlc.py``: ``tf.gather(x, [1, 0, 3, 2], axis=1)``).
+    Returns a new array.
+    """
+    import numpy as np
+    a = np.asarray(tensor)
+    reg_max = a.shape[-1] // _LEGACY_BOX_DFL_GROUPS
+    lead = a.shape[:-1]
+    g = a.reshape(*lead, _LEGACY_BOX_DFL_GROUPS, reg_max)
+    g = g[..., list(_LEGACY_BOX_ORDER_PERM), :]
+    return g.reshape(*lead, _LEGACY_BOX_DFL_GROUPS * reg_max)
+
+
 def apply_frozen_map(reader, new_model, modules: Optional[List[str]] = None) -> Dict[str, int]:
     """Assign weights using the committed, hand-verified frozen map.
 
@@ -736,6 +765,7 @@ def apply_frozen_map(reader, new_model, modules: Optional[List[str]] = None) -> 
     stats = {"loaded": 0, "skipped": 0, "not_found": 0}
     loaded_by_module = {m: 0 for m in resolved_modules}
     canon_missing, old_missing = 0, 0
+    box_perm = 0
     for old_key, canon in LEGACY_TO_NEW.items():
         module = canon.split("/")[0]
         if module not in mods:
@@ -749,6 +779,12 @@ def apply_frozen_map(reader, new_model, modules: Optional[List[str]] = None) -> 
             old_missing += 1
             continue
         tensor = reader.get_tensor(old_key)
+        # Legacy box head is y-first [t,l,b,r]; this codebase decodes x-first
+        # [l,t,r,b]. Reorder the 4 DFL groups so migrated boxes decode correctly
+        # (see _permute_legacy_box_pred). Only box_pred kernel+bias, all 3 levels.
+        if canon.endswith(("box_pred/kernel", "box_pred/bias")):
+            tensor = _permute_legacy_box_pred(tensor)
+            box_perm += 1
         var = rec["var"]
         if tuple(var.shape) != tuple(tensor.shape):
             log.warning("Shape mismatch %s: %s vs %s — skipping",
@@ -761,12 +797,16 @@ def apply_frozen_map(reader, new_model, modules: Optional[List[str]] = None) -> 
     stats["loaded_by_module"] = loaded_by_module
     stats["modules"] = list(resolved_modules)
 
+    stats["box_pred_permuted"] = box_perm
     log.info(
         "Frozen map: loaded=%d skipped=%d not_found=%d "
         "(canonical-missing-in-model=%d, legacy-key-missing-in-ckpt=%d)",
         stats["loaded"], stats["skipped"], stats["not_found"],
         canon_missing, old_missing,
     )
+    log.info("Box head: applied legacy [1,0,3,2] DFL-group permutation to %d "
+             "box_pred vars (expect 6 = kernel+bias x 3 levels when head is migrated).",
+             box_perm)
     if old_missing:
         log.warning("%d frozen legacy keys were not in the checkpoint — the real "
                     "key format may differ slightly; run `report` to inspect.", old_missing)
