@@ -4,6 +4,11 @@ Validates:
     - Output image shape matches the background image shape.
     - The pasted object's box (and polygon row) is appended to the GT annotations.
     - prob=0.0 produces unchanged output.
+    - The min_height/min_width gate skips pastes whose full-resolution size
+      (obj_dims × resize_ratio) is below the minimum.
+
+Fixtures use small synthetic objects, so tests not about the gate construct the
+module with min_height=0, min_width=0 to disable it.
 """
 
 import unittest
@@ -41,13 +46,13 @@ def _obj(h=40, w=40):
 
 class TestCopyAndPasteModule(unittest.TestCase):
     def test_output_shape_preserved(self):
-        mod = CopyAndPasteModule(prob=1.0)
+        mod = CopyAndPasteModule(prob=1.0, min_height=0, min_width=0)
         out = mod.process_fn(is_training=True)(_bg(), _obj())
         self.assertEqual(tuple(out["image"].shape), (100, 100, 3))
         self.assertEqual(out["image"].dtype, tf.uint8)
 
     def test_box_appended(self):
-        mod = CopyAndPasteModule(prob=1.0)
+        mod = CopyAndPasteModule(prob=1.0, min_height=0, min_width=0)
         bg = _bg(n=2)
         out = mod.process_fn(is_training=True)(bg, _obj())
         # One object pasted → exactly one extra box / class / polygon row.
@@ -74,7 +79,7 @@ class TestCopyAndPasteModule(unittest.TestCase):
         (min==max==1.0) the appended box's normalized height/width must match
         the unresized case to within 1px rounding.
         """
-        mod = CopyAndPasteModule(prob=1.0, min_resize_ratio=1.0, max_resize_ratio=1.0)
+        mod = CopyAndPasteModule(prob=1.0, min_height=0, min_width=0, min_resize_ratio=1.0, max_resize_ratio=1.0)
         fn = mod.process_fn(is_training=True)
 
         # Case A: original 200×400 background (no height/width fields → corr=1).
@@ -97,11 +102,39 @@ class TestCopyAndPasteModule(unittest.TestCase):
 
     def test_no_height_fields_is_backward_compatible(self):
         """Without 'height'/'width' fields the correction must be exactly 1."""
-        mod = CopyAndPasteModule(prob=1.0, min_resize_ratio=1.0, max_resize_ratio=1.0)
+        mod = CopyAndPasteModule(prob=1.0, min_height=0, min_width=0, min_resize_ratio=1.0, max_resize_ratio=1.0)
         out = mod.process_fn(is_training=True)(_bg(h=100, w=100), _obj(h=40, w=40))
         box = out["groundtruth_boxes"][-1].numpy()
         self.assertAlmostEqual(box[2] - box[0], 0.4, places=5)
         self.assertAlmostEqual(box[3] - box[1], 0.4, places=5)
+
+    def test_min_size_gate_skips_small_pastes(self):
+        """Pastes below min_height×min_width at full resolution are SKIPPED.
+
+        The gate compares obj_dims × resize_ratio (the full-resolution pasted
+        size) against the minimum. A too-small object leaves the background
+        unchanged (no extra GT row); a large-enough one is pasted. Regression
+        guard: min_height/min_width were previously stored but never enforced.
+        """
+        # 40×40 object at ratio 1.0 < 60×100 minimum → skipped.
+        mod = CopyAndPasteModule(prob=1.0, min_height=60, min_width=100,
+                                 min_resize_ratio=1.0, max_resize_ratio=1.0)
+        out = mod.process_fn(is_training=True)(_bg(n=2), _obj(h=40, w=40))
+        self.assertEqual(int(out["groundtruth_boxes"].shape[0]), 2)
+        self.assertEqual(int(out["groundtruth_polygons"].shape[0]), 2)
+
+        # 80×120 object at ratio 1.0 >= 60×100 → pasted.
+        out2 = mod.process_fn(is_training=True)(_bg(n=2), _obj(h=80, w=120))
+        self.assertEqual(int(out2["groundtruth_boxes"].shape[0]), 3)
+
+        # Gate uses the FULL-RES size (obj_dims × ratio), independent of the
+        # background's pre-resize correction: same skip decision on a
+        # pre-resized background carrying original dims.
+        bg = _bg(h=100, w=100)
+        bg["height"] = tf.constant(400, tf.int32)
+        bg["width"] = tf.constant(400, tf.int32)
+        out3 = mod.process_fn(is_training=True)(bg, _obj(h=40, w=40))
+        self.assertEqual(int(out3["groundtruth_boxes"].shape[0]), 2)
 
     def test_graph_mode_map_traces(self):
         """Regression: copy-paste must trace under Dataset.map(AUTOTUNE).
@@ -114,7 +147,7 @@ class TestCopyAndPasteModule(unittest.TestCase):
         catch it because EagerTensor.__eq__ evaluates numerically. This pins the
         real graph-mode path that the input pipeline uses (input_reader.py:171).
         """
-        mod = CopyAndPasteModule(prob=1.0)
+        mod = CopyAndPasteModule(prob=1.0, min_height=0, min_width=0)
         fn = mod.process_fn(is_training=True)
 
         bg_ds = tf.data.Dataset.from_tensors(_bg(n=2))

@@ -23,8 +23,9 @@ Training-stream invariants:
   - Images stay ENCODED (SkipDecoding) through shuffle, so the shuffle buffer
     holds KBs of JPEG bytes per element instead of MBs of decoded pixels; the
     decoders' tf.string branch decodes inside the parallel decode map.
-  - Mosaic emits 4 samples per 4-group (no decoded image is discarded); a small
-    post-unbatch shuffle breaks up the 4-sample correlation clusters.
+  - Mosaic maps a group_size group to group_size // decodes_per_output outputs;
+    a post-unbatch shuffle (scaled with outputs-per-group) breaks up the
+    same-group correlation clusters.
 
 Distance stream (when distance_reader is provided):
     servingbot_polygon → dist_parser → batch(16) → prefetch

@@ -51,6 +51,38 @@ class CopyAndPasteModule:
         bg_data: Dict[str, tf.Tensor],
         obj_data: Dict[str, tf.Tensor],
     ) -> Dict[str, tf.Tensor]:
+        """Gate on the minimum pasted size, then composite.
+
+        Draws the resize ratio, and SKIPS the paste entirely (background returned
+        unchanged) when the pasted object would be smaller than
+        ``min_height × min_width`` pixels at the ORIGINAL background resolution
+        (``obj_dims × ratio`` — the scale the composite is geometrically
+        equivalent to; see the resolution-correction note in ``_paste``). Without
+        this gate, arbitrarily tiny/blurry pasted objects entered GT as
+        full-confidence instances (the constructor's min_height/min_width were
+        previously stored but never enforced).
+        """
+        obj_shape = tf.shape(obj_data['image'])
+        obj_h_f = tf.cast(obj_shape[0], tf.float32)
+        obj_w_f = tf.cast(obj_shape[1], tf.float32)
+        resize_ratio = tf.random.uniform(
+            [], self._min_resize_ratio, self._max_resize_ratio)
+        size_ok = tf.logical_and(
+            obj_h_f * resize_ratio >= self._min_height,
+            obj_w_f * resize_ratio >= self._min_width,
+        )
+        return tf.cond(
+            size_ok,
+            lambda: self._paste(bg_data, obj_data, resize_ratio),
+            lambda: dict(bg_data),
+        )
+
+    def _paste(
+        self,
+        bg_data: Dict[str, tf.Tensor],
+        obj_data: Dict[str, tf.Tensor],
+        resize_ratio: tf.Tensor,
+    ) -> Dict[str, tf.Tensor]:
         """Composite one object onto the background and update annotations.
 
         Args:
@@ -98,7 +130,8 @@ class CopyAndPasteModule:
         corr_h = H_f / tf.maximum(orig_h_f, 1.0)
         corr_w = W_f / tf.maximum(orig_w_f, 1.0)
 
-        resize_ratio = tf.random.uniform([], self._min_resize_ratio, self._max_resize_ratio)
+        # resize_ratio is drawn by _copy_and_paste (which also applies the
+        # min_height/min_width gate on obj_dims × ratio before calling here).
         obj_h_f = tf.cast(tf.shape(obj_rgb)[0], tf.float32)
         obj_w_f = tf.cast(tf.shape(obj_rgb)[1], tf.float32)
         new_h = tf.maximum(tf.cast(tf.round(obj_h_f * resize_ratio * corr_h), tf.int32), 1)
@@ -182,7 +215,10 @@ class CopyAndPasteModule:
         bg_data['groundtruth_is_crowd'] = tf.concat(
             [bg_data['groundtruth_is_crowd'], tf.constant([False])], axis=0
         )
-        box_area = (new_ymax - new_ymin) * (new_xmax - new_xmin)
+        # Area from the CLIPPED box (new_box), not the raw pre-clip extents — a
+        # pasted object overhanging the canvas edge otherwise overstates its
+        # visible area.
+        box_area = (new_box[0, 2] - new_box[0, 0]) * (new_box[0, 3] - new_box[0, 1])
         bg_data['groundtruth_area'] = tf.concat(
             [bg_data['groundtruth_area'], tf.reshape(box_area, [1])], axis=0
         )

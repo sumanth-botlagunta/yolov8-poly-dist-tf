@@ -26,7 +26,7 @@ Full documentation is in [`docs/`](docs/) — see the [index](#documentation) at
 | Heads | box (DFL 64-ch), cls (39-ch), poly_angle / poly_dist / poly_conf (24-ch each), dist (1-ch) |
 | Classes | 39 |
 | Activation | ReLU (default; configurable — silu/gelu/leaky_relu/mish/hardswish) |
-| Optimizer | SGDTorch (default) — decoupled WD, Nesterov, per-param-group, linear momentum warmup; selectable adamw/adam |
+| Optimizer | SGDTorch (default) — coupled WD (torch semantics, through momentum), Nesterov, per-param-group, linear momentum warmup; selectable adamw/adam |
 | LR schedule | Cosine decay (default), initial 0.01, α=0.01, over the full `train_steps` (300 epochs); selectable linear/step/polynomial/constant |
 | EMA | Dynamic decay `min(0.9999, (1+step)/(10+step))` |
 

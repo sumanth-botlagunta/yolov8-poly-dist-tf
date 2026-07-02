@@ -42,7 +42,15 @@ METRIC_DESCRIPTIONS = {
     ),
     "poly_angle_loss": (
         "**Polygon Angle Loss** (raw, pre-gain) — `BCE(sigmoid(pred), sub-bin offset)` where "
-        "offset = `(vertex_angle − bin_start)/angle_step ∈ [0,1)`; mean over **valid** vertices, ÷ `num_objs`."
+        "offset = `(vertex_angle − bin_start)/angle_step ∈ [0,1)`; mean over **valid** vertices, ÷ `num_objs`. "
+        "NOTE: BCE against a continuous target has a large irreducible entropy floor, so this "
+        "curve reads nearly flat even while the head learns — watch `poly_angle_mae` instead."
+    ),
+    "poly_angle_mae": (
+        "**Polygon Angle MAE** (diagnostic, floors at 0) — `|sigmoid(pred) − sub-bin offset|`, "
+        "mean over **valid** vertices, averaged over fg anchors. ~0.25 at an untrained head; "
+        "decreasing = the angle head is learning (the BCE loss hides this behind its entropy floor). "
+        "×`angle_step`(15°) = mean tangential vertex error in degrees."
     ),
     "poly_dist_loss": (
         "**Polygon Distance Loss** (raw, pre-gain) — `(softplus(pred) − target_radius)²`; "

@@ -44,7 +44,8 @@ Alternatives: optimizers `adamw` / `adam`;
 schedules `linear` / `step` / `polynomial` / `constant`; an optional linear LR-warmup wrapper.
 See [configuration.md](configuration.md) for the fields.
 
-- `optimizers/sgd_warmup.py:SGDTorch` — SGD + Nesterov momentum (0.937), decoupled weight decay,
+- `optimizers/sgd_warmup.py:SGDTorch` — SGD + Nesterov momentum (0.937), coupled weight decay
+  (torch semantics: `g += wd·w` before the momentum update, compounding to ≈`lr·wd/(1−μ)`),
   **3 param groups** (BN / bias / weights) with momentum warmup. During warmup the weight group's
   LR ramps **up** from 0 while bias/BN ramp **down** from `bias_lr_scale` (an absolute LR,
   default `0.1` = 10× the initial weight LR, not `bias_lr_scale·base_lr`); after warmup all
@@ -73,7 +74,10 @@ See [configuration.md](configuration.md) for the fields.
 `train_total_examples // batch_size`), every epoch runs exactly that many steps from one
 **persistent iterator** over the infinite training stream. After a mid-epoch resume
 (`YoloV8Trainer._steps_for_epoch`) only the remainder to the next multiple is run, keeping epoch
-boundaries at exact multiples of `steps_per_loop`. The derived fields are consistent by
+boundaries at exact multiples of `steps_per_loop`. Caveat: the data iterator itself is **not**
+checkpointed — a resume rebuilds the stream from the start with the same configured seed, so
+step accounting stays exact but sample exposure is re-biased toward the early stream on every
+restart (frequent preemptions weaken the "each example seen ~once per epoch" property). The derived fields are consistent by
 construction: `decay_steps = steps_per_loop × train_epochs`, `checkpoint_interval = steps_per_loop`
 (one epoch), and warmup is a small multiple of `steps_per_loop`.
 `run_train.py:_validate_config` warns at startup if `decay_steps` in the YAML diverges from
