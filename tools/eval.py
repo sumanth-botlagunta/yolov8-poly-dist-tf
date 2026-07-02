@@ -45,6 +45,16 @@ Flags:
     --max_evals     Stop after this many evaluations in --watch mode (0 = unlimited).
 """
 
+# --- TEMP THREAD-LIMIT TEST (remove after) ---------------------------------
+# Cap numpy/BLAS threads to reduce oversubscription with TF's pools during the
+# per-batch CPU metric work (pycocotools / polygon IoU). MUST run before numpy
+# and tensorflow are imported. Delete this block once the experiment is done.
+import os as _os
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+           "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    _os.environ.setdefault(_v, "2")
+# --- END TEMP THREAD-LIMIT TEST --------------------------------------------
+
 import json
 import logging
 import os
