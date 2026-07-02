@@ -29,8 +29,9 @@ tfds.load (SkipDecoding: images stay ENCODED bytes through shuffle)
    → parser polygon preprocessing  (yolo_parser.py / distance_parser.py)
                            parsers emit uint8 images — colour aug moved to GPU
    → batch(global_batch_size) + prefetch(AUTOTUNE)
-   [train_step] HSV + Albumentations + /255 (batch_color_aug.py, on GPU;
-                           Albumentations skipped for ignore_bg==1 distance rows)
+   [train_step] HSV + Albumentations → ×255 (batch_color_aug.py, on GPU; aug math
+                           in [0,1], model fed [0,255]; Albumentations skipped for
+                           ignore_bg==1 distance rows)
 ```
 
 The order matters: copy-paste augments *within* an image and must run before mosaic stitches
@@ -79,10 +80,12 @@ training step; each sub-stream also prefetches internally.
   `unsorted_segment_max` / `segment_min` formulation (replacing the old `[N, P, 24]` one-hot
   expansion) — output-equivalent including ties, and tested for exact equality.
   The 672→672 resize is skipped when the static shape already matches (mosaic path).
-  **Parsers now emit uint8 images.** Normalisation (`/255`), HSV jitter, and Albumentations
-  have moved to `data_pipeline/batch_color_aug.py` and run inside `YoloV8Task.train_step`
-  (GPU). `validation_step` casts uint8 to float32 and divides by 255 directly. This cuts
-  host→device memory traffic by 4× and frees CPU tf.data workers from colour ops.
+  **Parsers now emit uint8 images.** HSV jitter and Albumentations have moved to
+  `data_pipeline/batch_color_aug.py` and run inside `YoloV8Task.train_step` (GPU). The model is
+  fed the **`[0,255]`** pixel range (legacy-scale path, branch `experiment/legacy-format-match`):
+  the colour-aug math runs in `[0,1]` then scales back to `[0,255]`, and `validation_step` /
+  `normalize_images` only **cast** uint8→float32 (no `/255`). This cuts host→device memory traffic
+  by 4× and frees CPU tf.data workers from colour ops.
 - `distance_parser.py:V8DistanceParser` — distance samples; encodes log-distance and sets
   `ignore_bg`. Also emits uint8; colour aug applied in the same `train_step` batch pass
   (Albumentations rows are gated by `ignore_bg==0` so distance-only rows skip it).

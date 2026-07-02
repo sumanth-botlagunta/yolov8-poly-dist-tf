@@ -259,11 +259,19 @@ def batch_color_augment(
                        allowed.
 
     Returns:
-        float32 [B, H, W, 3] in [0, 1].
+        float32 [B, H, W, 3] in [0, 255].
+
+    LEGACY-SCALE PATH (branch experiment/legacy-format-match): HSV and
+    albumentations run on the [0, 1] representation (unchanged, equivalence-
+    tested), then the result is scaled back to **[0, 255]** so the model is fed
+    the same pixel range as the old codebase the warm-start was trained under
+    (see train.task.normalize_images for the rationale). To restore [0, 1],
+    drop the final ``* 255.0``.
     """
     if images.dtype == tf.uint8:
         images = tf.cast(images, tf.float32) / 255.0
     else:
+        # Float input is assumed already in [0, 1] for the colour-aug math.
         images = tf.cast(images, tf.float32)
 
     images = batch_hsv_augment(images, hue=hue, sat=sat, val=val)
@@ -273,4 +281,5 @@ def batch_color_augment(
             albu_row_mask = tf.ones([tf.shape(images)[0]], dtype=tf.bool)
         images = batch_albumentations(images, freq=albu_freq, row_mask=albu_row_mask)
 
-    return images
+    # Colour aug is done in [0, 1]; hand the model the legacy [0, 255] scale.
+    return images * 255.0

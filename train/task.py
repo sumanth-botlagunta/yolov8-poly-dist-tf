@@ -29,16 +29,23 @@ log = logging.getLogger(__name__)
 
 
 def normalize_images(images: tf.Tensor) -> tf.Tensor:
-    """uint8 [0, 255] → float32 [0, 1]; float images pass through unchanged.
+    """uint8 [0, 255] → float32 [0, 255]; float images pass through unchanged.
 
-    The parsers emit uint8 (colour aug + /255 moved to the batch level), so
+    LEGACY-SCALE PATH (branch experiment/legacy-format-match): the model is fed
+    pixels in the **[0, 255]** range, matching the old codebase the warm-start
+    checkpoint was trained under. The old checkpoint's BatchNorm moving
+    statistics were calibrated on 0–255 inputs, so a clean warm-start requires
+    feeding the same scale (feeding /255 makes those loaded stats wrong at
+    step 0). The model itself has no internal /255 (see models/yolo_v8.py).
+
     EVERY consumer that calls ``model(images)`` directly — ``validation_step``
-    and ``tools/eval.py`` — must normalize through
-    this one helper. Feeding raw uint8 to the model raises (float32 conv
-    kernels); feeding 0–255 floats would silently produce garbage.
+    and ``tools/eval.py`` — normalizes through this one helper. Feeding raw
+    uint8 to the model raises (float32 conv kernels). To restore the [0, 1]
+    path, re-add the ``/ 255.0`` divide here and in
+    ``data_pipeline/batch_color_aug.batch_color_augment``.
     """
     if images.dtype == tf.uint8:
-        return tf.cast(images, tf.float32) / 255.0
+        return tf.cast(images, tf.float32)
     return images
 
 

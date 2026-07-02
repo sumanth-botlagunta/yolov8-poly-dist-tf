@@ -8,8 +8,12 @@ behaviour they replace, with the same per-image randomness semantics:
   (b) Masked albumentations reproduce the single-image reference ops (blur3,
       gray, clahe) for forced masks.
   (c) row_mask == False rows skip albumentations but are still HSV'd.
-  (d) freq == 0 and hue == sat == val == 0 → exact passthrough of the /255 cast.
-  (e) uint8 input handling (cast + /255).
+  (d) freq == 0 and hue == sat == val == 0 → passthrough (colour aug is a no-op).
+  (e) uint8 input handling (cast, colour aug in [0,1], model-fed [0,255]).
+
+LEGACY-SCALE PATH (branch experiment/legacy-format-match): batch_color_augment
+returns the [0, 255] range (colour-aug math runs in [0,1], then ×255 at the
+boundary) so the model is fed the legacy pixel scale.
 """
 
 import numpy as np
@@ -220,9 +224,11 @@ def test_row_mask_false_rows_still_hsv_in_full_pipeline():
     hsv_only = batch_hsv_augment(imgs, hue=0.1, sat=0.5, val=0.2).numpy()
 
     # Masked-out rows: full pipeline == HSV-only (albumentations skipped).
+    # batch_color_augment returns the [0, 255] model range; scale the [0, 1]
+    # HSV-only reference to match.
     for i in range(4):
         if not bool(row_mask[i]):
-            np.testing.assert_allclose(full[i], hsv_only[i], atol=1e-6)
+            np.testing.assert_allclose(full[i], hsv_only[i] * 255.0, atol=1e-3)
 
 
 # ---------------------------------------------------------------------------
@@ -232,30 +238,32 @@ def test_row_mask_false_rows_still_hsv_in_full_pipeline():
 def test_passthrough_float_when_all_disabled():
     imgs = tf.random.uniform([3, 8, 8, 3], dtype=tf.float32)
     out = batch_color_augment(imgs, hue=0.0, sat=0.0, val=0.0, albu_freq=0.0)
-    # Float input already in [0, 1]: no /255, no jitter → exact passthrough.
-    np.testing.assert_array_equal(out.numpy(), imgs.numpy())
+    # Float input assumed [0, 1]: no jitter → scaled to the [0, 255] model range.
+    np.testing.assert_allclose(out.numpy(), imgs.numpy() * 255.0, atol=1e-4)
 
 
-def test_uint8_passthrough_is_exact_div255_when_disabled():
+def test_uint8_passthrough_is_0_255_when_disabled():
     rng = np.random.RandomState(0)
     arr = rng.randint(0, 256, (3, 8, 8, 3), dtype=np.uint8)
     imgs = tf.constant(arr)
     out = batch_color_augment(imgs, hue=0.0, sat=0.0, val=0.0, albu_freq=0.0).numpy()
-    np.testing.assert_allclose(out, arr.astype(np.float32) / 255.0, atol=0.0)
+    # uint8 → /255 (colour-aug space) → ×255 (model range) round-trips to the
+    # original 0–255 values within float32 precision.
+    np.testing.assert_allclose(out, arr.astype(np.float32), atol=1e-2)
 
 
 # ---------------------------------------------------------------------------
 # (e) uint8 input handling
 # ---------------------------------------------------------------------------
 
-def test_uint8_input_is_cast_and_normalized():
+def test_uint8_input_is_cast_and_scaled_0_255():
     rng = np.random.RandomState(1)
     arr = rng.randint(0, 256, (2, 12, 12, 3), dtype=np.uint8)
     imgs = tf.constant(arr)
     out = batch_color_augment(imgs, hue=0.02, sat=0.5, val=0.3, albu_freq=0.5)
     assert out.dtype == tf.float32
     out_np = out.numpy()
-    assert out_np.min() >= 0.0 and out_np.max() <= 1.0
+    assert out_np.min() >= 0.0 and out_np.max() <= 255.0
     assert np.isfinite(out_np).all()
 
 
@@ -266,11 +274,11 @@ def test_default_row_mask_allows_all_rows():
     # freq=0.0 short-circuits albumentations; ensure no crash with None mask.
     out = batch_color_augment(imgs, hue=0.0, sat=0.0, val=0.0, albu_freq=0.0,
                               albu_row_mask=None)
-    np.testing.assert_array_equal(out.numpy(), imgs.numpy())
+    np.testing.assert_allclose(out.numpy(), imgs.numpy() * 255.0, atol=1e-4)
     # With freq>0 and None mask it must still run and stay in range.
     out2 = batch_color_augment(imgs, hue=0.0, sat=0.0, val=0.0, albu_freq=1.0,
                                albu_row_mask=None).numpy()
-    assert out2.min() >= 0.0 and out2.max() <= 1.0
+    assert out2.min() >= 0.0 and out2.max() <= 255.0
 
 
 if __name__ == "__main__":

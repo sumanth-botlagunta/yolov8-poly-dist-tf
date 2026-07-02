@@ -74,10 +74,12 @@ try:
     flags.DEFINE_string('input_size', '672,416',
                         'Device input H,W (comma-separated). Matches the legacy DLC '
                         '(--input_dim input_image 1,H,W,3).')
-    flags.DEFINE_bool  ('normalize', True,
-                        'Bake /255 into the graph so the device can feed raw [0,255] '
-                        'pixels (IMAGE_NROM_FLAG=False). Set False only if the device '
-                        'is changed to feed [0,1].')
+    flags.DEFINE_bool  ('normalize', False,
+                        'LEGACY-SCALE PATH (branch experiment/legacy-format-match): the '
+                        'model is trained on [0,255], so DO NOT bake /255 — the device '
+                        'feeds raw [0,255] straight to the model (default False). Set True '
+                        'only to restore the old [0,1]-trained model (bakes /255 so a '
+                        '[0,255]-feeding device lands at [0,1]).')
     flags.DEFINE_bool  ('verify', False,
                         'After export, load the SavedModel back and assert node names, '
                         'shapes, /255 equivalence, and decode equivalence vs the deploy path.')
@@ -282,8 +284,9 @@ def main(_):
 
     # Log the concrete output shapes (the SNPE/.raw element counts).
     n_anchors = sum((H // s) * (W // s) for s in (8, 16, 32))
-    log.info("Input: input_image [1, %d, %d, 3] float32, pixels in %s",
-             H, W, "[0,255] (/255 baked in)" if do_norm else "[0,1]")
+    log.info("Input: input_image [1, %d, %d, 3] float32, device feeds [0,255]; "
+             "model sees %s",
+             H, W, "[0,1] (/255 baked in)" if do_norm else "[0,255] (fed directly)")
     log.info("Anchors N = %d  (levels: %s)", n_anchors,
              " + ".join(f"{(H//s)}x{(W//s)}" for s in (8, 16, 32)))
     for name, c in head_chan:
@@ -567,8 +570,11 @@ def _verify(saved_model_dir, model, H, W, n_anchors, head_chan, do_norm,
         assert shp == (n_anchors, oc), f"{name}: expected ({n_anchors},{oc}), got {shp}"
     log.info("[ok] node shapes match legacy layout (box [N,4], others [N,C], no batch dim)")
 
-    # 3) /255 equivalence for the RAW heads: device([0,255]) == concat(raw-model(img/255)),
-    #    batch dropped. Covers cls/poly_*/dist (box is decoded, checked in 4).
+    # 3) Input-scale equivalence for the RAW heads: the device graph feeds [0,255],
+    #    so the reference runs the model on the same tensor the graph feeds it —
+    #    [0,255] directly (do_norm=False, the [0,255]-trained model) or img/255
+    #    (do_norm=True, legacy [0,1] model). Batch dropped. Covers cls/poly_*/dist
+    #    (box is decoded, checked in 4).
     raw = model(tf.constant(img255) / 255.0 if do_norm else tf.constant(img255),
                 training=False)
     for name, c in head_chan:

@@ -105,23 +105,30 @@ So the knob doesn't silently lie (its earlier behavior: `use_acsl: true` trained
 YAMLs set `use_acsl: false`, so this affects no current run. When ACSL is implemented, replace the
 raise with the weighting and update this entry.
 
-## 12. Exported SavedModel expects pre-normalized `[0,1]` input — no `/255` baked in
+## 12. Model is fed `[0,255]` pixels — no `/255` anywhere (legacy-scale path)
 
-`tools/export_saved_model.py:serving_fn` accepts `float32 [0,1]` images and passes them straight to
-the model; the model has no internal `/255` layer (`models/yolo_v8.py`). Normalization is done by
-`train.task.normalize_images` (uint8 `[0,255]` → float32 `[0,1]`) on every in-repo call path
-(`validation_step`, `tools/eval.py`), and the serving contract mirrors
-that. Two reasons: (1) baking `/255` into the graph would double-normalize any caller that already
-follows the documented `[0,1]` contract (e.g. a pipeline reusing `normalize_images`), flooring all
-inputs near 0; (2) keeping the contract identical to eval avoids a train/serve skew. The TensorSpec is
-named `images_normalized_0_1`, documented in the module docstring's *Input Schema* and at the
-`serving_fn` decorator. A consumer feeding raw uint8/`[0,255]` frames must divide by 255 first.
+The model is trained on the `[0,255]` pixel range, matching the old codebase the warm-start
+checkpoint was trained under (branch `experiment/legacy-format-match`). The old checkpoint's
+BatchNorm moving statistics were calibrated on `[0,255]` inputs, so a clean warm-start requires
+feeding the same scale — feeding `/255` makes those loaded stats wrong at step 0. The model has no
+internal `/255` layer (`models/yolo_v8.py`).
 
-**The on-device DLC export is the exception — it bakes `/255` on purpose.**
-`tools/device/export_device_dlc.py` is a separate path that reproduces the legacy Qualcomm SNPE DLC
-contract (see [device_export.md](device_export.md)). The on-device raw-image generator feeds raw
-`[0,255]` float32 (`IMAGE_NROM_FLAG=False`), so that graph divides by 255 internally (`--normalize`,
-default on) to reach the `[0,1]` the model trained on. It is a different tool for a different consumer:
+`train.task.normalize_images` only **casts** uint8 `[0,255]` → float32 `[0,255]` (no scaling) on
+every in-repo call path (`validation_step`, `tools/eval.py`). Training colour augmentation
+(`data_pipeline/batch_color_aug.batch_color_augment`) runs HSV/albumentations in `[0,1]` (unchanged,
+equivalence-tested) then scales back to `[0,255]` at the model boundary.
+`tools/export_saved_model.py:serving_fn` accepts `float32 [0,255]` images and passes them straight to
+the model; the TensorSpec is named `images_0_255`, documented in the module docstring's *Input
+Schema* and at the `serving_fn` decorator. A consumer feeding uint8 frames casts to float32 (no
+divide); feeding `/255`-normalized `[0,1]` floats produces silently wrong detections. To restore the
+`[0,1]` path, re-add the `/255` in `normalize_images` and `batch_color_augment`.
+
+**The on-device DLC export feeds `[0,255]` directly — no `/255` bake.**
+`tools/device/export_device_dlc.py` reproduces the legacy Qualcomm SNPE DLC contract (see
+[device_export.md](device_export.md)). The on-device raw-image generator feeds raw `[0,255]` float32
+(`IMAGE_NROM_FLAG=False`) straight to the model (`--normalize` default **off**) — matching the
+`[0,255]`-trained weights. Setting `--normalize` on restores the legacy `[0,1]`-model bake (divide by
+255 in-graph). It is a different tool for a different consumer:
 it emits raw head logits as six concatenated nodes (`box/cls/poly_angle/poly_dist/poly_conf/dist`,
 `[1, N, C]`, levels 3→4→5) instead of the deploy/NMS dict, and runs in float32 (not the training
 `mixed_bfloat16`) for a clean SNPE graph.

@@ -88,8 +88,11 @@ def _list_images(path: str):
 def _letterbox(img_hw3_uint8, size, pad=114):
     """Aspect-preserving resize to (size, size) with gray padding.
 
-    Returns (canvas01 float32 [size,size,3] in [0,1], r, top, left) where r/top/left
-    are the scale and pad offsets needed to invert the letterbox.
+    Returns (canvas float32 [size,size,3] in [0,255], r, top, left) where
+    r/top/left are the scale and pad offsets needed to invert the letterbox.
+
+    LEGACY-SCALE PATH (branch experiment/legacy-format-match): the model is fed
+    [0, 255] pixels, so no /255 here (see train.task.normalize_images).
     """
     import cv2
     h, w = img_hw3_uint8.shape[:2]
@@ -99,7 +102,7 @@ def _letterbox(img_hw3_uint8, size, pad=114):
     canvas = np.full((size, size, 3), pad, np.uint8)
     top, left = (size - nh) // 2, (size - nw) // 2
     canvas[top:top + nh, left:left + nw] = resized
-    return canvas.astype(np.float32) / 255.0, r, top, left
+    return canvas.astype(np.float32), r, top, left
 
 
 def _inv_point(xn, yn, size, r, top, left):
@@ -182,7 +185,8 @@ def main(_):
         model = _load_checkpoint_model(config, FLAGS.checkpoint)
 
         def run(batch):
-            return model(normalize_images(tf.constant((batch * 255.0).astype(np.uint8))),
+            # batch is already [0, 255] float from _letterbox; feed the model directly.
+            return model(normalize_images(tf.constant(batch.astype(np.float32))),
                          training=False)
 
     files = _list_images(FLAGS.images)
