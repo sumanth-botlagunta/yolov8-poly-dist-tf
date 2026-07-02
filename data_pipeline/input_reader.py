@@ -278,7 +278,16 @@ class InputReader:
             group_size = self._mosaic_module._group_size
             # Hold several groups' worth of outputs so the P outputs of any one group
             # (which share that group's source images) disperse across many batches.
-            shuffle_buffer = max(256, 4 * group_size)
+            # Scale by OUTPUTS per group (group_size // R), not group_size: at R<4 a
+            # group emits up to 4× more outputs, and consecutive outputs share up to
+            # 3/4 source images (sliding-window draw in mosaic.py) — a buffer sized
+            # only by group_size under-disperses them, concentrating near-duplicate
+            # content in the same training batch. 32 groups' worth of outputs keeps
+            # the R=4 value at 256 (byte-identical) and grows it to 1024 at R=1.
+            # NOTE: a bigger buffer only mitigates R<4 correlation; R=4 eliminates
+            # it by construction (zero intra-group reuse).
+            outputs_per_group = group_size // self._mosaic_module._decodes_per_output
+            shuffle_buffer = max(256, 32 * outputs_per_group)
             ds = (
                 ds
                 .padded_batch(group_size, drop_remainder=True, padding_values=_padding_values)

@@ -25,11 +25,17 @@ freshly-decoded images each emitted sample consumes.
 
   * **R = decodes_per_output** controls reuse. Each emitted mosaic composites 4 source
     images drawn from the group via a windowed slice of one per-group random
-    permutation (window of 4, stepping by 4). At **R=4** (the default — stock YOLO) the
+    permutation (window of 4, stepping by R). At **R=4** (the default — stock YOLO) the
     windows tile the permutation, so every output's 4 images are disjoint: zero reuse,
-    maximum unique-image throughput, ~4× decode work. At **R<4** the windows wrap, so
-    each image recurs in ``4/R`` outputs but paired with different partners each time —
-    less decode work, more reuse. R=1 is throughput-neutral (1 decode per output).
+    maximum unique-image throughput, ~4× decode work. At **R<4** the window is a
+    SLIDING window: each image recurs in ``4/R`` outputs, and those recurrences are
+    the ADJACENT output indices — at R=1 consecutive outputs share 3 of their 4
+    source images (75% overlap; ~19% of all output pairs in a group share content).
+    The downstream shuffle only partially disperses this (see input_reader), so real
+    batches carry many near-duplicate-content pairs (~82 pairs per 128 at R=1 vs 0 at
+    R=4, measured). R=1 is throughput-neutral (1 decode per output) but pays that
+    diversity cost — prefer restoring R=4 via cheaper decode (pre-resized ``_672``
+    dataset variants) over lowering R when accuracy matters.
   * **group_size** is the pool each window is drawn from; larger pools give more varied
     4-image combinations at the same R. It must be a multiple of R and >= 4.
   * The mosaic/single decision is a **per-output** coin flip (not per-group), so the

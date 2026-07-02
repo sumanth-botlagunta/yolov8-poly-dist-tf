@@ -97,6 +97,56 @@ class TestSGDTorch(unittest.TestCase):
         # With zero grad and no WD, value should be unchanged
         np.testing.assert_allclose(val_before, w.numpy())
 
+    def test_weight_decay_is_coupled_torch_semantics(self):
+        """Pins the exact PyTorch coupled-WD math over two steps.
+
+        torch.optim.SGD(nesterov=True, weight_decay=wd):
+            g' = g + wd·w
+            v  = mu·v + g'
+            w  = w − lr·(mu·v + g')
+
+        The wd·w term must flow THROUGH the velocity buffer (coupled), not be
+        applied as a separate decoupled shrink w·(1−lr·wd). A regression to the
+        decoupled form silently weakens effective L2 by ~1/(1−mu) (~16× at
+        mu=0.937) — the under-regularization bug this test exists to prevent.
+        """
+        lr, wd, mu = 0.01, 0.1, 0.937
+        sgd = SGDTorch(
+            lr_fn=lambda step: lr, momentum=mu, momentum_start=mu,
+            nesterov=True, weight_decay=wd, warmup_steps=0, bias_lr_scale=0.0,
+        )
+        w = tf.Variable([2.0, -3.0], name='kernel_coupled_test')
+        g1 = np.array([0.5, 0.25], np.float32)
+        g2 = np.array([-0.1, 0.4], np.float32)
+
+        # Hand-computed torch reference, two steps.
+        w_ref = w.numpy().copy()
+        v_ref = np.zeros_like(w_ref)
+        for g in (g1, g2):
+            gp = g + wd * w_ref               # coupled: wd enters the gradient
+            v_ref = mu * v_ref + gp
+            w_ref = w_ref - lr * (mu * v_ref + gp)   # nesterov
+
+        sgd.apply_gradients([(tf.constant(g1), w)])
+        sgd.apply_gradients([(tf.constant(g2), w)])
+        np.testing.assert_allclose(w.numpy(), w_ref, rtol=1e-6, atol=1e-7)
+
+    def test_coupled_wd_compounds_stronger_than_decoupled(self):
+        """With zero grad, N coupled steps shrink weights ~1/(1−mu)× more than N
+        decoupled steps would — the quantitative difference behind the fix."""
+        lr, wd, mu, steps = 0.01, 0.05, 0.937, 50
+        sgd = SGDTorch(
+            lr_fn=lambda step: lr, momentum=mu, momentum_start=mu,
+            nesterov=True, weight_decay=wd, warmup_steps=0, bias_lr_scale=0.0,
+        )
+        w = tf.Variable(tf.ones([8]), name='kernel_compound_test')
+        for _ in range(steps):
+            sgd.apply_gradients([(tf.zeros_like(w), w)])
+        coupled_final = float(w.numpy()[0])
+        decoupled_final = (1.0 - lr * wd) ** steps   # old form, same steps
+        # Coupled must shrink substantially more (velocity accumulation).
+        self.assertLess(coupled_final, decoupled_final * 0.9)
+
     def test_loss_decreases_with_gradient_descent(self):
         """SGDTorch must reduce a simple L2 loss over multiple steps."""
         sgd = _make_sgd(warmup_steps=0)
