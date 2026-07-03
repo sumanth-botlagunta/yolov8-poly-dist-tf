@@ -1,0 +1,123 @@
+\chapter{The model architecture}
+
+Now we open the network itself. It has three parts --- backbone, decoder, heads --- plus a
+post-processing stage for inference. Everything is assembled in
+\file{models/yolo\_v8.py}\,:\,\code{build\_yolov8}.
+
+\section{Backbone: turning pixels into features}
+The backbone is \textbf{CSPDarkNet-V8} (\file{models/backbone.py}), built from \code{C2f}
+blocks and an \code{SPPF} block. It is the ``small'' (\code{-S}) size, set by
+\code{depth\_scale=0.33} and \code{width\_scale=0.5}. It emits three feature maps, at
+levels \code{"3"}, \code{"4"}, \code{"5"} --- strides 8, 16, 32.
+
+\begin{teacher}
+A \textbf{C2f block} is YOLOv8's main building block: it splits the channels, runs several
+small bottleneck convolutions, and concatenates everything back. This reuses features
+cheaply (a ``cross-stage partial'' design). \textbf{SPPF} (Spatial Pyramid Pooling --
+Fast) pools the features at several window sizes and stacks them, giving the network a
+large receptive field without huge kernels.
+\end{teacher}
+
+\begin{pitfall}
+Even though the shipped YAML sets \code{depth\_scale: 1.0} and \code{width\_scale: 1.0},
+the model is still the \emph{small} one: \code{model\_id: cspdarknetv8s} takes precedence
+over those scale fields. Don't be fooled by the \code{1.0}s.
+\end{pitfall}
+
+\section{Decoder: the FPN-PAN}
+The three backbone maps go into an \textbf{FPN-PAN} decoder (\file{models/decoder.py}),
+which fuses information across scales in two passes.
+
+\begin{center}
+\begin{tikzpicture}[node distance=8mm and 14mm,font=\small]
+  % backbone levels
+  \node[blkn] (p3) {P3 (stride 8)};
+  \node[blkn,below=of p3] (p4) {P4 (stride 16)};
+  \node[blkn,below=of p4] (p5) {P5 (stride 32)};
+  % top-down
+  \node[blk,right=of p5] (t5) {fuse};
+  \node[blk,right=of p4] (t4) {fuse};
+  \node[blk,right=of p3] (t3) {fuse};
+  \draw[ar] (p5)--(t5); \draw[ar] (t5) |- (t4); \draw[ar] (p4)--(t4);
+  \draw[ar] (t4) |- (t3); \draw[ar] (p3)--(t3);
+  \node[lbl,above=0.5mm of t4] {top-down (upsample)};
+  % bottom-up
+  \node[blkg,right=of t3] (b3) {out P3};
+  \node[blkg,right=of t4] (b4) {out P4};
+  \node[blkg,right=of t5] (b5) {out P5};
+  \draw[ar] (t3)--(b3); \draw[ar] (b3) |- (b4); \draw[ar] (t4)--(b4);
+  \draw[ar] (b4) |- (b5); \draw[ar] (t5)--(b5);
+  \node[lbl,below=0.5mm of b4] {bottom-up (downsample)};
+\end{tikzpicture}
+\end{center}
+
+\noindent The top-down path carries strong semantic signal from coarse levels down to fine
+ones; the bottom-up path carries precise localization back up. Each fusion uses a
+\code{C2f} stack; activations are ReLU throughout. The output is one fused feature map per
+level, fed to the heads.
+
+\section{The six heads}
+At every pixel of every level, six small branches predict (\file{models/head.py},
+\code{YoloV8Head}):
+
+\begin{center}
+\begin{tikzpicture}[node distance=3mm and 10mm,font=\small]
+  \node[blk] (feat) {fused feature\\(per level)};
+  \node[blkg,right=20mm of feat,yshift=18mm] (box) {\code{box} (64)};
+  \node[blkg,right=20mm of feat,yshift=10.5mm] (cls) {\code{cls} (39)};
+  \node[blka,right=20mm of feat,yshift=3mm] (pa) {\code{poly\_angle} (24)};
+  \node[blka,right=20mm of feat,yshift=-4.5mm] (pd) {\code{poly\_dist} (24)};
+  \node[blka,right=20mm of feat,yshift=-12mm] (pc) {\code{poly\_conf} (24)};
+  \node[blkn,right=20mm of feat,yshift=-19.5mm] (di) {\code{dist} (1)};
+  \foreach \h in {box,cls,pa,pd,pc,di} \draw[ar] (feat)--(\h);
+\end{tikzpicture}
+\end{center}
+
+\begin{hood}
+\textbf{Smart bias initialization.} The class head's bias is initialized to
+$\log\!\big(5 / \text{num\_classes} / (\text{input\_size}/\text{stride})^2\big)$ so that,
+before any training, the model predicts a low, sensible object probability per cell (this
+stabilizes the first steps). The box bias is set to $1.0$. When warm-starting, only the
+backbone and decoder weights load --- the heads start fresh.
+\end{hood}
+
+\section{How the box head works: DFL}
+The box head does not regress four numbers directly. Each of the four sides
+(left, top, right, bottom) is predicted as a \textbf{probability distribution over 16
+distance bins}, and the decoded distance is the \emph{expected value} of that distribution.
+This is \textbf{Distribution Focal Loss (DFL)}.
+
+\guidefig{fig_dfl.png}{0.72}{DFL: one box side as a softmax over 16 bins. The predicted
+distance is $\sum_i p_i \cdot i$ (the expected bin), then multiplied by the level's stride
+to get pixels. Predicting a distribution rather than a point lets the model express
+uncertainty and yields sharper, better-calibrated box edges.}
+
+\noindent So the \code{box} head's 64 channels are $4 \text{ sides} \times 16 \text{ bins}$.
+The decode (softmax $\rightarrow$ expected value) is a fixed $1\times1$ convolution in
+\file{models/detection\_generator.py}\,:\,\code{\_decode\_dfl}.
+
+\section{Anchors and strides}
+The model is \textbf{anchor-free}: one anchor point per cell, at the cell center
+$(i+0.5)\cdot\text{stride}$. The box head predicts the distances from that point to the
+four sides; \code{dist2bbox} turns those into corner coordinates. Anchor points are built
+on the fly inside the loss and the detection generator --- they are not learned.
+
+\section{Inference: the detection generator}
+During training the heads emit raw numbers. For inference (\code{deploy=True}) the
+\textbf{detection generator} decodes everything into final results:
+
+\begin{enumerate}[leftmargin=1.4em,itemsep=1pt]
+  \item DFL decode $\rightarrow$ \code{xyxy} boxes (times stride);
+  \item per-class greedy \textbf{NMS} (\code{max\_boxes=300}, \code{nms=0.65},
+        \code{score=0.05});
+  \item polygon decode: \code{(conf, dist, angle)} sigmoid/softmax-activated, vertices
+        reconstructed for bins above threshold;
+  \item distance decode: $\exp$ from log-scale, clipped to $[0.5, 10.0]$ meters.
+\end{enumerate}
+
+\begin{teacher}
+\textbf{Why log-scale distance?} Predicting $\log(\text{distance})$ instead of raw meters
+makes the model's error \emph{relative} --- being off by 0.5\,m matters more for a 1\,m
+object than a 9\,m one. The log transform builds that intuition into the loss, and the
+output is exponentiated back to meters at decode time.
+\end{teacher}

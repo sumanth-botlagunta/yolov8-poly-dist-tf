@@ -1,0 +1,87 @@
+\chapter{Configuration: how a run is described}
+
+Everything about a run --- model size, augmentation, gains, schedule --- lives in one
+\textbf{experiment YAML}. There is no hidden state; the YAML is the authoritative
+hyperparameter source. This chapter explains how it loads and what the main knobs are.
+
+\section{YAML to dataclasses}
+\file{configs/yaml\_loader.py}\,:\,\code{load\_config} reads the YAML and maps it onto
+plain dataclasses in \file{configs/model\_config.py}. The mapper is \textbf{hand-rolled}
+(not \code{dacite}, despite the dependency being listed).
+
+\begin{pitfall}
+Unknown keys outside the \code{runtime}/\code{losses} sections are \textbf{silently
+ignored}. A typo in a field name will not raise an error --- it just won't take effect. If
+a setting seems to do nothing, check the spelling against the dataclass field names.
+\end{pitfall}
+
+\subsection{Inheritance}
+A config can set \code{base: <path>} to inherit another config and deep-merge its own keys
+on top (override wins, dicts merge). For example, the bf16/XLA variant is just a thin
+overlay:
+
+\begin{lstlisting}[language=yaml]
+base: yolov8_poly_dist.yaml
+runtime:
+  enable_xla: true
+\end{lstlisting}
+
+\section{The structure}
+\begin{center}
+\begin{tikzpicture}[node distance=2mm and 10mm,font=\small]
+  \node[blka] (exp) {ExperimentConfig};
+  \node[blk,below right=2mm and 6mm of exp.south west,anchor=north west] (rt) {\code{runtime} --- strategy / precision / XLA / threads};
+  \node[blk,below=of rt] (task) {\code{task}};
+  \node[blkn,right=14mm of task,yshift=10mm] (model) {\code{model} --- heads, sizes};
+  \node[blkn,right=14mm of task,yshift=3mm] (loss) {\code{losses} --- gains};
+  \node[blkn,right=14mm of task,yshift=-4mm] (tr) {\code{train\_data} (+ parser, + distance)};
+  \node[blkn,right=14mm of task,yshift=-11mm] (val) {\code{validation\_data}};
+  \node[blkn,right=14mm of task,yshift=-18mm] (trn) {\code{trainer} --- epochs, optimizer};
+  \draw[ar] (exp)--(rt); \draw[ar] (exp.south)|-(task);
+  \foreach \h in {model,loss,tr,val,trn} \draw[ar] (task)--(\h);
+\end{tikzpicture}
+\end{center}
+
+\section{The knobs you will touch most}
+\begin{center}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{l l >{\raggedright\arraybackslash}p{6.6cm}}
+\toprule
+\textbf{Field} & \textbf{Default} & \textbf{What it does} \\
+\midrule
+\code{model.input\_size} & \code{[672,672,3]} & live model input; smart-bias init assumes it \\
+\code{model.num\_classes} & 39 & head width + checkpoint-migration rule \\
+\code{model.angle\_step} & 15 & polygon bin size; \code{output\_poly\_size == 360/angle\_step} \\
+\code{train\_data.global\_batch\_size} & 128 & detection batch (distance batch merged on top) \\
+\code{parser.resample\_points} & 64 & arc-length polygon resample target \\
+\code{mosaic.group\_size} & 32 & mosaic source pool per group \\
+\code{mosaic.decodes\_per\_output} & 4 & R: 4 = stock YOLO; lower = more reuse, less decode \\
+\code{trainer.train\_epochs} & 300 & one epoch = one pass of training samples \\
+\code{losses.iou\_gain / cls\_gain / dfl\_gain} & 7.5/0.5/1.5 & detection gains \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Derived fields --- don't hand-edit}
+\code{steps\_per\_loop}, \code{train\_steps}, \code{validation\_steps}, and
+\code{checkpoint\_interval} are \emph{computed} from \code{train\_total\_examples} and the
+batch sizes. The resolved values print in the startup banner. Editing them by hand only
+desynchronizes the schedule.
+
+\section{Validated invariants}
+Before training starts, \code{run\_train.py:\_validate\_config} refuses to run if any of
+these fail --- a fast, friendly guard against silent misconfiguration:
+\begin{itemize}[leftmargin=1.4em,itemsep=1pt]
+  \item \code{init\_checkpoint} (if set) exists;
+  \item \code{output\_poly\_size == 360 // angle\_step};
+  \item \code{group\_size >= 4} and \code{group\_size \% decodes\_per\_output == 0};
+  \item \code{output\_dir} is creatable; each referenced TFDS data dir exists.
+\end{itemize}
+It additionally \emph{warns} (not fatal) if \code{decay\_steps != train\_steps}.
+
+\begin{teacher}
+\textbf{Why dataclasses + YAML?} The YAML is what a human edits and version-controls; the
+dataclasses give the code type-checked, autocomplete-friendly access with sane defaults.
+The loader is the bridge. Keeping all hyperparameters in one declarative file makes runs
+reproducible: the config \emph{is} the experiment.
+\end{teacher}

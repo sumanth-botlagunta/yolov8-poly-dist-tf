@@ -1,0 +1,125 @@
+\chapter{The losses}
+
+This chapter is the heart of training. The total loss combines a task-aligned detection
+loss with polygon and distance terms. It lives in \file{losses/}, entry point
+\file{tal\_loss.py}\,:\,\code{TaskAlignedLossExtended}.
+
+\section{First, the assignment problem}
+The model predicts at thousands of grid cells; an image has a handful of objects. Before
+we can compute any loss, we must decide \emph{which cells are responsible for which
+object}. A bad rule wrecks training. YOLOv8 uses \textbf{Task-Aligned Assignment (TAL)}
+(\file{losses/tal\_assigner.py}), which picks the cells whose predictions are already both
+well-localized \emph{and} well-classified.
+
+\begin{center}
+\begin{tikzpicture}[node distance=4mm,font=\small]
+  \node[blkn] (iou) {1. IoU between every predicted box and every GT box};
+  \node[blk,below=of iou] (al) {2. Alignment metric: $\text{align} = \text{score}^{\alpha}\cdot \text{IoU}^{\beta}$\quad($\alpha{=}0.5,\ \beta{=}6$)};
+  \node[blk,below=of al] (tk) {3. Keep top-$k{=}10$ candidate cells per GT, AND require the cell center inside the GT box};
+  \node[blk,below=of tk] (dup) {4. If a cell matches several GTs, assign it to the max-IoU GT};
+  \node[blkg,below=of dup] (soft) {5. Soft target: $\text{one\_hot}\cdot(\text{align\_norm}\cdot\text{pos\_overlaps})$};
+  \foreach \a/\b in {iou/al,al/tk,tk/dup,dup/soft} \draw[ar] (\a)--(\b);
+\end{tikzpicture}
+\end{center}
+
+\begin{teacher}
+``Task-aligned'' means the assignment rewards cells that do \emph{both} jobs well at once.
+A cell that draws a tight box but guesses the wrong class --- or names the right class but
+in the wrong place --- scores low on $\text{score}^{\alpha}\cdot\text{IoU}^{\beta}$ and is
+not chosen. This couples the classification and localization tasks so they improve
+together.
+\end{teacher}
+
+\begin{hood}
+The assignment is computed under \code{stop\_gradient} --- it selects targets but no
+gradient flows through the selection. The classification target is \emph{soft}: instead of
+a hard 1, the positive class gets \code{align\_norm $\times$ pos\_overlaps}, where
+\code{pos\_overlaps} is the per-GT max IoU. This scales the class target by localization
+quality, exactly matching the Ultralytics recipe.
+\end{hood}
+
+\section{The loss tree}
+The total loss is a weighted sum of five families of terms:
+
+\begin{center}
+\begin{tikzpicture}[node distance=5mm and 7mm,font=\small]
+  \node[blka] (tot) {\textbf{total loss}};
+  \node[blk,below=10mm of tot,xshift=-52mm] (box) {box (CIoU)};
+  \node[blk,right=of box] (dfl) {DFL};
+  \node[blk,right=of dfl] (cls) {cls (BCE)};
+  \node[blk,right=of cls] (dist) {distance (L1)};
+  \node[blkg,right=of dist] (poly) {polygon};
+  \node[blkn,below=8mm of poly,xshift=-14mm] (pa) {angle};
+  \node[blkn,right=of pa] (pd) {dist};
+  \node[blkn,right=of pd] (pc) {conf};
+  \foreach \h in {box,dfl,cls,dist,poly} \draw[ar] (tot)--(\h);
+  \foreach \h in {pa,pd,pc} \draw[ar] (poly)--(\h);
+\end{tikzpicture}
+\end{center}
+
+\subsection{Box: CIoU and DFL}
+\textbf{CIoU} is IoU plus penalties for center distance and aspect-ratio mismatch ---
+$1-(\text{IoU}-\rho^2/c^2-\alpha v)$ --- a smoother, better-behaved box loss than plain
+IoU. \textbf{DFL} trains the 16-bin distributions of the box head toward the true side
+distances. Both are weighted per-anchor by how aligned each anchor is, so well-matched
+cells dominate the box gradient.
+
+\subsection{Classification}
+Binary cross-entropy with logits, summed over the 39 classes. On distance-only samples
+(\code{ignore\_bg=1}) the class loss is masked to foreground anchors, since those samples
+carry no detection labels.
+
+\subsection{Polygon: three sub-losses}
+The polygon terms (\file{losses/polygon\_loss.py}) train the radial target from
+Chapter~\ref{ch:polygons}:
+\begin{itemize}[leftmargin=1.4em,itemsep=1pt]
+  \item \textbf{angle} --- BCE on $\text{sigmoid}(\text{pred})$ toward the sub-bin offset,
+        averaged over \emph{valid vertices};
+  \item \textbf{dist} --- squared error $(\text{target}-\text{softplus}(\text{pred}))^2$,
+        averaged over \emph{valid vertices};
+  \item \textbf{conf} --- BCE on per-bin validity, averaged over \emph{all 24 bins}.
+\end{itemize}
+
+\subsection{Distance}
+L1 error on log-scale distance, masked to entries with a valid distance label
+(sentinel $-10.0$ marks ``no distance''), normalized by the total GT object count.
+
+\section{Gains and normalization}
+Each term is scaled by a \textbf{gain} from the YAML. But the terms do not share the same
+denominator, so the gains are \emph{not} directly comparable across heads --- a crucial
+subtlety.
+
+\begin{center}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{l l l}
+\toprule
+\textbf{Term} & \textbf{Gain} & \textbf{Normalizer / reduction} \\
+\midrule
+box CIoU / DFL & 7.5 / 1.5 & \code{target\_scores\_sum}, per-anchor weighted \\
+cls            & 0.5 & \code{target\_scores\_sum} \\
+distance       & 1.0 & \code{num\_objs} (total batch GT count) \\
+poly angle     & 0.4 & \code{num\_objs}, mean over valid vertices \\
+poly dist      & 0.45 & \code{num\_objs}, mean over valid vertices \\
+poly conf      & 0.2 & \code{num\_objs}, mean over \textbf{all 24 bins} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent An overall \code{poly\_gain=0.5} multiplies the summed polygon loss. The
+assignment parameters are \code{tal\_alpha=0.5}, \code{tal\_beta=6.0}, \code{topk=10}.
+
+\begin{pitfall}
+Because the denominators differ (\code{target\_scores\_sum} for detection vs
+\code{num\_objs} for polygon/distance), you cannot reason about relative importance by
+comparing gains alone. If you change a masking rule or a reduction, the magnitude of that
+term shifts and its gain must be re-tuned. These conventions are pinned by
+\file{tests/test\_polygon\_loss\_conventions.py} precisely so they don't drift silently.
+\end{pitfall}
+
+\begin{hood}
+The loss returns a 9-tuple:
+\code{(total, box, dfl, cls, dist, poly, poly\_angle\_raw, poly\_dist\_raw,
+poly\_conf\_raw)}. The last three are the un-gained polygon sub-losses, logged separately
+to TensorBoard (\code{train/poly\_angle\_loss}, etc.) so you can see \emph{which} polygon
+component is misbehaving --- they do not re-enter \code{total}.
+\end{hood}

@@ -1,0 +1,83 @@
+\chapter{Appendix}
+
+\section{Glossary}
+\begin{description}[leftmargin=0pt,style=nextline,itemsep=2pt]
+  \item[Anchor-free] each grid cell has one anchor point (its center); the box head
+    predicts distances to the four sides, not offsets from preset box shapes.
+  \item[Backbone] the convolutional feature extractor (here CSPDarkNet-V8-S).
+  \item[bfloat16] a 16-bit float with float32's exponent range; halves memory, no loss
+    scaling needed.
+  \item[CIoU] complete IoU: IoU plus center-distance and aspect-ratio penalties; the box
+    regression loss.
+  \item[C2f] YOLOv8's cross-stage-partial block: split channels, run bottlenecks,
+    concatenate.
+  \item[DFL] Distribution Focal Loss: predict each box side as a softmax over 16 bins;
+    decode = expected bin value.
+  \item[EMA] exponential moving average of the weights; a smoothed copy used for
+    evaluation.
+  \item[FPN-PAN] feature-pyramid decoder with a top-down then bottom-up fusion path.
+  \item[IoU] intersection over union; overlap measure in $[0,1]$.
+  \item[Mosaic] augmentation stitching four images into one $2\times$ canvas, then one warp.
+  \item[NMS] non-maximum suppression; removes duplicate overlapping detections.
+  \item[PolyYOLO radial format] 24 vertices at fixed $15^\circ$ angles, each storing a
+    radius, sub-bin angle offset, and validity flag.
+  \item[SkipDecoding] keeps images as encoded JPEG bytes through the shuffle buffer;
+    decode happens later in the parallel map.
+  \item[SPPF] spatial pyramid pooling (fast); enlarges the receptive field.
+  \item[Stride] the down-sampling factor of a feature map (8 / 16 / 32 here).
+  \item[TAL] Task-Aligned Assignment: picks responsible cells using
+    $\text{score}^{\alpha}\cdot\text{IoU}^{\beta}$.
+  \item[yxyx / xyxy] box coordinate orders (y-first vs x-first); this codebase converts
+    between them at a known seam.
+\end{description}
+
+\section{Where everything lives}
+\begin{center}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{l >{\raggedright\arraybackslash}p{8.8cm}}
+\toprule
+\textbf{Directory} & \textbf{Contents} \\
+\midrule
+\file{data\_pipeline/} & decoders, copy-paste, mosaic, augmentations, parsers, the distance merge \\
+\file{models/} & backbone, decoder, the 6 heads, detection generator, assembly \\
+\file{losses/} & TAL assigner, the total loss, polygon and distance losses \\
+\file{optimizers/} & SGD + warmup, EMA \\
+\file{eval/} & COCO, polygon, and distance metrics \\
+\file{train/} & the task, the custom trainer, viz utilities \\
+\file{configs/} & dataclasses, the YAML loader, the composable YAML fragments \\
+\file{scripts/} & \code{run\_train.py} entry point \\
+\file{tools/} & eval, export, migration, benchmarking, device export, diagnostics \\
+\file{tests/} & unit / integration / smoke / component tests \\
+\file{docs/} & the developer documentation this guide is built from \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Design decisions worth remembering}
+A handful of choices differ from stock YOLOv8 on purpose (see
+\file{docs/design\_register.md} for the full list and reasoning):
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt]
+  \item Training \emph{filters} crowd annotations, while COCO eval \emph{counts} them ---
+    matching the original PolyYOLO protocol.
+  \item HSV brightness jitter is \emph{additive}, not multiplicative.
+  \item The BN/bias warmup LR ramps \emph{down} from $0.1$.
+  \item Polygon \code{conf} loss covers \emph{all 24 bins}; \code{angle}/\code{dist} cover
+    occupied bins only.
+  \item Polygon vertices are \emph{arc-length resampled} to 64 points at decode time.
+  \item Mosaic uses the \emph{canvas} formulation (one warp), measured fastest on the
+    target CPU.
+  \item $-1.0$ is the reserved polygon sentinel; validity is ``$> -1.0$'', never
+    ``$\geq 0$''.
+\end{itemize}
+
+\noindent Several of these affect \emph{training}: the data and optimization the existing
+checkpoints were trained under depend on them, so changing one means retraining. That is
+the thread running through this whole codebase --- it is a working, trained system, and its
+non-obvious choices are load-bearing.
+
+\vspace{1cm}
+\begin{center}
+\textit{This guide was generated from the project's own source and documentation.\\
+Edit \file{chapters/*.tex} and rebuild with \file{build.sh} to keep it current.}
+\end{center}

@@ -1,0 +1,168 @@
+% =====================================================================
+%  An Illustrated Guide to the YOLOv8 Polygon + Distance (TensorFlow) codebase
+%  Build:  tectonic main.tex   (or: bash build.sh)
+%  Editable source — edit chapters/*.tex and re-run the build.
+% =====================================================================
+\documentclass[11pt]{report}
+
+\usepackage[a4paper,margin=2.3cm,headsep=10pt]{geometry}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{microtype}
+\usepackage{caption}
+\usepackage[most]{tcolorbox}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,shapes.geometric,fit,backgrounds,calc}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage[colorlinks=true,linkcolor=accent,urlcolor=accent,citecolor=accent]{hyperref}
+
+% ---------- palette ----------
+\definecolor{accent}{HTML}{2563EB}
+\definecolor{ink}{HTML}{1E293B}
+\definecolor{teal}{HTML}{0891B2}
+\definecolor{green}{HTML}{16A34A}
+\definecolor{amber}{HTML}{B45309}
+\definecolor{amberbg}{HTML}{FEF3C7}
+\definecolor{greenbg}{HTML}{DCFCE7}
+\definecolor{bluebg}{HTML}{DBEAFE}
+\definecolor{redbg}{HTML}{FEE2E2}
+\definecolor{red}{HTML}{DC2626}
+\definecolor{graybg}{HTML}{F1F5F9}
+\definecolor{codebg}{HTML}{F8FAFC}
+\definecolor{codekw}{HTML}{7C3AED}
+\definecolor{codestr}{HTML}{16A34A}
+\definecolor{codecom}{HTML}{64748B}
+
+\color{ink}
+
+% ---------- headers / footers ----------
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.3pt}
+\fancyhead[L]{\small\textcolor{accent}{\leftmark}}
+\fancyhead[R]{\small YOLOv8 Poly + Distance}
+\fancyfoot[C]{\small\thepage}
+
+% ---------- listings ----------
+\lstdefinestyle{base}{
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\small\color{ink},
+  keywordstyle=\color{codekw}\bfseries,
+  stringstyle=\color{codestr},
+  commentstyle=\color{codecom}\itshape,
+  numberstyle=\tiny\color{codecom},
+  frame=single, rulecolor=\color{black!15},
+  breaklines=true, showstringspaces=false,
+  columns=fullflexible, keepspaces=true,
+  xleftmargin=10pt, xrightmargin=6pt, framexleftmargin=8pt,
+  aboveskip=8pt, belowskip=6pt,
+}
+\lstdefinestyle{py}{style=base,language=Python,morekeywords={tf,self,None,True,False}}
+\lstdefinestyle{bash}{style=base,language=bash}
+\lstset{style=base}
+% YAML-ish
+\lstdefinelanguage{yaml}{keywords={true,false,null},comment=[l]{\#},morestring=[b]'}
+
+% ---------- callout boxes ----------
+\newtcolorbox{teacher}[1][]{enhanced,breakable,colback=greenbg,colframe=green,
+  coltitle=white,boxrule=0.4pt,arc=2pt,left=8pt,right=8pt,top=5pt,bottom=5pt,
+  fonttitle=\bfseries,title={\faGraduationCap\ Beginner's note},#1}
+\newtcolorbox{hood}[1][]{enhanced,breakable,colback=bluebg,colframe=accent,
+  coltitle=white,boxrule=0.4pt,arc=2pt,left=8pt,right=8pt,top=5pt,bottom=5pt,
+  fonttitle=\bfseries,title={Under the hood},#1}
+\newtcolorbox{why}[1][]{enhanced,breakable,colback=amberbg,colframe=amber,
+  coltitle=white,boxrule=0.4pt,arc=2pt,left=8pt,right=8pt,top=5pt,bottom=5pt,
+  fonttitle=\bfseries,title={Why this codebase does it this way},#1}
+\newtcolorbox{pitfall}[1][]{enhanced,breakable,colback=redbg,colframe=red,
+  coltitle=white,boxrule=0.4pt,arc=2pt,left=8pt,right=8pt,top=5pt,bottom=5pt,
+  fonttitle=\bfseries,title={Gotcha},#1}
+% graduation-cap glyph fallback (no fontawesome dependency)
+\newcommand{\faGraduationCap}{\textbf{\textsf{>}}}
+
+% ---------- tikz styles ----------
+\tikzset{
+  blk/.style={rectangle,rounded corners=3pt,draw=accent,fill=bluebg,
+    align=center,inner sep=5pt,font=\small,minimum height=8mm},
+  blkg/.style={rectangle,rounded corners=3pt,draw=green,fill=greenbg,
+    align=center,inner sep=5pt,font=\small,minimum height=8mm},
+  blka/.style={rectangle,rounded corners=3pt,draw=amber,fill=amberbg,
+    align=center,inner sep=5pt,font=\small,minimum height=8mm},
+  blkn/.style={rectangle,rounded corners=3pt,draw=black!40,fill=graybg,
+    align=center,inner sep=5pt,font=\small,minimum height=8mm},
+  ar/.style={-{Stealth[length=2.2mm]},thick,draw=ink},
+  lbl/.style={font=\scriptsize\itshape,text=codecom},
+}
+
+\newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\file}[1]{\textcolor{teal}{\texttt{\small #1}}}
+
+% ---------- figure helper ----------
+\newcommand{\guidefig}[3]{% file, width-frac, caption
+  \begin{figure}[ht]\centering
+    \includegraphics[width=#2\linewidth]{figures/#1}
+    \caption{#3}\end{figure}}
+
+\captionsetup{font=small,labelfont={bf,color=accent}}
+
+% =====================================================================
+\begin{document}
+
+% ---------------- Title page ----------------
+\begin{titlepage}
+\centering
+\vspace*{1.2cm}
+{\Huge\bfseries\color{accent} An Illustrated Guide\par}
+\vspace{4mm}
+{\LARGE to the YOLOv8 Polygon + Distance codebase\par}
+\vspace{2mm}
+{\large\itshape A TensorFlow reimplementation — explained from scratch\par}
+\vspace{10mm}
+
+\begin{tikzpicture}[node distance=6mm and 9mm]
+  \node[blkn] (img) {Image\\$672\times672\times3$};
+  \node[blk,right=of img] (bb) {Backbone\\CSPDarkNet};
+  \node[blk,right=of bb] (dec) {Decoder\\FPN-PAN};
+  \node[blkg,right=of dec] (head) {6 Heads};
+  \node[blka,below=8mm of head] (nms) {NMS /\\decode};
+  \draw[ar] (img)--(bb); \draw[ar] (bb)--(dec); \draw[ar] (dec)--(head);
+  \draw[ar] (head)--(nms);
+  \node[lbl,below=1mm of img] {pixels};
+  \node[lbl,below=1mm of bb] {features};
+  \node[lbl,below=1mm of dec] {3 scales};
+\end{tikzpicture}
+
+\vspace{12mm}
+{\large Detection \quad$\bullet$\quad Polygon segmentation \quad$\bullet$\quad Distance estimation\par}
+\vspace{4mm}
+{\color{codecom}\small 39 classes \;|\; 6 output heads \;|\; PolyYOLO 24-vertex radial polygons \;|\; per-object distance}
+\vfill
+{\small This guide is generated from the project's own code and docs. Every
+``real-pipeline'' figure is produced by running the actual augmentation / model
+code (see \file{docs/codebase\_guide/gen\_figures.py}). Edit \file{chapters/*.tex} and
+rebuild to change it.\par}
+\vspace{6mm}
+\end{titlepage}
+
+% ---------------- TOC ----------------
+\tableofcontents
+\thispagestyle{fancy}
+
+\input{chapters/00_intro}
+\input{chapters/01_foundations}
+\input{chapters/02_bigpicture}
+\input{chapters/03_data_pipeline}
+\input{chapters/04_polygons}
+\input{chapters/05_architecture}
+\input{chapters/06_losses}
+\input{chapters/07_training}
+\input{chapters/08_configuration}
+\input{chapters/09_evaluation}
+\input{chapters/10_tools_testing}
+\input{chapters/11_appendix}
+
+\end{document}

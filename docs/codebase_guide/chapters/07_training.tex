@@ -1,0 +1,99 @@
+\chapter{Training: optimizer, schedules, and the loop}
+
+We have a model and a loss. This chapter is how the codebase actually \emph{trains} ---
+the optimizer, the learning-rate schedule, the weight-averaging trick, and the custom
+training loop. The entry point is \file{scripts/run\_train.py}; the loop lives in
+\file{train/trainer.py}.
+
+\section{The optimizer: SGD with warmup}
+Training uses \textbf{SGD with Nesterov momentum} (\file{optimizers/sgd\_warmup.py}). Two
+features make it specific to this codebase.
+
+\guidefig{fig_schedules.png}{1.0}{Left: the learning-rate schedule, computed from the
+actual optimizer formulas. The weight group ramps \emph{up} from 0 during warmup, then
+follows a cosine decay. The BN/bias groups ramp \emph{down} from $0.1$. Right: the EMA
+decay, $\min(0.9999,(1+t)/(10+t))$ --- it starts low (fast averaging) and rises toward
+$0.9999$ (slow, stable averaging) as training proceeds.}
+
+\begin{teacher}
+\textbf{Warmup} means starting with a tiny learning rate and increasing it over the first
+few thousand steps. Fresh weights produce wild gradients; a gentle start avoids blowing up
+before the model settles. \textbf{Cosine decay} then smoothly lowers the rate toward the
+end so the model fine-tunes into a good minimum.
+\end{teacher}
+
+\begin{why}
+This optimizer has \textbf{three parameter groups} --- BatchNorm, biases, and weights ---
+with different warmup behavior. Unusually, the BN/bias groups \emph{ramp down} from an
+absolute LR of $0.1$ (ten times the base) toward the base rate, while weights ramp up from
+0. Stock Ultralytics warms biases \emph{up} from a small value. This ramp-\emph{down}
+direction matches the original codebase the model was migrated from, and the existing
+checkpoints were trained under it --- changing it would mean retraining.
+\end{why}
+
+\section{EMA: a smoothed copy of the weights}
+The trainer keeps an \textbf{Exponential Moving Average} of the weights
+(\file{optimizers/ema.py}). After each step, a shadow copy is nudged toward the current
+weights with a decay that grows over time. The EMA weights are usually smoother and
+generalize better, so they are \textbf{swapped in for evaluation} and swapped back out
+afterward.
+
+\begin{hood}
+The decay is dynamic: $\min(0.9999, (1+t)/(10+t))$, incremented before it is read (matching
+Ultralytics' \code{ModelEMA}). Evaluation calls \code{swap\_in} before and \code{swap\_out}
+after, so reported metrics reflect the averaged weights while training continues on the raw
+ones. Warm-starting a new run also loads from the EMA shadows --- they hold the complete
+weights, including list-tracked C2f sublayers the plain object graph can miss.
+\end{hood}
+
+\section{The training loop and epoch accounting}
+The loop is custom (not Orbit) so it can do several project-specific things: swap EMA
+weights around validation, merge the detection+distance streams, save checkpoints at epoch
+boundaries, handle preemption (SIGTERM), and auto-resume from the newest checkpoint.
+
+\begin{hood}
+The training stream is \textbf{infinite}, so an ``epoch'' is defined by the trainer, not by
+data exhaustion. It runs exactly \code{steps\_per\_loop} steps per epoch, where
+\code{steps\_per\_loop = train\_total\_examples // batch\_size}, from one persistent
+iterator. Everything derived is then consistent by construction:
+\code{decay\_steps = steps\_per\_loop $\times$ epochs} and
+\code{checkpoint\_interval = steps\_per\_loop} (one epoch). After a mid-epoch resume, only
+the remainder to the next epoch boundary is run, so boundaries stay at exact multiples.
+\end{hood}
+
+\begin{pitfall}
+\code{decay\_steps} is an explicit field in the YAML, not derived. If it disagrees with
+\code{steps\_per\_loop $\times$ epochs}, the cosine schedule will not finish where the
+training does. \code{run\_train.py} \emph{warns} at startup if they diverge --- watch for
+that line.
+\end{pitfall}
+
+\section{Mixed precision and XLA}
+The reference tier runs in \textbf{\code{mixed\_bfloat16}}: most of the network computes in
+16-bit \code{bfloat16} (faster, less memory), while the prediction heads and the loss are
+pinned to \code{float32} for numerical safety --- so no loss scaling is needed. \textbf{XLA}
+(a graph compiler) is an optional A/B toggle. Both are applied in
+\code{run\_train.py:\_apply\_runtime\_config} before any op runs.
+
+\begin{teacher}
+\textbf{bfloat16} is a 16-bit float with the same exponent range as 32-bit but fewer
+mantissa bits. It halves memory and speeds up matmuls on modern GPUs, while its wide range
+avoids the overflow problems that plague the older \code{float16}. Keeping the loss in
+\code{float32} preserves accuracy where it matters most.
+\end{teacher}
+
+\section{Multiple GPUs}
+Data-parallel training with \code{MirroredStrategy} is supported and \textbf{numerically
+identical} to single-device. The reference config defaults to \code{one\_device} on one
+GPU (avoiding MirroredStrategy's overhead). The correctness hinges on two things: the loss
+normalizers (\code{num\_objs}, \code{target\_scores\_sum}) are all-reduced to \emph{global}
+counts, and gradients are all-reduced across replicas --- both no-ops on a single GPU, so
+single-GPU runs are byte-for-byte unchanged.
+
+\section{What you can watch while it trains}
+TensorBoard gets rich logging: every scalar carries a markdown description (name +
+formula), per-class detection metrics are tagged by class name, the three polygon
+sub-losses are logged separately, and \code{train/data\_wait\_ms} vs
+\code{train/throughput\_img\_per\_s} let you tell whether the bottleneck is the data
+pipeline or the GPU. Augmented training images are logged each epoch under
+\code{train/augmentations} (geometry + labels, before the GPU color pass).

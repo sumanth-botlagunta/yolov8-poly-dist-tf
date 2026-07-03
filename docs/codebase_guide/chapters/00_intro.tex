@@ -1,0 +1,59 @@
+\chapter*{How to read this guide}
+\addcontentsline{toc}{chapter}{How to read this guide}
+\markboth{How to read this guide}{}
+
+Welcome! This guide explains an entire deep-learning codebase --- a TensorFlow
+reimplementation of \textbf{YOLOv8} that also predicts \textbf{object outlines}
+(polygons) and \textbf{how far away} each object is. It is written for someone who
+is comfortable with Python but is \emph{new} to object detection. We start from the
+ideas, then walk through the actual code, file by file.
+
+\section*{Who this is for}
+You will get the most out of this if you know basic Python and a little about neural
+networks (``a model takes an input, has weights, and is trained with gradient
+descent''). You do \emph{not} need prior knowledge of object detection, anchors,
+IoU, segmentation, or YOLO. Every such term is introduced when first used.
+
+\section*{The four kinds of callout boxes}
+Throughout the guide you will see colored boxes. Each has a job:
+
+\begin{teacher}
+Explains a concept from scratch --- what it means and why it exists. Read these if a
+term is new to you.
+\end{teacher}
+
+\begin{hood}
+Shows the concrete mechanism in \emph{this} codebase: the function, the tensor shape,
+the exact formula. Read these to connect the idea to the code.
+\end{hood}
+
+\begin{why}
+A non-obvious design decision and the reasoning behind it. Several choices here differ
+from ``stock'' YOLOv8 on purpose; these boxes say why.
+\end{why}
+
+\begin{pitfall}
+A subtle trap --- a coordinate-order mismatch, a sentinel value, a normalization
+convention --- that causes real bugs if you get it wrong.
+\end{pitfall}
+
+\section*{Conventions}
+File and symbol names look like \file{data\_pipeline/mosaic.py} and \code{Mosaic.\_mosaic}.
+Tensor shapes are written \code{[N, 72]}. Where coordinates matter we always say which
+convention is in play --- \code{yxyx} vs \code{xyxy}, normalized \code{[0,1]} vs pixels ---
+because mixing them up is the single most common source of bugs in this kind of code.
+
+\section*{A map of the journey}
+\begin{enumerate}[leftmargin=1.4em,itemsep=2pt]
+  \item \textbf{Foundations} --- the object-detection ideas you need (boxes, IoU, NMS,
+        anchors, feature pyramids, segmentation, the YOLO idea).
+  \item \textbf{The system at a glance} --- the three model tiers and the six heads.
+  \item \textbf{The data pipeline} --- how images and labels are loaded and augmented.
+  \item \textbf{Polygons} --- the radial ``PolyYOLO'' representation, in depth.
+  \item \textbf{The model} --- backbone, decoder, heads, and post-processing.
+  \item \textbf{The losses} --- task-aligned assignment and every loss term.
+  \item \textbf{Training} --- optimizer, schedules, EMA, the training loop.
+  \item \textbf{Configuration, evaluation, tooling} --- how to actually run it.
+\end{enumerate}
+
+\noindent Let's begin.
