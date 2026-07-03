@@ -199,16 +199,16 @@ def _validate_config(config, output_dir: str) -> None:
         if not 0.0 <= rp <= 1.0:
             errors.append(f"mosaic.rotate_prob ({rp}) must be in [0, 1]")
         if 1 <= r < 4:
-            # Not an error — R<4 is supported — but it silently cuts effective
-            # batch diversity (sliding-window reuse: at R=1 consecutive outputs
-            # share 3/4 source images; measured ~82 near-duplicate-content pairs
-            # per 128-batch vs 0 at R=4). The cheap-decode alternative is the
-            # pre-resized `_672` dataset variants at R=4.
-            logging.warning(
-                "mosaic.decodes_per_output=%d (< 4): sliding-window image reuse "
-                "reduces per-batch diversity and measurably hurts accuracy. "
-                "Prefer decodes_per_output=4 with the pre-resized `_672` TFDS "
-                "variants (tools/pipeline/reencode_tfds_672.py) for throughput.", r)
+            # Not an error — R<4 is supported. The Sidon-shift source selection
+            # (data_pipeline/mosaic.py) caps any two outputs of a group at ONE
+            # shared source image, so R<4 no longer produces near-duplicate
+            # outputs; what remains is that each image is reused in 4/R outputs,
+            # i.e. an epoch consumes R/4 as many distinct images as R=4.
+            logging.info(
+                "mosaic.decodes_per_output=%d (< 4): each decoded image is "
+                "reused in %d outputs per group (Sidon selection, <=1 shared "
+                "source between any two outputs). R=4 maximizes distinct images "
+                "per epoch at ~%dx the decode cost.", r, 4 // r, 4 // r)
 
     # --- validation stream sanity ---
     vd = getattr(task, "validation_data", None)

@@ -171,10 +171,12 @@ task:
         area_thresh: 0.5
         jitter: 0.0
         group_size: 32
-        # R=1 trades mosaic source diversity for decode throughput (each decoded
-        # image feeds 4 consecutive outputs' windows; R=4 = stock-YOLO no-reuse).
-        # The post-unbatch shuffle buffer auto-scales with outputs/group (1024 at
-        # R=1) to disperse the overlapping windows across batches.
+        # R=1: each decoded image is reused in 4 outputs of its group (Sidon-shift
+        # selection — any two outputs share at most ONE source image, so no
+        # near-duplicate samples; stock-Ultralytics-like reuse semantics). R=4
+        # consumes 4x more distinct images per epoch at ~4x the decode cost.
+        # The post-unbatch shuffle buffer (3072, input_reader.py) disperses the
+        # recurrences ~24 batches apart so same-batch reuse is rare.
         decodes_per_output: 1
         # random_perspective (full-affine) strength applied after mosaic assembly
         # AND to non-mosaic single images. These are the LIVE affine knobs (forwarded

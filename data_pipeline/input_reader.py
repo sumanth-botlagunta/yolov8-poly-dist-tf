@@ -277,18 +277,18 @@ class InputReader:
                 'groundtruth_dists': tf.constant(0.0, tf.float32),
             }
             group_size = self._mosaic_module._group_size
-            # Hold several groups' worth of outputs so the P outputs of any one group
-            # (which share that group's source images) disperse across many batches.
-            # Scale by OUTPUTS per group (group_size // R), not group_size: at R<4 a
-            # group emits up to 4× more outputs, and consecutive outputs share up to
-            # 3/4 source images (sliding-window draw in mosaic.py) — a buffer sized
-            # only by group_size under-disperses them, concentrating near-duplicate
-            # content in the same training batch. 32 groups' worth of outputs keeps
-            # the R=4 value at 256 (byte-identical) and grows it to 1024 at R=1.
-            # NOTE: a bigger buffer only mitigates R<4 correlation; R=4 eliminates
-            # it by construction (zero intra-group reuse).
+            # Disperse each group's outputs across many training batches: at R<4
+            # every source image recurs in 4/R outputs of its group (Sidon-shift
+            # draw in mosaic.py caps any two outputs at ONE shared source image),
+            # and this buffer is what spreads those recurrences apart in time —
+            # 3072 decoded outputs (~4.3 GB host RAM at 672²) puts the 4 reuses
+            # of an image ~24 batches-of-128 apart, making same-batch reuse rare
+            # (per-item mosaic loaders spread reuses across the whole epoch; a
+            # streaming pipeline buys distance with buffer RAM). Never below 32
+            # groups' worth of outputs so huge group configs still disperse.
+            # Cost is RAM + initial fill only — per-step time is unaffected.
             outputs_per_group = group_size // self._mosaic_module._decodes_per_output
-            shuffle_buffer = max(256, 32 * outputs_per_group)
+            shuffle_buffer = max(3072, 32 * outputs_per_group)
             ds = (
                 ds
                 .padded_batch(group_size, drop_remainder=True, padding_values=_padding_values)

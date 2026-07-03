@@ -18,15 +18,17 @@ tfds.load (SkipDecoding: images stay ENCODED bytes through shuffle)
    → Mosaic                (mosaic.py): G in → G // R out (G = group_size 32,
                            R = decodes_per_output 4 → 8 outputs). Each output
                            independently flips mosaic_frequency (per-output, not
-                           per-group); a mosaic draws 4 source images via a
-                           width-4 window (step R) of one per-group random
-                           permutation — R=4 tiles the permutation (4 distinct
-                           images, zero cross-output reuse = stock YOLO), R<4
-                           overlaps as a SLIDING window — recurrences land on adjacent
-                           outputs (R=1: consecutive outputs share 3/4 images). Each
-                           output runs one random_perspective warp.
-   → unbatch → shuffle(max(256, 32·outputs_per_group), seed=self._seed+2)  (disperses a
-                           group's outputs; distinct seed from the two source shuffles)
+                           per-group); a mosaic draws 4 source images from one
+                           per-group random permutation at Sidon-set shifts —
+                           R=4 tiles the permutation (4 distinct images, zero
+                           cross-output reuse = stock YOLO); at R<4 each image
+                           recurs in 4/R outputs but any two outputs share at
+                           most ONE source image (no near-duplicate outputs).
+                           Each output runs one random_perspective warp.
+   → unbatch → shuffle(max(3072, 32·outputs_per_group), seed=self._seed+2)  (disperses a
+                           group's outputs — spreads the 4/R reuses of each source
+                           image ~24 batches apart; ~4.3 GB host RAM at 672²;
+                           distinct seed from the two source shuffles)
    → parser polygon preprocessing  (yolo_parser.py / distance_parser.py)
                            parsers emit uint8 images — colour aug moved to GPU
    → batch(global_batch_size) + prefetch(AUTOTUNE)

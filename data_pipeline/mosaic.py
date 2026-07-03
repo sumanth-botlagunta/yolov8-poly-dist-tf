@@ -23,19 +23,20 @@ Group / image-diversity semantics
 both the image-diversity knob and the data-pipeline decode multiplier: it is how many
 freshly-decoded images each emitted sample consumes.
 
-  * **R = decodes_per_output** controls reuse. Each emitted mosaic composites 4 source
-    images drawn from the group via a windowed slice of one per-group random
-    permutation (window of 4, stepping by R). At **R=4** (the default — stock YOLO) the
-    windows tile the permutation, so every output's 4 images are disjoint: zero reuse,
-    maximum unique-image throughput, ~4× decode work. At **R<4** the window is a
-    SLIDING window: each image recurs in ``4/R`` outputs, and those recurrences are
-    the ADJACENT output indices — at R=1 consecutive outputs share 3 of their 4
-    source images (75% overlap; ~19% of all output pairs in a group share content).
-    The downstream shuffle only partially disperses this (see input_reader), so real
-    batches carry many near-duplicate-content pairs (~82 pairs per 128 at R=1 vs 0 at
-    R=4, measured). R=1 is throughput-neutral (1 decode per output) but pays that
-    diversity cost — prefer restoring R=4 via cheaper decode (pre-resized ``_672``
-    dataset variants) over lowering R when accuracy matters.
+  * **R = decodes_per_output** controls reuse. Each emitted output draws 4 source
+    images from one per-group random permutation at shifts from an R-keyed Sidon
+    set (see ``_SIDON_SHIFTS``). At **R=4** (the default — stock YOLO) the shifts
+    are the contiguous window {0,1,2,3} and the windows tile the permutation:
+    every output's 4 images are disjoint, zero reuse, ~4× decode work. At **R<4**
+    each image is reused in exactly ``4/R`` outputs (that ratio is fixed by the
+    decode budget), but the Sidon shifts guarantee any two outputs of a group
+    share **at most one** source image — matching stock Ultralytics semantics,
+    where images also recur ~4×/epoch but with fresh partners each time. (The
+    earlier contiguous window SLID at R<4: adjacent outputs shared 4-R sources —
+    3 of 4 at R=1, ~82 near-duplicate-content pairs per 128-batch measured. The
+    Sidon selection removes that pathology at identical decode cost.) What R<4
+    still costs vs R=4 is the count of *distinct* images consumed per epoch
+    (R=1 decodes 4× fewer unique images per epoch pass).
   * **group_size** is the pool each window is drawn from; larger pools give more varied
     4-image combinations at the same R. It must be a multiple of R and >= 4.
   * The mosaic/single decision is a **per-output** coin flip (not per-group), so the
@@ -172,6 +173,41 @@ def _scale_box_poly_to_canvas(
 #     vertices). Width V is identical across the 4 results (same padded_batch group).
 #   - classes/dontcare pad 0 (int64); is_crowd pad False (NEVER True — crowd
 #     filtering is config-conditional in the parser); area/dists pad 0.0.
+# Source-selection shift sets, keyed by R = decodes_per_output. Output j of a
+# group draws its 4 sources at perm[(j*R + s) % G] for s in the set. Two
+# invariants make a set valid for a given R:
+#   1. Uniform reuse — the shifts cover each residue class mod R exactly 4/R
+#      times, so every image in the group is used in exactly 4/R outputs
+#      (R=4: {0,1,2,3} has one shift per class -> each image used once;
+#      R=1: any 4 shifts -> each image used 4x, same decode bill either way).
+#   2. Sidon property — all pairwise shift differences are distinct, so
+#      s - s' == (j'-j)*R has at most one solution and ANY two outputs of the
+#      group share at most ONE source image. A contiguous window {0,1,2,3} at
+#      R<4 violates this badly: it slides, and adjacent outputs share 4-R
+#      sources (3 of 4 at R=1 — near-duplicate training samples back to back).
+# The Sidon property must hold MODULO G, including sign: a shift difference d
+# collides with -d' when d + d' == G (and with itself when 2d == G), giving two
+# (s, s') pairs for one output distance and thus 2 shared images. _SIDON_MIN_G
+# is the smallest group size at which each set's difference collection
+# {±1,±2,±3,±4,±6,±7} (R=1) / {±1,±3,±4,±5,±8,±9} (R=2) stays collision-free
+# mod G (R=1: no two differences sum to <15 and none is G/2 from 15 up;
+# R=2: G=16 fails via 8 == G/2 and G=18 via 9 == G/2, safe from 20). Below the
+# minimum (and for R values not listed) selection falls back to the contiguous
+# window. R=4 uses the contiguous window by construction — the windows tile the
+# permutation, so the Sidon concern is vacuous and the emitted indices are
+# identical to the historical behavior.
+_SIDON_SHIFTS = {1: (0, 1, 3, 7), 2: (0, 1, 4, 9), 4: (0, 1, 2, 3)}
+_SIDON_MIN_G = {1: 15, 2: 20, 4: 4}
+
+
+def _window_shifts(decodes_per_output: int, group_size: int) -> Tuple[int, int, int, int]:
+    """The four source-selection shifts for a given R and group size."""
+    shifts = _SIDON_SHIFTS.get(decodes_per_output)
+    if shifts is not None and group_size >= _SIDON_MIN_G[decodes_per_output]:
+        return shifts
+    return (0, 1, 2, 3)
+
+
 _PAD_SPEC = (
     ('groundtruth_boxes',    0.0,   tf.float32),
     ('groundtruth_polygons', -1.0,  tf.float32),
@@ -291,13 +327,13 @@ class Mosaic:
           * flips ``mosaic_frequency`` (a **per-output** coin flip — not per-group — so the
             per-sample mosaic probability is exactly ``mosaic_frequency`` with no batch
             clustering);
-          * if mosaic, draws **4 distinct** source images from the group via a windowed
-            slice of one per-group random permutation (window of 4 stepping by 4). At R=4
-            (``4 · outputs_per_group == group_size``) the windows tile the permutation, so
-            every output's 4 images are disjoint from every other output's — stock-YOLO,
-            zero reuse. At R<4 the windows wrap, so each image recurs in ``4/R`` outputs but
-            with different partners each time;
-          * if single, ``_single`` on the window's first image.
+          * if mosaic, draws **4 distinct** source images from one per-group random
+            permutation at the ``_window_shifts(R, G)`` offsets. At R=4 the shifts tile
+            the permutation, so every output's 4 images are disjoint from every other
+            output's — stock-YOLO, zero reuse. At R<4 each image recurs in ``4/R``
+            outputs, and the Sidon shifts guarantee any two outputs share at most one
+            source image (no near-duplicate outputs);
+          * if single, ``_single`` on the output's first source image.
 
         ``_mosaic`` / ``_single`` each draw their own split center / per-image scales /
         ``random_perspective`` params, and every output runs ``random_perspective`` exactly
@@ -321,17 +357,22 @@ class Mosaic:
                 results = [self._single(_select(batch, i)) for i in range(G)]
                 return _stack_results(results)
 
-            # One random permutation of the group per call. Output j takes a width-4 window
-            # starting at j·R (R = decodes_per_output): anchors are spaced R apart (so every
-            # output has a distinct anchor and at R=1 every image is emitted once), and each
-            # image recurs in 4/R windows. At R=4 the windows tile the permutation exactly
-            # (disjoint — stock YOLO, zero reuse); at R<4 they overlap with varied partners.
+            # One random permutation of the group per call. Output j reads sources at
+            # perm[(j·R + s) % G] for the four shifts s (R = decodes_per_output). At R=4
+            # the shifts are the contiguous window {0,1,2,3}, so the windows tile the
+            # permutation exactly (disjoint outputs — stock YOLO, zero reuse). At R<4 a
+            # contiguous window would SLIDE (adjacent outputs sharing 3 of 4 sources at
+            # R=1 — near-duplicate samples back to back), so a Sidon shift set is used
+            # instead: per-image reuse stays exactly 4/R, but any two outputs share at
+            # most ONE source image. Selection is index arithmetic only — decode count,
+            # op count, and RNG draw order are identical to the windowed form.
             R = self._decodes_per_output
+            shifts = _window_shifts(R, G)
             perm = tf.random.shuffle(tf.range(G))
 
             results = []
             for j in range(P):
-                idx = [perm[(R * j + k) % G] for k in range(4)]
+                idx = [perm[(R * j + s) % G] for s in shifts]
                 examples = [_select(batch, idx[k]) for k in range(4)]
                 do_mosaic = tf.random.uniform([]) < self._mosaic_freq
                 out_j = tf.cond(
@@ -348,7 +389,7 @@ class Mosaic:
                 # The partner mosaic is built inside the true branch, so it only
                 # executes when the coin fires.
                 if self._mixup_freq > 0:
-                    pidx = [perm[(R * j + G // 2 + k) % G] for k in range(4)]
+                    pidx = [perm[(R * j + G // 2 + s) % G] for s in shifts]
                     pex = [_select(batch, pidx[k]) for k in range(4)]
                     do_mixup = tf.random.uniform([]) < self._mixup_freq
                     out_j = tf.cond(

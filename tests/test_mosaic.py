@@ -15,7 +15,7 @@ import unittest
 import numpy as np
 import tensorflow as tf
 
-from data_pipeline.mosaic import Mosaic, _place_in_cell
+from data_pipeline.mosaic import Mosaic, _place_in_cell, _window_shifts
 from data_pipeline.augmentations import random_perspective
 
 
@@ -194,6 +194,99 @@ class TestMosaic(unittest.TestCase):
               .batch(2))
         total = sum(int(b["image"].shape[0]) for b in ds)
         self.assertEqual(total, G // 4)  # 16 // 4 = 4 outputs
+
+
+class TestWindowShifts(unittest.TestCase):
+    """Source-selection invariants of the Sidon-shift draw (see _SIDON_SHIFTS).
+
+    Output j of a group reads perm[(j*R + s) % G] for s in _window_shifts(R, G).
+    Because perm is a bijection, the invariants hold for the raw index sets:
+      - uniform reuse: every group index is read by exactly 4/R outputs
+      - within an output the 4 indices are distinct
+      - any two outputs share at most ONE index (zero at R=4 — disjoint tiling)
+    """
+
+    G = 32
+
+    def _rows(self, R, G=None):
+        G = G or self.G
+        shifts = _window_shifts(R, G)
+        return [frozenset((j * R + s) % G for s in shifts) for j in range(G // R)]
+
+    def test_uniform_reuse_and_distinct_within_output(self):
+        for R in (1, 2, 4):
+            rows = self._rows(R)
+            for row in rows:
+                self.assertEqual(len(row), 4, f"R={R}: duplicate source in one output")
+            counts = np.zeros(self.G, dtype=int)
+            for row in rows:
+                for i in row:
+                    counts[i] += 1
+            self.assertTrue((counts == 4 // R).all(),
+                            f"R={R}: reuse counts {counts} != {4 // R}")
+
+    def test_pairwise_overlap_at_most_one(self):
+        for R in (1, 2):
+            rows = self._rows(R)
+            worst = max(len(a & b) for i, a in enumerate(rows) for b in rows[i + 1:])
+            self.assertLessEqual(
+                worst, 1,
+                f"R={R}: two outputs share {worst} sources (sliding-window regression)")
+
+    def test_overlap_guarantee_brute_force_sweep(self):
+        """Whenever a Sidon set is selected, the <=1-overlap guarantee must hold
+        for the ACTUAL mod-G index sets — brute-forced, not derived. Catches
+        modular collisions (e.g. a shift difference equal to G/2, which pairs
+        with its own negative: at G=16/R=2 the difference 8 self-collides and
+        two outputs would share 2 images, so _window_shifts must fall back)."""
+        from data_pipeline.mosaic import _SIDON_SHIFTS
+        for R in (1, 2, 4):
+            for G in range(max(8, R), 129, R if R > 1 else 1):
+                if G % R:
+                    continue
+                shifts = _window_shifts(R, G)
+                if shifts != _SIDON_SHIFTS.get(R) or max(shifts) >= G:
+                    continue  # fallback window: no guarantee claimed
+                rows = self._rows(R, G=G)
+                worst = max(
+                    (len(a & b) for i, a in enumerate(rows) for b in rows[i + 1:]),
+                    default=0)
+                limit = 0 if R == 4 else 1
+                self.assertLessEqual(worst, limit, f"R={R} G={G}: overlap {worst}")
+                counts = np.zeros(G, dtype=int)
+                for row in rows:
+                    self.assertEqual(len(row), 4, f"R={R} G={G}: within-output dup")
+                    for i in row:
+                        counts[i] += 1
+                self.assertTrue((counts == 4 // R).all(), f"R={R} G={G}: uneven reuse")
+
+    def test_modular_collision_groups_fall_back(self):
+        # G=16/R=2: shift difference 8 == G/2 self-collides mod 16 -> 2 shared
+        # images if the Sidon set were used; must fall back to the window.
+        self.assertEqual(_window_shifts(2, 16), (0, 1, 2, 3))
+        self.assertEqual(_window_shifts(2, 18), (0, 1, 2, 3))
+        self.assertEqual(_window_shifts(2, 20), (0, 1, 4, 9))
+        self.assertEqual(_window_shifts(1, 15), (0, 1, 3, 7))
+
+    def test_r4_outputs_disjoint_and_window_unchanged(self):
+        rows = self._rows(4)
+        self.assertEqual(sorted(i for row in rows for i in row), list(range(self.G)))
+        worst = max(len(a & b) for i, a in enumerate(rows) for b in rows[i + 1:])
+        self.assertEqual(worst, 0)
+        # R=4 must keep the historical contiguous window (byte-identical indices).
+        self.assertEqual(_window_shifts(4, self.G), (0, 1, 2, 3))
+
+    def test_small_group_falls_back_to_contiguous_window(self):
+        self.assertEqual(_window_shifts(1, 8), (0, 1, 2, 3))
+        self.assertEqual(_window_shifts(2, 4), (0, 1, 2, 3))
+
+    def test_r1_all_images_emitted_once_as_singles(self):
+        # freq=0.0 -> every output is _single on its first source, perm[(j + 0) % G]
+        # = perm[j]: a permutation of the group, so each image appears exactly once.
+        m = _identity_mosaic(out=32, freq=0.0, group_size=16, decodes_per_output=1)
+        out = m.mosaic_fn(is_training=True)(_make_group(16))
+        vals = sorted(int(out["image"][k, 0, 0, 0]) for k in range(16))
+        self.assertEqual(vals, list(range(16)))
 
 
 class TestMosaicUnbatchIntegration(unittest.TestCase):
