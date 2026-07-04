@@ -390,6 +390,8 @@ def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
         mosaic_center=mosaic_raw.get("mosaic_center", 0.25),  # matches Mosaic.__init__
         aug_scale_min=mosaic_raw.get("aug_scale_min", 0.5),
         aug_scale_max=mosaic_raw.get("aug_scale_max", 1.5),
+        tile_scale_min=mosaic_raw.get("tile_scale_min", 0.0),
+        tile_scale_max=mosaic_raw.get("tile_scale_max", 0.0),
         mosaic_crop_mode=mosaic_raw.get("mosaic_crop_mode", "scale"),
         area_thresh=mosaic_raw.get("area_thresh", 0.5),
         jitter=mosaic_raw.get("jitter", 0.0),

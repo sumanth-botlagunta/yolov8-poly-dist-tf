@@ -154,11 +154,17 @@ class MosaicConfig:
     # dataclass previously defaulted to 0.2, silently disagreeing with the runtime
     # default whenever a tier YAML omitted mosaic_center.
     mosaic_center: float = 0.25
-    # Canvas->output warp scale-gain bounds (stock YOLO [0.5, 1.5]). This is the
-    # ONLY source of per-sample size variety now — per-image placement scale is
-    # fixed (consistent upright tiles), see data_pipeline/mosaic.py.
+    # Canvas->output warp scale-gain bounds (stock YOLO [0.5, 1.5]).
     aug_scale_min: float = 0.5
     aug_scale_max: float = 1.5
+    # Per-tile INDEPENDENT placement scale (original-codebase formulation):
+    # when tile_scale_max > 0, each mosaic tile's placement scale is multiplied
+    # by its own uniform draw from [tile_scale_min, tile_scale_max], so the 4
+    # tiles of one mosaic appear at 4 different scales (intra-image scale
+    # diversity). Compounds with the warp gain above. 0/0 = off (consistent
+    # upright placement, the only source of size variety is the warp gain).
+    tile_scale_min: float = 0.0
+    tile_scale_max: float = 0.0
     mosaic_crop_mode: str = "scale"
     area_thresh: float = 0.5
     jitter: float = 0.0

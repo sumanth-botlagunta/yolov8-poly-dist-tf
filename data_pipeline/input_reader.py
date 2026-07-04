@@ -553,6 +553,8 @@ def build_input_reader_from_config(
             mosaic_center=mosaic_cfg.mosaic_center,
             aug_scale_min=mosaic_cfg.aug_scale_min,
             aug_scale_max=mosaic_cfg.aug_scale_max,
+            tile_scale_min=mosaic_cfg.tile_scale_min,
+            tile_scale_max=mosaic_cfg.tile_scale_max,
             area_thresh=mosaic_cfg.area_thresh,
             mosaic_crop_mode=mosaic_cfg.mosaic_crop_mode,
             with_polygons=parser_cfg.with_polygons,

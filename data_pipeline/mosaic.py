@@ -280,6 +280,8 @@ class Mosaic:
         rotate_prob: float = 0.10,
         group_size: int = 32,
         decodes_per_output: int = 4,
+        tile_scale_min: float = 0.0,
+        tile_scale_max: float = 0.0,
     ):
         self._H = output_size[0]
         self._W = output_size[1]
@@ -297,6 +299,20 @@ class Mosaic:
         self._perspective = perspective
         self._translate   = translate
         self._rotate_prob = rotate_prob
+        # Per-tile independent scale (original-codebase formulation). When
+        # tile_scale_max > 0, each mosaic tile's placement scale is multiplied by
+        # an INDEPENDENT uniform draw from [tile_scale_min, tile_scale_max], so
+        # the 4 tiles of one mosaic appear at 4 different scales (intra-image
+        # scale diversity — the strongest scale-invariance signal a detector
+        # gets). 0/0 disables it: placement stays at the consistent long-side
+        # scale and this code path adds nothing to the graph.
+        if (tile_scale_max > 0.0) and not (0.0 < tile_scale_min <= tile_scale_max):
+            raise ValueError(
+                f"tile_scale bounds invalid: need 0 < min <= max, got "
+                f"[{tile_scale_min}, {tile_scale_max}]"
+            )
+        self._tile_scale_min = tile_scale_min
+        self._tile_scale_max = tile_scale_max
         # Image-diversity controls (see module docstring). A group of `group_size`
         # decoded images yields `outputs_per_group = group_size // decodes_per_output`
         # emitted samples; each mosaic draws 4 source images from the group.
@@ -550,15 +566,22 @@ class Mosaic:
             w_in = tf.shape(img)[1]
             h_in_f = tf.cast(h_in, tf.float32)
             w_in_f = tf.cast(w_in, tf.float32)
-            # Upright placement at a CONSISTENT scale (stock YOLO): resize so the
-            # image's long side equals the output size, then place it full toward the
-            # cell's center corner (overflow cropped by _place_in_cell). The previous
-            # per-image random scale [aug_scale_min, aug_scale_max] made each tile a
-            # different size (the "messy" look); size variety now comes only from the
-            # single canvas->output warp (the [aug_scale_min, aug_scale_max] crop gain
-            # in M). Rotation is rare (rotate_prob), so tiles read as upright panels.
+            # Placement scale: long side = output size (consistent upright tiles),
+            # optionally multiplied by an INDEPENDENT per-tile draw from
+            # [tile_scale_min, tile_scale_max] (original-codebase formulation —
+            # each tile lands at its own scale, giving intra-image scale
+            # diversity on top of the single canvas->output warp gain). Tiles
+            # are anchored at the moving center corner, so an overscaled tile
+            # only ever overflows AWAY from the other cells and is cropped at
+            # the canvas edge by _place_in_cell; its labels map through the
+            # same nh/nw/pad values and are clipped/dropped by the final warp's
+            # transform_boxes_polygons + area_thresh — no cross-cell label
+            # corruption is possible. tile_scale 0/0 = consistent scale only.
             long_side = tf.maximum(h_in_f, w_in_f)
             place_scale = tf.cast(H, tf.float32) / long_side
+            if self._tile_scale_max > 0.0:
+                place_scale *= tf.random.uniform(
+                    [], self._tile_scale_min, self._tile_scale_max)
             nh = tf.maximum(tf.cast(tf.round(h_in_f * place_scale), tf.int32), 1)
             nw = tf.maximum(tf.cast(tf.round(w_in_f * place_scale), tf.int32), 1)
             # Skip the resize when the source is already the placement size (the common

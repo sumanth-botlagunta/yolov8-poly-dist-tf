@@ -125,8 +125,11 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
   `[aug_scale_min, aug_scale_max]` config bounds (`make_perspective_matrix(scale_min=, scale_max=)`),
   default stock YOLO **`[0.5, 1.5]`**. This is the **only** source of per-sample size variety:
   per-image placement scale is fixed (each source resized so its long side = output, then placed
-  upright). The earlier per-image random scale (`[0.4, 1.9]`) made each tile a different size; it
-  was replaced by the upright formulation.
+  upright). Per-tile INDEPENDENT scale is config-gated (`mosaic.tile_scale_min/max`, poly_dist
+  enables `[0.4, 1.9]`): each tile's placement scale gets its own uniform draw, so one mosaic
+  carries 4 different object scales (intra-image scale diversity, the original-codebase
+  formulation); `0/0` = consistent upright placement. `tile_scale_max <= 2.0` is enforced —
+  beyond 2x an overflowing tile can map a real polygon vertex below the `-1.0` sentinel.
 - **Tiles are upright by default.** Rotation fires only on `rotate_prob` of outputs (default 0.10,
   ±`degrees`=10); `shear` defaults to 0. The split center shifts H+V (`mosaic_center`), so each
   tile's visible crop varies and boxes/polygons are cut at the moving edges. `close_mosaic_epochs`

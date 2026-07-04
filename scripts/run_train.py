@@ -198,6 +198,23 @@ def _validate_config(config, output_dir: str) -> None:
         rp = getattr(mosaic_cfg, "rotate_prob", 0.10)
         if not 0.0 <= rp <= 1.0:
             errors.append(f"mosaic.rotate_prob ({rp}) must be in [0, 1]")
+        ts_min = getattr(mosaic_cfg, "tile_scale_min", 0.0)
+        ts_max = getattr(mosaic_cfg, "tile_scale_max", 0.0)
+        if ts_max > 0.0 and not 0.0 < ts_min <= ts_max:
+            errors.append(
+                f"mosaic.tile_scale bounds invalid: need 0 < min <= max "
+                f"(or 0/0 to disable), got [{ts_min}, {ts_max}]"
+            )
+        if ts_max > 2.0:
+            # Center-anchored overflow bound: a tile scaled beyond 2x the output
+            # can map a REAL vertex below canvas-normalized -1.0 (worst case
+            # (1 - s*W)/2W <= -1 at s > 2 + 1/W), where it collides with the
+            # -1.0 polygon sentinel and is silently dropped as padding.
+            errors.append(
+                f"mosaic.tile_scale_max ({ts_max}) must be <= 2.0: beyond 2x, "
+                f"overflowing tiles map real polygon vertices below the -1.0 "
+                f"sentinel and corrupt the radial target"
+            )
         if 1 <= r < 4:
             # Not an error — R<4 is supported. The Sidon-shift source selection
             # (data_pipeline/mosaic.py) caps any two outputs of a group at ONE
