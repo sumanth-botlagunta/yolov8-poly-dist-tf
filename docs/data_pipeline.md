@@ -24,7 +24,14 @@ tfds.load (SkipDecoding: images stay ENCODED bytes through shuffle)
                            cross-output reuse = stock YOLO); at R<4 each image
                            recurs in 4/R outputs but any two outputs share at
                            most ONE source image (no near-duplicate outputs).
-                           Each output runs one random_perspective warp.
+                           Horizontal flip lives HERE during training: each
+                           mosaic TILE flips independently (the canvas is never
+                           mirrored whole); each non-mosaic single flips once
+                           (the parser flip is disabled for the train stream).
+                           Each output runs one random_perspective warp —
+                           mosaics with the mosaic.* bounds (parity: scale
+                           [0.4, 1.9], rotation off, translate 0), singles with
+                           the parser-level bounds (scale 1.0, translate 0.1).
    → unbatch → shuffle(max(3072, 32·outputs_per_group), seed=self._seed+2)  (disperses a
                            group's outputs — spreads the 4/R reuses of each source
                            image ~24 batches apart; ~4.3 GB host RAM at 672²;

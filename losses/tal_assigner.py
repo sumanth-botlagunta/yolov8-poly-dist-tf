@@ -1,17 +1,67 @@
 """Task-Aligned label assignment (stop-gradient).
 
 Implements the TAL assignment algorithm from YOLOv8:
-    alignment_metric = pred_score^alpha * IoU^beta
+    alignment_metric = pred_score^alpha * CIoU^beta   (CIoU clamped at 0)
     top-k candidates per GT, filtered by spatial constraint,
-    duplicates resolved by max-IoU.
+    duplicates resolved by max-CIoU.
+
+The overlap metric is COMPLETE IoU, not plain IoU: the reference recipe
+(and the original codebase) rank candidate anchors by
+``bbox_iou(..., CIoU=True).clamp(0)``, so an anchor whose predicted box has
+the same raw overlap but a worse center offset / aspect mismatch ranks
+lower. Raised to beta=6 this materially changes which anchors become
+positives.
 
 Classes:
     TaskAlignedAssigner: Pure assignment — no gradient flows through this module.
 """
 
+import math
 from typing import Optional, Tuple
 
 import tensorflow as tf
+
+
+def _pairwise_ciou(pd_exp: tf.Tensor, gt_exp: tf.Tensor,
+                   eps: float = 1e-7) -> tf.Tensor:
+    """Complete IoU between broadcastable xyxy box tensors.
+
+    Mirrors ``losses/tal_loss._bbox_iou_loss(..., "ciou")`` exactly (same eps
+    placement, ``atan2(w, h + eps)`` aspect term — safe on degenerate 0-boxes
+    such as padded GT rows). Inputs are pre-expanded for broadcasting, e.g.
+    ``pd_exp [B, A, 1, 4]`` × ``gt_exp [B, 1, M, 4]`` → ``[B, A, M]``.
+    NOT clamped — the caller clamps at 0 (reference: ``.clamp_(0)``).
+    """
+    ix1 = tf.maximum(pd_exp[..., 0], gt_exp[..., 0])
+    iy1 = tf.maximum(pd_exp[..., 1], gt_exp[..., 1])
+    ix2 = tf.minimum(pd_exp[..., 2], gt_exp[..., 2])
+    iy2 = tf.minimum(pd_exp[..., 3], gt_exp[..., 3])
+    inter = tf.maximum(ix2 - ix1, 0.0) * tf.maximum(iy2 - iy1, 0.0)
+
+    w_pd = pd_exp[..., 2] - pd_exp[..., 0]
+    h_pd = pd_exp[..., 3] - pd_exp[..., 1]
+    w_gt = gt_exp[..., 2] - gt_exp[..., 0]
+    h_gt = gt_exp[..., 3] - gt_exp[..., 1]
+    union = w_pd * h_pd + w_gt * h_gt - inter + eps
+    iou = inter / union
+
+    cx_pd = (pd_exp[..., 0] + pd_exp[..., 2]) * 0.5
+    cy_pd = (pd_exp[..., 1] + pd_exp[..., 3]) * 0.5
+    cx_gt = (gt_exp[..., 0] + gt_exp[..., 2]) * 0.5
+    cy_gt = (gt_exp[..., 1] + gt_exp[..., 3]) * 0.5
+    rho2 = tf.square(cx_pd - cx_gt) + tf.square(cy_pd - cy_gt)
+
+    ex1 = tf.minimum(pd_exp[..., 0], gt_exp[..., 0])
+    ey1 = tf.minimum(pd_exp[..., 1], gt_exp[..., 1])
+    ex2 = tf.maximum(pd_exp[..., 2], gt_exp[..., 2])
+    ey2 = tf.maximum(pd_exp[..., 3], gt_exp[..., 3])
+    c2 = tf.square(ex2 - ex1) + tf.square(ey2 - ey1) + eps
+
+    v = (4.0 / (math.pi ** 2)) * tf.square(
+        tf.math.atan2(w_gt, h_gt + eps) - tf.math.atan2(w_pd, h_pd + eps)
+    )
+    alpha_v = v / (1.0 - iou + v + eps)
+    return iou - rho2 / c2 - alpha_v * v
 
 
 class TaskAlignedAssigner:
@@ -69,29 +119,17 @@ class TaskAlignedAssigner:
         C = tf.shape(pd_scores)[2]
         M = tf.shape(gt_labels)[1]
 
-        # ── 1. IoU between predictions and GTs ──────────────────────────
-        # pd_bboxes [B, A, 4] × gt_bboxes [B, M, 4] → [B, A, M]
+        # ── 1. CIoU between predictions and GTs ─────────────────────────
+        # pd_bboxes [B, A, 4] × gt_bboxes [B, M, 4] → [B, A, M]. Complete IoU
+        # (center-distance + aspect penalties), clamped at 0 — matching the
+        # reference recipe's bbox_iou(..., CIoU=True).clamp_(0). Plain
+        # intersection/union ranked off-center candidates too favorably at
+        # beta=6 (a genuine divergence from the recipe this model was built
+        # to reproduce). Padded GT rows ([0,0,0,0]) stay finite through the
+        # atan2/eps guards and are zeroed downstream via mask_gt.
         pd_exp = pd_bboxes[:, :, tf.newaxis, :]   # [B, A, 1, 4]
         gt_exp = gt_bboxes[:, tf.newaxis, :, :]   # [B, 1, M, 4]
-
-        ix1 = tf.maximum(pd_exp[..., 0], gt_exp[..., 0])
-        iy1 = tf.maximum(pd_exp[..., 1], gt_exp[..., 1])
-        ix2 = tf.minimum(pd_exp[..., 2], gt_exp[..., 2])
-        iy2 = tf.minimum(pd_exp[..., 3], gt_exp[..., 3])
-        inter = tf.maximum(ix2 - ix1, 0.0) * tf.maximum(iy2 - iy1, 0.0)  # [B, A, M]
-
-        area_pd = (
-            (pd_bboxes[..., 2] - pd_bboxes[..., 0]) *
-            (pd_bboxes[..., 3] - pd_bboxes[..., 1])
-        )  # [B, A]
-        area_gt = (
-            (gt_bboxes[..., 2] - gt_bboxes[..., 0]) *
-            (gt_bboxes[..., 3] - gt_bboxes[..., 1])
-        )  # [B, M]
-        union = (
-            area_pd[:, :, tf.newaxis] + area_gt[:, tf.newaxis, :] - inter + self.eps
-        )  # [B, A, M]
-        iou = inter / union  # [B, A, M]
+        iou = tf.maximum(_pairwise_ciou(pd_exp, gt_exp), 0.0)  # [B, A, M]
 
         # ── 2. Predicted score for each GT class ─────────────────────────
         # Efficient gather: [B, C, A] → gather at gt_labels [B, M] → [B, M, A]

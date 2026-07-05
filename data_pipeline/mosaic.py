@@ -75,13 +75,14 @@ Classes:
 
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import tensorflow as tf
 
 from data_pipeline.augmentations import (
     apply_perspective_image,
     make_perspective_matrix,
+    random_horizontal_flip,
     random_perspective,
     transform_boxes_polygons,
 )
@@ -282,6 +283,10 @@ class Mosaic:
         decodes_per_output: int = 4,
         tile_scale_min: float = 0.0,
         tile_scale_max: float = 0.0,
+        single_scale_min: Optional[float] = None,
+        single_scale_max: Optional[float] = None,
+        single_translate: Optional[float] = None,
+        random_flip: bool = False,
     ):
         self._H = output_size[0]
         self._W = output_size[1]
@@ -313,6 +318,25 @@ class Mosaic:
             )
         self._tile_scale_min = tile_scale_min
         self._tile_scale_max = tile_scale_max
+        # Non-mosaic (single) path warp params. The original codebase augments
+        # the two paths DIFFERENTLY: mosaics get the [aug_scale_min/max] warp
+        # gain with no translate, singles get NO scale gain (1.0) but a small
+        # translate. None = fall back to the mosaic values (back-compat for
+        # direct constructions); input_reader wires the parser-level
+        # aug_scale_min/max + aug_rand_translate here.
+        self._single_scale_min = (
+            single_scale_min if single_scale_min is not None else aug_scale_min)
+        self._single_scale_max = (
+            single_scale_max if single_scale_max is not None else aug_scale_max)
+        self._single_translate = (
+            single_translate if single_translate is not None else translate)
+        # Flip ownership: when True, this module flips — each mosaic TILE
+        # independently (original-codebase semantics: tiles flip before
+        # placement, the assembled canvas is never mirrored) and each single
+        # image once. The detection train parser's flip must then be OFF or
+        # images would flip twice (input_reader wires that). Default False so
+        # direct constructions (tests) keep deterministic geometry.
+        self._random_flip = random_flip
         # Image-diversity controls (see module docstring). A group of `group_size`
         # decoded images yields `outputs_per_group = group_size // decodes_per_output`
         # emitted samples; each mosaic draws 4 source images from the group.
@@ -423,26 +447,51 @@ class Mosaic:
     # Geometric transform helpers
     # ------------------------------------------------------------------
 
+    def _flip_example(self, ex: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+        """Horizontally flip an example dict with probability 0.5.
+
+        ``random_horizontal_flip`` draws its own coin, mirrors box x
+        (xmin ↔ 1 − xmax) and valid polygon x (keeping the -1 sentinel).
+        Applied per mosaic TILE (before placement) and per single image, so
+        tiles of one mosaic flip independently — the assembled canvas itself
+        is never mirrored (original-codebase semantics).
+        """
+        img, boxes, polys = random_horizontal_flip(
+            ex['image'],
+            ex.get('groundtruth_boxes', tf.zeros([0, 4])),
+            ex.get('groundtruth_polygons', tf.zeros([0, 2])),
+        )
+        out = dict(ex)
+        out['image'] = img
+        out['groundtruth_boxes'] = boxes
+        out['groundtruth_polygons'] = polys
+        return out
+
     def _warp(
         self,
         image: tf.Tensor,
         boxes: tf.Tensor,
         polygons: tf.Tensor,
+        scale_min: Optional[float] = None,
+        scale_max: Optional[float] = None,
+        translate: Optional[float] = None,
     ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """random_perspective with this module's configured params → output size.
 
         The warp scale gain is drawn from the EXPLICIT [aug_scale_min,
-        aug_scale_max] config bounds. (The earlier symmetric-magnitude form
-        widened the configured [0.4, 1.9] to [0.1, 1.9], occasionally shrinking
-        content to ~1% area — the "mostly-gray frame" bug.)
+        aug_scale_max] config bounds (or the per-call override — the single
+        path passes its own bounds/translate). (The earlier
+        symmetric-magnitude form widened the configured [0.4, 1.9] to
+        [0.1, 1.9], occasionally shrinking content to ~1% area — the
+        "mostly-gray frame" bug.)
         """
         return random_perspective(
             image, boxes, polygons,
             target_h=self._H, target_w=self._W,
             degrees=self._degrees,
-            translate=self._translate,
-            scale_min=self._scale_min,
-            scale_max=self._scale_max,
+            translate=self._translate if translate is None else translate,
+            scale_min=self._scale_min if scale_min is None else scale_min,
+            scale_max=self._scale_max if scale_max is None else scale_max,
             shear=self._shear,
             perspective=self._perspective,
             area_thresh=self._area_thresh,
@@ -485,11 +534,23 @@ class Mosaic:
         }
 
     def _single(self, ex: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
-        """Non-mosaic path: random_perspective on one (already output-sized) image."""
+        """Non-mosaic path: flip + random_perspective with the SINGLE-path params.
+
+        Uses single_scale_min/max + single_translate (original codebase: no
+        scale gain and a small translate for non-mosaic images) rather than
+        the mosaic warp bounds.
+        """
+        if self._random_flip:
+            ex = self._flip_example(ex)
         img = ex['image']
         boxes = ex.get('groundtruth_boxes', tf.zeros([0, 4]))
         polys = ex.get('groundtruth_polygons', tf.zeros([0, 2]))
-        img_out, boxes_out, keep, polys_out = self._warp(img, boxes, polys)
+        img_out, boxes_out, keep, polys_out = self._warp(
+            img, boxes, polys,
+            scale_min=self._single_scale_min,
+            scale_max=self._single_scale_max,
+            translate=self._single_translate,
+        )
         anns = self._filtered_anns(ex, boxes_out, polys_out, keep)
         anns['image']  = img_out
         anns['height'] = tf.constant(self._H, tf.int32)
@@ -538,6 +599,10 @@ class Mosaic:
         xc = tf.clip_by_value(xc, 1, 2 * W - 1)
 
         examples = [one, two, three, four]
+        if self._random_flip:
+            # Per-TILE independent flip (each tile draws its own coin); the
+            # assembled canvas is never mirrored as a whole.
+            examples = [self._flip_example(ex) for ex in examples]
         boxes_list, polys_list = [], []
 
         # Draw the global canvas→output matrix ONCE (same params as self._warp;

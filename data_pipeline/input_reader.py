@@ -534,7 +534,12 @@ def build_input_reader_from_config(
             aug_rand_translate=parser_cfg.aug_rand_translate,
             aug_scale_min=parser_cfg.aug_scale_min,
             aug_scale_max=parser_cfg.aug_scale_max,
-            random_flip=parser_cfg.random_flip,
+            # Flip ownership: during training the Mosaic module flips (per
+            # TILE for mosaics, per image for singles — original-codebase
+            # semantics); the parser flipping the assembled output on top
+            # would mirror the mosaic canvas as a whole, which the original
+            # never does. Eval keeps the config value (false anyway).
+            random_flip=parser_cfg.random_flip and not is_training,
             letter_box=parser_cfg.letter_box,
             resize_with_random_method=parser_cfg.resize_with_random_method,
             albumentations_frequency=parser_cfg.albumentations_frequency,
@@ -565,6 +570,14 @@ def build_input_reader_from_config(
             rotate_prob=mosaic_cfg.rotate_prob,
             group_size=mosaic_cfg.group_size,
             decodes_per_output=mosaic_cfg.decodes_per_output,
+            # Single-image (non-mosaic) path: the parser-level scale bounds
+            # and translate (original codebase: singles get scale 1.0 and a
+            # small translate; the mosaic warp bounds above apply to mosaics
+            # only). Flip is owned by the mosaic module during training.
+            single_scale_min=parser_cfg.aug_scale_min,
+            single_scale_max=parser_cfg.aug_scale_max,
+            single_translate=parser_cfg.aug_rand_translate,
+            random_flip=parser_cfg.random_flip,
         )
 
     # Copy-paste (training only, when a source dataset is configured).

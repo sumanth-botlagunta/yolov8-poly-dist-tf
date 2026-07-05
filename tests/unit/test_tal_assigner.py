@@ -143,5 +143,62 @@ class TestTaskAlignedAssigner(unittest.TestCase):
         self.assertFalse(tf.reduce_any(fg_labels == 1).numpy())
 
 
+class TestCIoUOverlaps(unittest.TestCase):
+    """The assigner's overlap metric is Complete IoU clamped at 0 (reference
+    recipe: bbox_iou(..., CIoU=True).clamp_(0)), not plain inter/union."""
+
+    def test_pairwise_ciou_matches_loss_ciou(self):
+        from losses.tal_assigner import _pairwise_ciou
+        from losses.tal_loss import _bbox_iou_loss
+        rng = tf.random.Generator.from_seed(3)
+        xy1 = rng.uniform([64, 2], 0.0, 300.0)
+        wh1 = rng.uniform([64, 2], 1.0, 200.0)
+        xy2 = rng.uniform([64, 2], 0.0, 300.0)
+        wh2 = rng.uniform([64, 2], 1.0, 200.0)
+        b1 = tf.concat([xy1, xy1 + wh1], axis=-1)
+        b2 = tf.concat([xy2, xy2 + wh2], axis=-1)
+        got = _pairwise_ciou(b1, b2)
+        want = 1.0 - _bbox_iou_loss(b1, b2, "ciou")
+        self.assertLess(float(tf.reduce_max(tf.abs(got - want))), 1e-5)
+
+    def test_pairwise_ciou_finite_on_zero_boxes(self):
+        from losses.tal_assigner import _pairwise_ciou
+        pd = tf.constant([[10., 10., 50., 50.]])
+        gt = tf.zeros([1, 4])  # padded GT row
+        val = _pairwise_ciou(pd, gt)
+        self.assertTrue(bool(tf.reduce_all(tf.math.is_finite(val))))
+
+    def test_duplicate_resolution_prefers_center_aligned_gt(self):
+        """Two GTs with IDENTICAL plain IoU against the predicted box; the
+        center-aligned one has higher CIoU. Plain-IoU argmax would tie and
+        pick index 0 (the offset GT, listed first); CIoU must pick index 1."""
+        B, A, C, M = 1, 16, 3, 2
+        # All anchors predict the same box [0,0,12,12] (area 144).
+        pd_bboxes = tf.tile(tf.constant([[[0., 0., 12., 12.]]]), [B, A, 1])
+        pd_scores = tf.fill([B, A, C], 0.5)
+        # Anchor grid inside both GTs (spatial candidates for both).
+        xs = tf.constant([3., 5., 7., 9.])
+        gx, gy = tf.meshgrid(xs, xs)
+        anc_points = tf.stack([tf.reshape(gx, [-1]), tf.reshape(gy, [-1])], -1)
+        # GT0 offset [2,2,12,12]: inter 100, union 144 -> IoU 100/144, center
+        # offset sqrt(2). GT1 centered [1,1,11,11]: inter 100, union 144 ->
+        # SAME IoU, zero center offset -> higher CIoU.
+        gt_bboxes = tf.constant([[[2., 2., 12., 12.], [1., 1., 11., 11.]]])
+        gt_labels = tf.constant([[0, 1]], dtype=tf.int64)
+        mask_gt = tf.ones([B, M], dtype=tf.bool)
+
+        assigner = TaskAlignedAssigner(topk=10)
+        target_labels, _, _, _, _, fg_mask = assigner(
+            pd_scores, pd_bboxes, anc_points,
+            gt_labels, gt_bboxes, mask_gt,
+            gt_polys=tf.zeros([B, M, 72]), gt_dists=tf.zeros([B, M]),
+        )
+        fg_labels = tf.boolean_mask(target_labels[0], fg_mask[0])
+        self.assertGreater(int(tf.size(fg_labels)), 0)
+        # Every contested anchor must resolve to GT1 (class 1, higher CIoU).
+        self.assertTrue(bool(tf.reduce_all(fg_labels == 1)),
+                        f"expected all class 1, got {fg_labels.numpy()}")
+
+
 if __name__ == "__main__":
     unittest.main()

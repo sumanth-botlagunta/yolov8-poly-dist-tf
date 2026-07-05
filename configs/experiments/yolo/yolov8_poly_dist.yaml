@@ -163,17 +163,21 @@ task:
         mosaic_frequency: 0.5
         mixup_frequency: 0.0
         mosaic_center: 0.25
-        # Scale augmentation matches the original codebase: each mosaic tile is
-        # placed at an INDEPENDENT random scale (tile_scale_*), so one mosaic
-        # carries 4 different object scales (intra-image scale diversity), and
-        # the canvas->output warp gain (aug_scale_*) compounds on top —
-        # per-object effective scale spans ~[0.16, 3.6]x. Set tile_scale_* to
-        # 0/0 for the previous consistent upright placement ([0.5, 1.5] warp
-        # gain was the stock-YOLO setting used with it).
+        # Geometric augmentation = verified original-codebase parity: mosaics
+        # get ONE canvas->output warp with scale gain [0.4, 1.9] and NOTHING
+        # else (no rotation — the original hard-disabled it; no translate; no
+        # shear/perspective). Non-mosaic singles get NO scale gain and a small
+        # translate (parser.aug_scale_min/max=1.0 + parser.aug_rand_translate
+        # below, wired to the Mosaic module's single path). Flip happens
+        # per-TILE inside the mosaic (independent per tile) and per single
+        # image — the assembled canvas is never mirrored.
         aug_scale_min: 0.4
         aug_scale_max: 1.9
-        tile_scale_min: 0.4
-        tile_scale_max: 1.9
+        # Per-tile independent scale: OFF pending the original's per-tile
+        # jitter magnitude (`random_crop` in its mosaic op — unresolved); the
+        # confirmed original scale variety is the [0.4, 1.9] whole-canvas warp.
+        tile_scale_min: 0.0
+        tile_scale_max: 0.0
         mosaic_crop_mode: scale
         area_thresh: 0.5
         jitter: 0.0
@@ -185,16 +189,14 @@ task:
         # The post-unbatch shuffle buffer (3072, input_reader.py) disperses the
         # recurrences ~24 batches apart so same-batch reuse is rare.
         decodes_per_output: 1
-        # random_perspective (full-affine) strength applied after mosaic assembly
-        # AND to non-mosaic single images. These are the LIVE affine knobs (forwarded
-        # to Mosaic in data_pipeline/input_reader.py); aug_rand_translate above is NOT
-        # the affine translate. Images are upright by default: rotation fires only on
-        # rotate_prob of outputs (±degrees), shear is off (0), so the mosaic shows
-        # upright panels cut at the shifting split center.
-        degrees: 10.0
-        rotate_prob: 0.10
+        # Mosaic-path affine knobs (the single path uses the parser-level
+        # values). Original-codebase parity: rotation fully OFF (rotate_prob
+        # 0 — the original disabled mosaic rotation in code because polygon
+        # rotation was unimplemented), translate 0, shear 0.
+        degrees: 0.0
+        rotate_prob: 0.0
         shear: 0.0
-        translate: 0.1
+        translate: 0.0
     distance_data:
       tfds_name: "servingbot_polygon:1.0.1"
       tfds_split: train

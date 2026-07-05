@@ -310,6 +310,87 @@ class TestPerTileScale(unittest.TestCase):
         self.assertIn("tile_scale_max=mosaic_cfg.tile_scale_max", src)
 
 
+class TestFlipOwnershipAndSinglePath(unittest.TestCase):
+    """Flip lives inside the Mosaic module (per tile / per single image), and
+    the non-mosaic path uses its own scale/translate params."""
+
+    def _asym_group(self, G=4, h=32, w=32):
+        """Group whose images are bright on the LEFT half (value 200 vs 10)."""
+        half = tf.concat([tf.fill([h, w // 2, 3], tf.constant(200, tf.uint8)),
+                          tf.fill([h, w - w // 2, 3], tf.constant(10, tf.uint8))],
+                         axis=1)
+        g = _make_group(G, h=h, w=w)
+        g["image"] = tf.stack([half] * G)
+        # box hugging the bright (left) side: yxyx = [0.2, 0.05, 0.8, 0.45]
+        box = tf.constant([[0.2, 0.05, 0.8, 0.45]], dtype=tf.float32)
+        g["groundtruth_boxes"] = tf.stack([box] * G)
+        return g
+
+    def test_single_flip_consistent_and_both_orientations_occur(self):
+        m = _identity_mosaic(out=32, freq=0.0, group_size=4, center=0.0,
+                             random_flip=True)
+        fn = m.mosaic_fn(is_training=True)
+        saw_flipped, saw_upright = False, False
+        for seed in range(12):
+            tf.random.set_seed(seed)
+            res = fn(self._asym_group())
+            imgs = res["image"].numpy()
+            boxes = res["groundtruth_boxes"].numpy()
+            for k in range(imgs.shape[0]):
+                left_bright = imgs[k, :, :16, 0].mean() > imgs[k, :, 16:, 0].mean()
+                xmin, xmax = boxes[k, 0, 1], boxes[k, 0, 3]
+                if left_bright:
+                    saw_upright = True
+                    self.assertLess(xmax, 0.55, "box didn't stay on bright side")
+                else:
+                    saw_flipped = True
+                    self.assertGreater(xmin, 0.45, "box didn't flip with image")
+        self.assertTrue(saw_flipped and saw_upright,
+                        "expected both orientations across seeds")
+
+    def test_mosaic_tiles_flip_independently(self):
+        # freq=1, fixed center -> TL quadrant of the output shows the TL
+        # tile's bottom-right corner (dark when upright, bright when flipped).
+        m = _identity_mosaic(out=32, freq=1.0, group_size=4, center=0.0,
+                             random_flip=True)
+        fn = m.mosaic_fn(is_training=True)
+        states = set()
+        for seed in range(16):
+            tf.random.set_seed(seed)
+            img = fn(self._asym_group())["image"].numpy()[0]
+            states.add(img[:16, :16, 0].mean() > 100)  # TL region bright?
+            if len(states) == 2:
+                break
+        self.assertEqual(states, {True, False},
+                         "TL tile never appeared in both orientations")
+
+    def test_single_path_uses_its_own_scale_params(self):
+        # Module warp bounds 0.5 (would shrink), single path pinned to 1.0 ->
+        # non-mosaic output must be the identity passthrough.
+        m = Mosaic(
+            output_size=[32, 32], mosaic_frequency=0.0, with_polygons=True,
+            aug_scale_min=0.5, aug_scale_max=0.5,
+            single_scale_min=1.0, single_scale_max=1.0, single_translate=0.0,
+            degrees=0.0, shear=0.0, perspective=0.0, translate=0.0,
+            mosaic_center=0.0, area_thresh=0.0,
+            group_size=4, decodes_per_output=1,
+        )
+        res = m.mosaic_fn(is_training=True)(_make_group(4))
+        np.testing.assert_allclose(
+            res["groundtruth_boxes"].numpy()[0],
+            [[0.25, 0.25, 0.75, 0.75]], atol=1e-2,
+            err_msg="single path did not use single_scale (1.0)")
+
+    def test_input_reader_wires_single_params_and_flip(self):
+        import inspect
+        from data_pipeline import input_reader
+        src = inspect.getsource(input_reader)
+        self.assertIn("single_scale_min=parser_cfg.aug_scale_min", src)
+        self.assertIn("single_scale_max=parser_cfg.aug_scale_max", src)
+        self.assertIn("single_translate=parser_cfg.aug_rand_translate", src)
+        self.assertIn("random_flip=parser_cfg.random_flip and not is_training", src)
+
+
 class TestWindowShifts(unittest.TestCase):
     """Source-selection invariants of the Sidon-shift draw (see _SIDON_SHIFTS).
 

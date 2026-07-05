@@ -5,7 +5,8 @@ They are *discriminating* tests — written to FAIL against an implementation th
 the reference behavior and PASS once it is restored:
 
     2.1  Soft classification targets are scaled by the GT's localization quality
-         (``pos_overlaps`` = per-GT max IoU), not normalized to a flat max of 1.0.
+         (``pos_overlaps`` = per-GT max CIoU, clamped at 0), not normalized to a
+         flat max of 1.0.
          Ultralytics: ``target_scores *= align_metric * pos_overlaps / pos_align_metrics``.
 
     2.2  Box CIoU and DFL losses are weighted per-anchor by ``sum(target_scores, -1)``
@@ -30,11 +31,16 @@ class TestAssignerPosOverlaps(unittest.TestCase):
 
     def test_target_scores_scaled_by_pos_overlaps(self):
         # Single GT box [0,0,40,40] (area 1600). Every prediction is [0,0,40,20]
-        # (area 800) → intersection 800, union 1600 → IoU exactly 0.5 for all anchors.
+        # (area 800) → intersection 800, union 1600 → plain IoU 0.5 for all anchors.
+        # The overlap metric is CIoU (reference: bbox_iou(..., CIoU=True)):
+        #   center penalty  rho2/c2 = ((20-20)^2 + (20-10)^2) / (40^2 + 40^2) = 0.03125
+        #   aspect penalty  v = (4/pi^2)(atan(40/40) - atan(40/20))^2 = 0.041926
+        #                   alpha_v·v = v^2 / (1 - 0.5 + v) = 0.003243
+        #   CIoU = 0.5 - 0.03125 - 0.003243 = 0.465501
         # All four anchor centers sit inside the GT box, so every anchor is a positive
         # with identical alignment. The normalized alignment is therefore 1.0 for all,
         # and the only thing that can pull the soft target below 1.0 is the pos_overlaps
-        # (max-IoU = 0.5) factor. Reference behavior ⇒ max soft target == 0.5.
+        # (max-CIoU = 0.465501) factor. Reference behavior ⇒ max soft target == 0.4655.
         assigner = TaskAlignedAssigner(topk=10, alpha=0.5, beta=6.0)
         B, A, C = 1, 4, 3
         gt_bboxes = tf.constant([[[0.0, 0.0, 40.0, 40.0]]], dtype=tf.float32)
@@ -54,8 +60,9 @@ class TestAssignerPosOverlaps(unittest.TestCase):
 
         self.assertTrue(tf.reduce_any(fg_mask).numpy(), "expected some foreground anchors")
         max_score = float(tf.reduce_max(target_scores))
-        # Reference: scaled by pos_overlaps (=0.5). Buggy (no pos_overlaps): would be 1.0.
-        self.assertAlmostEqual(max_score, 0.5, places=3)
+        # Reference: scaled by pos_overlaps (= CIoU 0.4655). Buggy variants: 1.0
+        # (no pos_overlaps factor) or 0.5 (plain-IoU overlaps instead of CIoU).
+        self.assertAlmostEqual(max_score, 0.4655, places=3)
 
     def test_higher_iou_gt_gets_higher_soft_target(self):
         # Two GTs in two images: image 0's prediction matches its GT better (higher IoU)
