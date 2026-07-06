@@ -2,10 +2,12 @@
 
 Validates:
     - Shadow variables are created with correct initial values.
-    - Dynamic decay formula: min(0.9999, (1+step)/(10+step)).
+    - Dynamic decay formula: average_decay * (1 - exp(-step/2000)).
     - swap_in loads EMA weights; swap_out restores the originals exactly.
     - apply_gradients delegates to base optimizer and updates shadows.
 """
+
+import math
 
 import numpy as np
 import tensorflow as tf
@@ -39,12 +41,22 @@ class TestExponentialMovingAverage(unittest.TestCase):
             np.testing.assert_allclose(var.numpy(), shadow.numpy())
 
     def test_dynamic_decay_at_step_zero(self):
-        """At step 0 decay = (1+0)/(10+0) = 0.1, well below 0.9999."""
+        """At step 0 decay = 0.9999*(1-exp(0)) = 0: the shadow copies the live
+        weights exactly until training has actually stepped."""
         model = _make_tiny_model()
         model(tf.zeros([1, 4]))
         ema = _make_ema(model, dynamic_decay=True)
         decay = float(ema._get_decay())
-        self.assertAlmostEqual(decay, 1.0 / 10.0, places=5)
+        self.assertAlmostEqual(decay, 0.0, places=6)
+
+    def test_dynamic_decay_ramp_value(self):
+        """One time constant in (step=2000): decay = 0.9999*(1-exp(-1))."""
+        model = _make_tiny_model()
+        model(tf.zeros([1, 4]))
+        ema = _make_ema(model, dynamic_decay=True)
+        ema._ema_step.assign(2_000)
+        decay = float(ema._get_decay())
+        self.assertAlmostEqual(decay, 0.9999 * (1.0 - math.exp(-1.0)), places=5)
 
     def test_dynamic_decay_at_large_step(self):
         """At large step count decay saturates to average_decay=0.9999."""

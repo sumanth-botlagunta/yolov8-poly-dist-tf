@@ -75,6 +75,11 @@ class DecoderConfig:
 @dataclasses.dataclass
 class HeadConfig:
     smart_bias: bool = True
+    # Head activation. "same" inherits norm_activation.activation. The original
+    # codebase hardcoded swish in the backbone/decoder specs while the head used
+    # the config activation (relu) — this field lets the head diverge from the
+    # trunk the same way (trunk swish + head relu).
+    activation: str = "same"
 
 
 @dataclasses.dataclass
@@ -83,6 +88,12 @@ class DetectionGeneratorConfig:
     nms_thresh: float = 0.65
     score_thresh: float = 0.05
     nms_type: str = "greedy"
+    # NMS suppression scope: "per_class" runs NMS independently per class (two
+    # overlapping boxes of different classes both survive); "agnostic" runs ONE
+    # NMS over all boxes regardless of class (the original codebase's mode —
+    # cross-class duplicates at the same location are suppressed). Eval-time
+    # post-processing only; no effect on training.
+    nms_class_mode: str = "per_class"
     pre_nms_points: int = 30000
     min_distance: float = 0.5
     max_distance: float = 10.0

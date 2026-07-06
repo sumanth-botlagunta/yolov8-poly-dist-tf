@@ -26,6 +26,11 @@ A TensorFlow reimplementation of YOLOv8 with two extensions beyond standard dete
 2. **Distance estimation** from a separate dataset merged at the batch level
 
 Input: 672×672×3, Backbone: CSPDarkNetV8-S, 39 classes, 6 output heads (box, cls, poly_angle, poly_dist, poly_conf, dist).
+Activations are split (original-codebase parity): **swish** in the backbone + decoder
+(`norm_activation.activation`), **relu** in the head (`model.head.activation`; `same`
+inherits the trunk). Activation layers carry no weights, so checkpoints load across
+this setting — but the semantics differ: weights trained under one activation are
+garbage under another (swish-trained warm starts require the swish trunk).
 
 Three config-driven tiers share the same code:
 
@@ -116,7 +121,7 @@ Distance loss: L1 on log-scale, masked to samples where `gt_distance > -10.0` (i
 
 ### Optimizer
 
-SGD with Nesterov momentum (0.937), cosine LR decay (initial=0.01, alpha=0.01) over the full `train_steps` (`optimizers/sgd_warmup.py`). EMA with dynamic decay: `min(0.9999, (1+step)/(10+step))` (`optimizers/ema.py`). EMA weights are swapped in for evaluation and swapped back afterward.
+SGD with Nesterov momentum (0.937), cosine LR decay (initial=0.01, alpha=0.01) over the full `train_steps` (`optimizers/sgd_warmup.py`). EMA with dynamic decay: `0.9999 × (1 − exp(−step/2000))` — the YOLOv5-style exponential ramp the original codebase used (`optimizers/ema.py`). EMA weights are swapped in for evaluation and swapped back afterward.
 
 The optimizer and LR schedule are **config-selectable** via a registry (`optimizers/factory.py`): `optimizer.type` = `sgd` (default; `sgd_torch` is an accepted alias) / `adamw` / `adam`; `learning_rate.type` = `cosine` (default) / `linear` / `step` / `polynomial` / `constant`, plus an optional linear LR-warmup. Defaults reproduce the SGD+cosine path byte-identically. Gradient clipping is `task.gradient_clip_norm` (SGD clips per-call; keras optimizers set `global_clipnorm`).
 
@@ -218,6 +223,16 @@ Run with `/test` or `pytest tests/unit tests/smoke -v`.
 - **Copy-Paste order**: applied on decoded data *before* Mosaic
 - **Copy-Paste source**: separate TFDS `cleaner_copy_paste:1.0.0` with RGBA images (4-channel alpha mask)
 - **Crowd handling**: `skip_crowd_during_training=True` filters at parse time; `ignore_bg` flag masks class loss at loss time
+- **Trunk/head activation split**: `norm_activation.activation` (swish in all tier YAMLs) feeds
+  backbone + decoder; `model.head.activation` (relu; `same` = inherit) feeds the head — mirroring
+  the original codebase, whose backbone/decoder specs hardcoded swish while the config's relu only
+  reached the head. Train-semantics: checkpoints load across activation settings (no weights in
+  activation layers) but are only meaningful under the activation they were trained with.
+- **NMS suppression scope is config-selectable** (`detection_generator.nms_class_mode`): `per_class`
+  (default) vs `agnostic` (one NMS over all classes — the original codebase's mode). Eval-time only.
+  Measured head-to-head (`tools/compare_nms_modes.py`): agnostic loses recall on region classes that
+  legitimately contain other objects (bathroom/entrance/doorway) — more than its precision gain —
+  so `per_class` stays the default.
 - **Smart bias init**: class bias = `log(5 / num_classes / (input_size/stride)^2)`; box bias = 1.0
   (`input_size` is the live model input, 672 — matches all checkpoints, which are 672×672)
 - **Seed-init (fresh runs only)**: two mutually-exclusive, resume-skipped paths in `task.initialize` (`train/task.py`). `task.finetune_from` = **fine-tuning** (same task): loads the FULL model from a trained `ckpt-N`'s EMA/deployed weights (`restore_eval_weights`) into a fresh optimizer/EMA/step. `task.init_checkpoint` = **transfer-init**: loads only the selected modules (default backbone + decoder; head randomly initialized) via `migrate_checkpoint`. The trainer skips both when a resumable checkpoint exists (`_will_resume`) — so a dropped fine-tune just resumes normally. `--finetune_from` CLI overrides the config field.

@@ -6,8 +6,9 @@ Converts raw head outputs to final detections:
     3. Normalize to [0, 1] in yxyx format.
     4. Apply sigmoid to class logits.
     5. Apply top-1 class masking (each anchor keeps only its highest-scoring class).
-    6. Run per-class greedy NMS (score_threshold=0.05, iou_threshold=0.65).
-    7. Merge all classes, sort by score, keep top-max_boxes.
+    6. Run greedy NMS (score_threshold=0.05, iou_threshold=0.65) — either
+       independently per class or once class-agnostically (``nms_class_mode``).
+    7. Merge survivors, sort by score, keep top-max_boxes.
     8. Apply polygon activations: softplus(dist), sigmoid(angle), sigmoid(conf).
     9. Decode distance: exp(log_dist), clamped to [min_distance, max_distance].
 
@@ -28,10 +29,15 @@ _LEVEL_STRIDES = {"3": 8, "4": 16, "5": 32}
 class YoloV8Layer:
     """Post-processing layer converting raw head output to detections.
 
-    Uses per-class NMS matching the old-codebase behavior:
-    - Top-1 class masking zeroes out all classes except the argmax per anchor.
-    - NMS is run independently per class (no cross-class suppression).
-    - score_threshold=0.05 filters boxes before each per-class NMS.
+    Top-1 class masking zeroes out all classes except the argmax per anchor;
+    score_threshold=0.05 filters boxes before NMS. The suppression scope is
+    selected by ``nms_class_mode``:
+
+    - ``per_class``: NMS runs independently per class — two overlapping boxes
+      with different argmax classes never suppress each other.
+    - ``agnostic``: ONE NMS over all boxes regardless of class (the original
+      codebase's mode) — at each location only the highest-scored box survives,
+      so cross-class duplicates are removed.
 
     Output predictions schema:
         bbox:           float32 [batch, max_boxes, 4]     yxyx normalized [0,1]
@@ -51,16 +57,23 @@ class YoloV8Layer:
         score_thresh: float = 0.05,
         pre_nms_points: int = 30000,
         nms_type: str = "greedy",
+        nms_class_mode: str = "per_class",
         reg_max: int = 16,
         output_poly_size: int = 24,
         min_distance: float = 0.5,
         max_distance: float = 10.0,
     ):
+        if nms_class_mode not in ("per_class", "agnostic"):
+            raise ValueError(
+                f"nms_class_mode must be 'per_class' or 'agnostic', got "
+                f"'{nms_class_mode}'."
+            )
         self.input_image_size = input_image_size[:2]   # [H, W]
         self.num_classes      = num_classes
         self.max_boxes        = max_boxes
         self.nms_thresh       = nms_thresh
         self.score_thresh     = score_thresh
+        self.nms_class_mode   = nms_class_mode
         self.pre_nms_points   = pre_nms_points
         self.reg_max          = reg_max
         self.output_poly_size = output_poly_size
@@ -123,44 +136,63 @@ class YoloV8Layer:
         poly_conf:  Optional[tf.Tensor],
         distance:   Optional[tf.Tensor],   # [N] or None
     ) -> Tuple[tf.Tensor, ...]:
-        """Per-class NMS with top-1 masking for one image.
+        """NMS with top-1 masking for one image.
 
         Steps:
             1. Top-1 masking: zero out all classes except argmax per anchor.
-            2. For each class c: NMS with score_threshold=self.score_thresh.
-            3. Merge all classes, sort by score, pad to max_boxes.
+            2. NMS with score_threshold=self.score_thresh — per class
+               (``per_class``) or once over all boxes (``agnostic``).
+            3. Merge survivors, sort by score, pad to max_boxes.
         """
         # Top-1 class masking
         top_class     = tf.argmax(scores, axis=-1)                         # [N]
         one_hot       = tf.one_hot(top_class, self.num_classes, dtype=tf.float32)  # [N, nc]
         scores_masked = scores * one_hot                                    # [N, nc]
 
-        # Per-class NMS
-        c_boxes, c_scores, c_classes = [], [], []
-        c_pa, c_pd, c_pc, c_di = [], [], [], []
-
-        for c in range(self.num_classes):
-            cs      = scores_masked[:, c]   # [N]
+        if self.nms_class_mode == "agnostic":
+            # ONE NMS over all boxes: each anchor competes with its argmax-class
+            # score; overlapping boxes suppress each other regardless of class.
+            cs      = tf.reduce_max(scores_masked, axis=-1)   # [N] argmax-class score
             nms_idx = tf.image.non_max_suppression(
                 boxes, cs,
                 max_output_size=self.max_boxes,
                 iou_threshold=self.nms_thresh,
                 score_threshold=self.score_thresh,
             )
-            c_boxes.append(tf.gather(boxes, nms_idx))
-            c_scores.append(tf.gather(cs, nms_idx))
-            c_classes.append(tf.fill([tf.shape(nms_idx)[0]], tf.cast(c, tf.int64)))
-            if poly_angle is not None:
-                c_pa.append(tf.gather(poly_angle, nms_idx))
-                c_pd.append(tf.gather(poly_dist,  nms_idx))
-                c_pc.append(tf.gather(poly_conf,  nms_idx))
-            if distance is not None:
-                c_di.append(tf.gather(distance, nms_idx))
+            m_boxes   = tf.gather(boxes, nms_idx)             # [?, 4]
+            m_scores  = tf.gather(cs, nms_idx)                # [?]
+            m_classes = tf.gather(top_class, nms_idx)         # [?]
+            c_pa = [tf.gather(poly_angle, nms_idx)] if poly_angle is not None else []
+            c_pd = [tf.gather(poly_dist,  nms_idx)] if poly_angle is not None else []
+            c_pc = [tf.gather(poly_conf,  nms_idx)] if poly_angle is not None else []
+            c_di = [tf.gather(distance,   nms_idx)] if distance   is not None else []
+        else:
+            # Per-class NMS
+            c_boxes, c_scores, c_classes = [], [], []
+            c_pa, c_pd, c_pc, c_di = [], [], [], []
 
-        # Merge survivors from all classes
-        m_boxes   = tf.concat(c_boxes,   axis=0)   # [?, 4]
-        m_scores  = tf.concat(c_scores,  axis=0)   # [?]
-        m_classes = tf.concat(c_classes, axis=0)   # [?]
+            for c in range(self.num_classes):
+                cs      = scores_masked[:, c]   # [N]
+                nms_idx = tf.image.non_max_suppression(
+                    boxes, cs,
+                    max_output_size=self.max_boxes,
+                    iou_threshold=self.nms_thresh,
+                    score_threshold=self.score_thresh,
+                )
+                c_boxes.append(tf.gather(boxes, nms_idx))
+                c_scores.append(tf.gather(cs, nms_idx))
+                c_classes.append(tf.fill([tf.shape(nms_idx)[0]], tf.cast(c, tf.int64)))
+                if poly_angle is not None:
+                    c_pa.append(tf.gather(poly_angle, nms_idx))
+                    c_pd.append(tf.gather(poly_dist,  nms_idx))
+                    c_pc.append(tf.gather(poly_conf,  nms_idx))
+                if distance is not None:
+                    c_di.append(tf.gather(distance, nms_idx))
+
+            # Merge survivors from all classes
+            m_boxes   = tf.concat(c_boxes,   axis=0)   # [?, 4]
+            m_scores  = tf.concat(c_scores,  axis=0)   # [?]
+            m_classes = tf.concat(c_classes, axis=0)   # [?]
 
         # Sort by score descending, keep top-max_boxes
         sort_idx = tf.argsort(m_scores, direction='DESCENDING')

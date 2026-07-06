@@ -10,7 +10,8 @@ Architecture stages:
     P4:   Conv(256, 3x3, s=2) → C2f(256, n=2)          stride 16 → level '4'
     P5:   Conv(512, 3x3, s=2) → C2f(512, n=1) → SPPF   stride 32 → level '5'
 
-All convolutions use BN + activation (default: relu per experiment config).
+All convolutions use BN + activation (config-driven via norm_activation.activation;
+the experiment YAMLs set swish for the trunk, matching the original codebase).
 
 Classes:
     _ConvBnAct: Conv2D + BatchNormalization + Activation (shared across models/).

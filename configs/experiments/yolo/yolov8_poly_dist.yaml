@@ -26,7 +26,10 @@ task:
   per_category_metrics: true
 
   norm_activation:
-    activation: relu
+    # Trunk (backbone + decoder) activation. The original codebase hardcoded
+    # swish in its backbone/decoder layer specs; its config activation (relu)
+    # only ever applied to the head (see model.head.activation below).
+    activation: swish
     norm_epsilon: 0.001
     norm_momentum: 0.97
     use_sync_bn: false
@@ -57,6 +60,9 @@ task:
         model_id: null
     head:
       smart_bias: true
+      # Head activation ("same" would inherit the trunk's swish). The original
+      # codebase's head used the config activation: relu.
+      activation: relu
     anchor_boxes:
       anchors_per_scale: 1
       boxes: [[1, 1]]

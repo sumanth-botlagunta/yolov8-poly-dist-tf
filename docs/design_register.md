@@ -158,3 +158,43 @@ implementation defects:
   shared by decode-viz and the eval metric so they cannot drift — but tuning eval recall also moves the
   TensorBoard overlays. If the conf operating point is ever retuned, consider promoting it to a config
   field.
+
+## 15. Trunk swish / head relu activation split
+
+`norm_activation.activation` (set to **swish** in every tier YAML) drives the backbone and
+decoder; `model.head.activation` (**relu**; `same` inherits the trunk) drives the head. This
+mirrors the original codebase exactly: its backbone/decoder layer specs hardcoded swish, and its
+config activation (relu) only ever reached the head. Running the whole network on relu — the
+previous state here — is a different model family from the one the reference recipe (LR, gains,
+weight decay) was tuned for, and it silently invalidates any warm start from swish-trained
+weights: activation layers hold no variables, so such a checkpoint *loads* cleanly into a relu
+graph but produces garbage features (empirically: a migrated swish-trained checkpoint evaluated
+near zero under the relu graph). Consequences:
+
+- **Train-semantics.** Do not flip activation settings on a run in flight; checkpoints are only
+  meaningful under the activation they were trained with.
+- The default `init_checkpoint` warm start (legacy backbone+decoder weights) is swish-trained —
+  it is only a real warm start when the trunk is swish.
+
+## 16. EMA dynamic decay is the exponential ramp
+
+`decay = average_decay × (1 − exp(−step/2000))` (`optimizers/ema.py`), the YOLOv5-style ramp the
+original codebase used. Decay starts at 0 (shadow = live weights), passes ~0.63×average_decay at
+one time constant (2000 steps), and is within 1% of `average_decay` by ~10k steps. The earlier
+hyperbolic form (`min(average_decay, (1+step)/(10+step))`) saturated much later — the eval
+weights averaged over a shorter horizon through the mid-training epochs, which skews mid-run
+val-curve comparisons against reference runs even though the final converged numbers barely
+differ. Eval-side only (the EMA never feeds back into training), but the swap changes which
+weights are checkpointed as eval weights — treat as fresh-run.
+
+## 17. Per-class NMS kept over class-agnostic (measured, not assumed)
+
+The original codebase ran class-agnostic NMS (one suppression pass over all classes). Ours is
+per-class (after top-1 masking), selectable via `detection_generator.nms_class_mode`. A
+head-to-head on one checkpoint (`tools/compare_nms_modes.py`, same raw predictions through both
+modes) showed agnostic **worse** overall on this data: the precision gain from removing
+cross-class duplicates is smaller than the recall loss on region classes that legitimately
+contain other objects (bathroom / entrance / doorway boxes get suppressed by the higher-scored
+objects inside them). Indoor scenes are full of nested different-class objects, so per-class
+suppression is the correct scope here; `per_class` remains the default and `agnostic` stays
+available for diagnostics.
