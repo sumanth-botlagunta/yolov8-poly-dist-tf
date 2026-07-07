@@ -153,7 +153,7 @@ def polygon_conf_loss(
     observed in validation overlays (e.g. the doorway class). Training conf on
     all 24 bins restores the negative signal so empty bins are pushed to 0.
 
-    The previous (masked, legacy-aligned) form is preserved here;
+    The previous (masked) form is preserved here;
     restore it by swapping the per_anchor line:
 
         # MASKED FORM — mean over the valid vertices only (vertex_mask equals

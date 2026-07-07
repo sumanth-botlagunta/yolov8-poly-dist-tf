@@ -71,22 +71,18 @@ remap (`SERVINGBOT_CLASS_REMAP`) applied at decode.
 
 ## Pre-resized 672² variants (optional, faster)
 
-Decode + resize of full-resolution images can bottleneck the pipeline. `reencode_tfds_672`
-builds `<name>_672` copies storing 672² JPEG plus `orig_height`/`orig_width` (which
-`PolygonDecoder` prefers for copy-paste scaling):
-
-```bash
-python -m tools.pipeline.reencode_tfds_672 --datasets cleaner_polygon2026:2.0.0 --data_dir <tfds_data_dir>
-```
-
-Then point the YAML at the `_672` names (the commented switch-over lines are already in the
-tier YAMLs). **Detection sets only** — the distance parser letterboxes (aspect-preserving), so
+Decode + resize of full-resolution images can bottleneck the pipeline. Pre-resized `<name>_672`
+dataset copies store 672² JPEG plus `orig_height`/`orig_width` (which `PolygonDecoder` prefers
+for copy-paste scaling). If such variants exist under `tfds_data_dir`, point the YAML at the
+`_672` names (the commented switch-over lines are already in the tier YAMLs).
+**Detection sets only** — the distance parser letterboxes (aspect-preserving), so
 `servingbot_polygon` must stay full-resolution.
 
 ## Init checkpoint
 
 The shipped configs warm-start backbone + decoder from
-`task.init_checkpoint: initial_checkpoint_folder/ckpt-920304` (a legacy checkpoint). Provide that
-checkpoint (or migrate/warm-start from your own — see
-[checkpoint_migration.md](checkpoint_migration.md)), or set `init_checkpoint: null` to train from
-scratch.
+`task.init_checkpoint: initial_checkpoint_folder/ckpt-920304`. `init_checkpoint` must be a
+checkpoint produced by this codebase; the selected modules (`init_checkpoint_modules`, default
+backbone + decoder) are restored via the EMA-aware full-model loader while the rest keep their
+fresh init (see [configuration.md](configuration.md)). Provide that checkpoint, or set
+`init_checkpoint: null` to train from scratch.

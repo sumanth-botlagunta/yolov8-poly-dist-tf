@@ -25,8 +25,8 @@ Input Schema (CONTRACT — read before serving):
     via train.task.normalize_images (uint8 [0,255] → float32 [0,1]) BEFORE calling
     the model; a served caller must do the same. Feeding raw [0,255] floats produces
     silently wrong detections. This normalization is intentionally left OUT of the
-    serving graph (see docs/design_register.md) so the contract matches eval.py and
-    is not double-applied; divide camera/OpenCV uint8 frames by 255 before calling.
+    serving graph so the contract matches eval.py and is not double-applied;
+    divide camera/OpenCV uint8 frames by 255 before calling.
 
 Output Schema:
     With model.deploy=True the SavedModel runs NMS in-graph and returns a dict of
@@ -107,8 +107,8 @@ def main(_):
         # CONTRACT: `images` must be float32 pre-normalized to [0, 1]. The model has
         # no internal /255 (models/yolo_v8.py); normalization is done by
         # train.task.normalize_images on every other call path and is intentionally
-        # NOT baked in here (docs/design_register.md). Feeding [0,255] floats yields
-        # silently wrong detections.
+        # NOT baked in here, so it can never be double-applied. Feeding [0,255]
+        # floats yields silently wrong detections.
         tf.TensorSpec(shape=[None, H, W, 3], dtype=tf.float32, name='images_normalized_0_1')
     ])
     def serving_fn(images):

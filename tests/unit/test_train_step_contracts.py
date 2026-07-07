@@ -1,9 +1,11 @@
-"""Pinning tests for training-critical bughunt fixes.
+"""Pinning tests for training-critical behavior contracts.
 
-These pin fixes that change training semantics; keep them green so the bugs
-cannot silently regress:
+These pin behaviors that affect training semantics; keep them green so the
+bugs cannot silently regress:
 
-  - copy_paste polygon validity uses the > -1.0 sentinel (design_register #10)
+  - copy_paste polygon validity uses the > -1.0 sentinel (-1.0 is the only
+    reserved padding value; a >= 0.0 gate drops real negative-coordinate
+    vertices and corrupts the polygon GT)
   - TAL assigner fallback poly_size derives from angle_step (not hardcoded 72)
   - polygon_conf_loss does not train conf=0 on distance-stream fg anchors
     (ignore_bg guard in _polygon_loss)
@@ -22,7 +24,7 @@ from losses.tal_loss import TaskAlignedLossExtended
 
 
 # ---------------------------------------------------------------------------
-# copy_paste sentinel (bugs #7 / #8)
+# copy_paste sentinel
 # ---------------------------------------------------------------------------
 
 def test_copy_paste_uses_minus_one_sentinel():
@@ -66,7 +68,7 @@ def test_copy_paste_keeps_negative_vertex():
 
 
 # ---------------------------------------------------------------------------
-# TAL assigner poly_size from angle_step (bug #9)
+# TAL assigner poly_size from angle_step
 # ---------------------------------------------------------------------------
 
 def _run_assigner(assigner, B=2, A=64, M=5, C=39):
@@ -100,7 +102,7 @@ def test_loss_wires_angle_step_to_assigner():
 
 
 # ---------------------------------------------------------------------------
-# polygon conf ignore_bg guard (bug #5)
+# polygon conf ignore_bg guard
 # ---------------------------------------------------------------------------
 
 _A = 4
@@ -137,7 +139,7 @@ def test_distance_stream_fg_gets_zero_conf_gradient():
 
 
 # ---------------------------------------------------------------------------
-# use_acsl fail-loud (bug #6)
+# use_acsl fail-loud
 # ---------------------------------------------------------------------------
 
 def test_use_acsl_true_raises():

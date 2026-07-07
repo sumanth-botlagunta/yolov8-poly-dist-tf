@@ -182,10 +182,6 @@ def _build_sgd(opt_cfg, lr_fn, bias_lr_scale, clip_norm=0.0):
     )
 
 
-# 'sgd_torch' is the type string the existing tier YAMLs use for the SGD optimizer.
-OPTIMIZERS.register('sgd_torch')(_build_sgd)
-
-
 def _keras_clip(clip_norm):
     # keras optimizers clip at construction via global_clipnorm (None = no clipping).
     return {'global_clipnorm': clip_norm} if clip_norm and clip_norm > 0.0 else {}

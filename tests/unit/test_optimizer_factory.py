@@ -4,6 +4,7 @@ The cardinal requirement: the DEFAULTS ('sgd' / 'cosine') must reproduce the pre
 hardcoded path exactly, so an existing config trains byte-identically.
 """
 
+import pytest
 import tensorflow as tf
 
 from configs.model_config import LrScheduleConfig, OptimizerConfig
@@ -52,11 +53,12 @@ def test_constant_is_flat():
     assert abs(float(s(0)) - 0.007) < 1e-7         # at the configured value (float32)
 
 
-def test_sgd_torch_alias_resolves():
-    # the tier YAMLs use type 'sgd_torch'; it must map to the SGDTorch builder
+def test_unknown_optimizer_type_fails_loud():
+    # 'sgd_torch' (a removed alias) and any other unknown type must raise a
+    # clear error instead of silently falling back to a default optimizer.
     lr = factory.build_lr_schedule(LrScheduleConfig())
-    core = factory.build_core_optimizer(OptimizerConfig(type='sgd_torch'), lr, 0.1)
-    assert isinstance(core, SGDTorch)
+    with pytest.raises((KeyError, ValueError)):
+        factory.build_core_optimizer(OptimizerConfig(type='sgd_torch'), lr, 0.1)
 
 
 def test_step_decay_staircase():

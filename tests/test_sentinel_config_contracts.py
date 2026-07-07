@@ -1,7 +1,7 @@
 """Pinning tests for the TRAINING-affecting sentinel/dead-config fixes.
 
-Polygon validity must key off the reserved -1.0 sentinel (`> -1.0`), NOT `>= 0.0`
-(docs/design_register.md entry 10). A legitimately-negative canvas coordinate — an
+Polygon validity must key off the reserved -1.0 sentinel (`> -1.0`), NOT `>= 0.0`.
+A legitimately-negative canvas coordinate — an
 object near an image edge, or a mosaic-overflow vertex that survived clip-to-edge —
 is a REAL vertex and must contribute to the PolyYOLO radial target. The old `>= 0.0`
 test silently DROPPED such vertices, zeroing the conf bin they belong to and biasing
@@ -123,15 +123,16 @@ def test_dead_aug_fields_removed_from_parser_config():
 
 
 def test_old_yaml_with_dead_aug_fields_still_loads():
-    """A legacy config dict carrying aug_rand_angle / aug_rand_perspective must load
-    without error and silently ignore them (no leak onto the dataclass)."""
+    """A config dict still carrying the removed aug_rand_angle / aug_rand_perspective
+    keys must load without error and silently ignore them (no leak onto the
+    dataclass) — existing YAMLs must not break when dead keys are dropped."""
     raw = {
         'task': {
             'train_data': {
                 'parser': {
                     'angle_step': 15,
-                    'aug_rand_angle': 0.0,        # legacy dead key
-                    'aug_rand_perspective': 0.0,  # legacy dead key
+                    'aug_rand_angle': 0.0,        # removed key — must be ignored
+                    'aug_rand_perspective': 0.0,  # removed key — must be ignored
                 },
             },
         },

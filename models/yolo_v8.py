@@ -157,10 +157,6 @@ def build_yolov8(config: ModelConfig) -> YoloV8:
     )
 
     # --- Head ---
-    # The head activation can diverge from the trunk ("same" inherits it): the
-    # original codebase ran a swish backbone/decoder with a relu head.
-    head_activation = (na.activation if config.head.activation == "same"
-                       else config.head.activation)
     head_cls = HEADS.get("yolov8_head")
     head = head_cls(
         num_classes      = config.num_classes,
@@ -171,7 +167,7 @@ def build_yolov8(config: ModelConfig) -> YoloV8:
         smart_bias       = config.head.smart_bias,
         with_polygons    = config.with_polygons,
         with_distance    = config.with_distance,
-        activation       = head_activation,
+        activation       = na.activation,
         norm_momentum    = na.norm_momentum,
         norm_epsilon     = na.norm_epsilon,
         use_sync_bn      = na.use_sync_bn,
@@ -186,8 +182,6 @@ def build_yolov8(config: ModelConfig) -> YoloV8:
         max_boxes        = dg_cfg.max_boxes,
         nms_thresh       = dg_cfg.nms_thresh,
         score_thresh     = dg_cfg.score_thresh,
-        pre_nms_points   = dg_cfg.pre_nms_points,
-        nms_type         = dg_cfg.nms_type,
         nms_class_mode   = dg_cfg.nms_class_mode,
         reg_max          = 16,
         output_poly_size = config.output_poly_size,

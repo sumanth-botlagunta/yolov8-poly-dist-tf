@@ -1,4 +1,4 @@
-"""Tests for tools/device/export_device_dlc.py — the legacy-DLC drop-in device export.
+"""Tests for tools/device/export_device_dlc.py — the on-device DLC export.
 
 The device DLC contract (from the on-device SNPE tooling, see docs/device_export.md):
     input  node  input_image  float32 [1, 672, 416, 3]  pixels in [0,255]
@@ -140,7 +140,7 @@ def test_top_level_op_names_for_snpe(exported):
 
 
 def test_signature_shapes(exported):
-    """Legacy-DLC node layout: box DFL-decoded to [N,4], others raw [N,C], no batch."""
+    """Device-DLC node layout: box DFL-decoded to [N,4], others raw [N,C], no batch."""
     out_dir, _, head_chan = exported
     fn = tf.saved_model.load(out_dir).signatures["serving_default"]
     img255 = np.random.RandomState(0).uniform(0, 255, [1, H, W, 3]).astype(np.float32)
@@ -230,8 +230,9 @@ def test_graph_is_snpe_compatible(exported):
 
 def test_box_dfl_decode_matches_reference(exported):
     """The baked box DFL decode (reshape→softmax→Σ·bins) must equal the in-repo
-    detection_generator._decode_dfl, per level then concat 3→4→5 — proving the legacy
-    box pipeline is reproduced and the concat layout is correct. Pre-stride.
+    detection_generator._decode_dfl, per level then concat 3→4→5 — proving the baked
+    decode reproduces the in-repo box pipeline and the concat layout is correct.
+    Pre-stride.
 
     The default export uses legacy_box_order=True: it emits [top,left,bottom,right]
     (y-first) to match the on-device box_ops.dist2bbox(ver=1) + (y,x) anchors, so the

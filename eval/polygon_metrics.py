@@ -243,7 +243,7 @@ class PolygonEvaluator:
                             detection may only match a GT of the same class — COCO
                             semantics), so cross-class bbox overlaps no longer inflate
                             poly_recall50. When omitted, matching is class-agnostic
-                            (legacy behaviour, preserved for callers without classes).
+                            (the fallback for callers that do not supply classes).
         """
         B = int(num_detections.shape[0])
         for i in range(B):

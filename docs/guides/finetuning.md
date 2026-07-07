@@ -15,14 +15,11 @@ Three things sound similar but are different. Pick the right one — they load d
 | **Adapt a trained model to new data** (this guide) | **`--finetune_from`** | the model's **EMA/deployed weights** | **fresh** — new LR schedule from step 0 |
 | **Reuse a pretrained backbone for a different task** (new classes / new head) | `init_checkpoint` | only the selected modules (default backbone+decoder; **random head**) | fresh |
 
-**Why fine-tune ≠ init_checkpoint** — two real differences, not just naming:
-1. **Which weights.** The weights that actually perform well are the **EMA shadows** (what `eval`
-   and `export` use), stored under `optimizer/` in a `ckpt-N`. `finetune_from` loads *those*.
-   `init_checkpoint` migrates the raw `model/` weights — fine for a backbone transfer, but for
-   continuing a trained model you'd be starting from *worse* weights.
-2. **What's loaded.** `finetune_from` loads the **whole model** (you're keeping the same task);
-   `init_checkpoint` loads a **subset of modules** and randomly initializes the rest (you're
-   changing the task).
+**Why fine-tune ≠ init_checkpoint** — the difference is **what's loaded**, not which weights:
+both go through the same EMA-aware loader (`restore_eval_weights`, preferring the **EMA
+shadows** — what `eval` and `export` use). `finetune_from` loads the **whole model** (you're
+keeping the same task); `init_checkpoint` loads a **subset of modules** (default
+backbone + decoder) and keeps the fresh random init for the rest (you're changing the task).
 
 So: **same task, want it better on new data → `finetune_from`.** Different task / different classes
 → `init_checkpoint` (see the appendix).
@@ -66,7 +63,7 @@ instead of relearning.
 | schedule (`learning_rate.type`) | `cosine` | `cosine` (decay to a small floor), or `constant` for a short run |
 | `decay_steps` | `steps_per_loop × 300` | **`steps_per_loop × <your epochs>`** (so cosine hits its floor at the end) |
 | `alpha` (cosine floor fraction) | `0.01` | `0.01` |
-| `optimizer.sgd_torch.warmup_steps` | `≈3 × steps_per_loop` (3 epochs) | **small** (e.g. ≤1 epoch) — a long warmup eats a short run |
+| `optimizer.sgd.warmup_steps` | `≈3 × steps_per_loop` (3 epochs) | **small** (e.g. ≤1 epoch) — a long warmup eats a short run |
 
 Recommended fine-tune block (≈20 epochs example):
 ```yaml
@@ -74,7 +71,7 @@ trainer:
   train_epochs: 20
   optimizer_config:
     optimizer:
-      sgd_torch: { warmup_steps: 500 }       # short warmup for a short run
+      sgd: { warmup_steps: 500 }             # short warmup for a short run
     learning_rate:
       type: cosine
       cosine:
@@ -169,12 +166,13 @@ task:
   init_checkpoint: /path/to/source_run/ckpt-100000
   init_checkpoint_modules: [backbone, decoder]   # head randomly initialized
 ```
-`migrate_checkpoint` auto-detects the checkpoint kind (`native` for this codebase's own
-checkpoints, `frozen`/`structural` for legacy TF2-Vision), writes a migrated copy under
-`migrated/ckpt`, and refuses to proceed if a requested module loaded nothing. Add `head` only if its
-shape matches. Like `finetune_from`, this is a fresh-start-only seed — a resumed run ignores it.
-See [checkpoint_migration.md](../checkpoint_migration.md).
+The source must be a checkpoint **produced by this codebase** (trainer `ckpt-N` and `best_ckpt`
+checkpoints both qualify). The full model is loaded through the EMA-aware loader
+(`restore_eval_weights` — EMA shadows preferred), then the non-selected modules are restored to
+their fresh random init; an unknown module name in `init_checkpoint_modules` is rejected at
+startup. Add `head` only if its shape matches. Like `finetune_from`, this is a fresh-start-only
+seed — a resumed run ignores it.
 
 ## Related
-- Reference: [checkpoint_migration.md](../checkpoint_migration.md) · [configuration.md](../configuration.md)
+- Reference: [configuration.md](../configuration.md)
 - See also: [training guide](training.md) · [validation guide](validation.md)

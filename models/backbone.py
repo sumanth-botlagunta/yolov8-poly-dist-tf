@@ -11,7 +11,7 @@ Architecture stages:
     P5:   Conv(512, 3x3, s=2) → C2f(512, n=1) → SPPF   stride 32 → level '5'
 
 All convolutions use BN + activation (config-driven via norm_activation.activation;
-the experiment YAMLs set swish for the trunk, matching the original codebase).
+the experiment YAMLs use relu).
 
 Classes:
     _ConvBnAct: Conv2D + BatchNormalization + Activation (shared across models/).
@@ -84,8 +84,7 @@ class _ConvBnAct(tf.keras.layers.Layer):
         # input -> (0 before, 1 after)); the Qualcomm SNPE converter mishandles that
         # implicit asymmetric padding (it drops/symmetrizes it), shifting every feature
         # map by ~half a pixel -> all heads degrade on content while flat regions match.
-        # The legacy on-device DLC carried these as explicit Pad ops; the new export
-        # didn't. Explicit ZeroPadding2D emits a real Pad node SNPE converts correctly and
+        # Explicit ZeroPadding2D emits a real Pad node SNPE converts correctly and
         # is byte-identical to 'same' for the model's even, /32-divisible input sizes
         # (training 672x672, export 672x416). Stride-1 'same' is symmetric and converts
         # fine, so it is left unchanged.

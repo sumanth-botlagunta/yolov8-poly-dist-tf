@@ -70,7 +70,6 @@ class V8ParserExtended(Parser):
         aug_scale_max: float = 1.0,
         random_flip: bool = True,
         resize_with_random_method: bool = True,
-        letter_box: bool = True,
         albumentations_frequency: float = 1.0,
         area_thresh: float = 0.1,
         eval_gray_border: bool = False,
@@ -91,7 +90,6 @@ class V8ParserExtended(Parser):
         self._aug_scale_min = aug_scale_min
         self._aug_scale_max = aug_scale_max
         self._random_flip = random_flip
-        self._letter_box = letter_box
         self._albumentations_frequency = albumentations_frequency
         self._area_thresh = area_thresh
         self._eval_gray_border = eval_gray_border
@@ -327,8 +325,8 @@ class V8ParserExtended(Parser):
         # Reshape polygons to [N, n_pairs, 2] (x, y); -1 auto-infers n_pairs.
         pts = tf.reshape(polygons, [N, -1, 2])
 
-        # Valid vertices: x > -1.0 — the reserved polygon sentinel is exactly -1.0
-        # (design_register entry 10). A legitimately-negative canvas coordinate
+        # Valid vertices: x > -1.0 — the reserved polygon sentinel is exactly -1.0.
+        # A legitimately-negative canvas coordinate
         # (mosaic overflow that survived clip-to-edge) is a REAL vertex, not padding,
         # so it must contribute to the radial target. `>= 0.0` would silently drop it.
         valid = pts[:, :, 0] > -1.0  # [N, n_pairs]
@@ -462,7 +460,7 @@ class V8ParserExtended(Parser):
         # [N, max_vertices+2] flat (x, y) pairs, -1 padded for invalid vertices.
         n_inst = tf.shape(polygons)[0]
         pts    = tf.reshape(polygons, [n_inst, -1, 2])        # [N, P, 2] (x, y)
-        valid  = pts[:, :, 0] > -1.0                           # [N, P] — sentinel is -1.0 (design_register entry 10)
+        valid  = pts[:, :, 0] > -1.0                           # [N, P] — reserved sentinel is exactly -1.0
         px = pts[:, :, 0] * new_w_f / w_out_f + pad_lft_f / w_out_f
         py = pts[:, :, 1] * new_h_f / h_out_f + pad_top_f / h_out_f
         neg1 = tf.fill(tf.shape(px), -1.0)

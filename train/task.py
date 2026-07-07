@@ -85,8 +85,11 @@ class YoloV8Task:
           preferring its **EMA / deployed weights** (``restore_eval_weights`` — the same
           path eval/export use). The optimizer/EMA/step are NOT loaded; a fresh optimizer
           is built next, so the config's fine-tune LR schedule / epochs apply from step 0.
-        * ``init_checkpoint`` (transfer-init): migrate the selected modules (default
-          backbone + decoder; random head) from a pretrained/legacy checkpoint.
+        * ``init_checkpoint`` (transfer-init): restore the selected modules (default
+          backbone + decoder; random head) from a model checkpoint written by this
+          codebase (``tf.train.Checkpoint(model=...)`` — trainer and best_ckpt
+          checkpoints qualify). Exact, order-independent, and it fails loudly if a
+          requested module is absent from the checkpoint.
         """
         finetune_from = getattr(self._config.task, 'finetune_from', None)
         if finetune_from:
@@ -100,15 +103,34 @@ class YoloV8Task:
         ckpt_path = self._config.task.init_checkpoint
         if not ckpt_path:
             return
-        from tools.checkpoint_migration import migrate_checkpoint
-        modules = self._config.task.init_checkpoint_modules
-        stats = migrate_checkpoint(
-            old_ckpt_path=ckpt_path,
-            new_model=model,
-            output_ckpt_path=os.path.join(os.path.dirname(ckpt_path), 'migrated', 'ckpt'),
-            modules=modules,
-        )
-        log.info("Checkpoint migration: %s", stats)
+        modules = list(self._config.task.init_checkpoint_modules)
+        for name in modules:
+            if getattr(model, name, None) is None:
+                raise ValueError(
+                    f"task.init_checkpoint_modules: unknown module '{name}'. "
+                    f"Expected one of: backbone, decoder, head.")
+        # Load the FULL model via restore_eval_weights — the same loader eval and
+        # export use. It handles every checkpoint layout this codebase writes
+        # (trainer checkpoints keep the complete weights in the EMA shadows; the
+        # bare ``model/`` object graph omits list-tracked C2f variables, so a
+        # plain tf.train.Checkpoint restore of a module subtree can silently
+        # under-load). Non-selected modules are snapshotted first and restored
+        # after, so e.g. the head keeps its fresh random initialization.
+        from tools.shared.ckpt_loading import restore_eval_weights
+        all_modules = ('backbone', 'decoder', 'head')
+        keep = [m for m in all_modules
+                if m not in modules and getattr(model, m, None) is not None]
+        snapshot = {m: [tf.identity(v) for v in getattr(model, m).variables]
+                    for m in keep}
+        kind = restore_eval_weights(model, ckpt_path)
+        for m, vals in snapshot.items():
+            for var, val in zip(getattr(model, m).variables, vals):
+                var.assign(val)
+        n_vars = sum(len(getattr(model, m).variables) for m in modules)
+        log.info("Transfer-init: restored %s (%d variables, %s weights) from %s; "
+                 "kept fresh init for: %s.",
+                 "+".join(modules), n_vars, kind, ckpt_path,
+                 ", ".join(keep) or "none")
 
     def apply_freezing(self, model: tf.keras.Model) -> None:
         """Freeze whole modules (``task.freeze_modules``) and/or the first N backbone

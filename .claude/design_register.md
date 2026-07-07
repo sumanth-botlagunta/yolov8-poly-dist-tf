@@ -159,27 +159,21 @@ implementation defects:
   TensorBoard overlays. If the conf operating point is ever retuned, consider promoting it to a config
   field.
 
-## 15. Trunk swish / head relu activation split
+## 15. Activation is relu everywhere (a swish parity claim was tested and rejected)
 
-`norm_activation.activation` (set to **swish** in every tier YAML) drives the backbone and
-decoder; `model.head.activation` (**relu**; `same` inherits the trunk) drives the head. This
-mirrors the original codebase exactly: its backbone/decoder layer specs hardcoded swish, and its
-config activation (relu) only ever reached the head. Running the whole network on relu — the
-previous state here — is a different model family from the one the reference recipe (LR, gains,
-weight decay) was tuned for, and it silently invalidates any warm start from swish-trained
-weights: activation layers hold no variables, so such a checkpoint *loads* cleanly into a relu
-graph but produces garbage features (empirically: a migrated swish-trained checkpoint evaluated
-near zero under the relu graph). Consequences:
-
-- **Train-semantics.** Do not flip activation settings on a run in flight; checkpoints are only
-  meaningful under the activation they were trained with.
-- The default `init_checkpoint` warm start (legacy backbone+decoder weights) is swish-trained —
-  it is only a real warm start when the trunk is swish.
+A cross-codebase audit claimed the reference model ran a swish backbone/decoder with a relu
+head, which briefly landed here as a swish-trunk config. The claim failed verification: a
+training run with the swish trunk tracked the relu runs' val curves with no separation, and the
+maintainer confirmed relu is correct — the audit's swish extraction was wrong. All tier YAMLs
+use `norm_activation.activation: relu` for the whole network. General caveat that remains true:
+activation settings are train-semantics — activation layers hold no variables, so checkpoints
+*load* across activation settings but weights are only meaningful under the activation they
+were trained with. Do not flip activations on a run in flight.
 
 ## 16. EMA dynamic decay is the exponential ramp
 
-`decay = average_decay × (1 − exp(−step/2000))` (`optimizers/ema.py`), the YOLOv5-style ramp the
-original codebase used. Decay starts at 0 (shadow = live weights), passes ~0.63×average_decay at
+`decay = average_decay × (1 − exp(−step/2000))` (`optimizers/ema.py`), the standard
+YOLOv5/YOLOv8 ModelEMA ramp. Decay starts at 0 (shadow = live weights), passes ~0.63×average_decay at
 one time constant (2000 steps), and is within 1% of `average_decay` by ~10k steps. The earlier
 hyperbolic form (`min(average_decay, (1+step)/(10+step))`) saturated much later — the eval
 weights averaged over a shorter horizon through the mid-training epochs, which skews mid-run

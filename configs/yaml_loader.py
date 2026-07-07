@@ -155,16 +155,8 @@ _RUNTIME_KEYS = frozenset({
     "inter_op_threads", "intra_op_threads",
 })
 
-# Vestigial TF-Vision runtime keys: no RuntimeConfig field, read nowhere. Listed as
-# ignored (not recognized) so a stray YAML value is dropped without warning and
-# without implying it does anything.
-_RUNTIME_KEYS_IGNORED = frozenset({
-    "per_gpu_thread_count", "num_cores_per_replica", "num_packs",
-})
-
-
 def _build_runtime_config(r: Dict[str, Any]) -> RuntimeConfig:
-    _warn_unknown_keys(r, _RUNTIME_KEYS, "runtime", ignored=_RUNTIME_KEYS_IGNORED)
+    _warn_unknown_keys(r, _RUNTIME_KEYS, "runtime")
     return RuntimeConfig(
         distribution_strategy=r.get("distribution_strategy", "mirrored"),
         num_gpus=r.get("num_gpus", -1),
@@ -236,17 +228,12 @@ def _build_model_config(m: Dict[str, Any], task: Dict[str, Any]) -> ModelConfig:
         use_separable_conv=decoder_raw.get("use_separable_conv", False),
     )
 
-    head_cfg    = HeadConfig(
-        smart_bias=head_raw.get("smart_bias", True),
-        activation=head_raw.get("activation", "same"),
-    )
+    head_cfg    = HeadConfig(smart_bias=head_raw.get("smart_bias", True))
     det_gen_cfg = DetectionGeneratorConfig(
         max_boxes=det_gen_raw.get("max_boxes", 300),
         nms_thresh=det_gen_raw.get("nms_thresh", 0.65),
         score_thresh=det_gen_raw.get("score_thresh", 0.05),
-        nms_type=det_gen_raw.get("nms_type", "greedy"),
         nms_class_mode=det_gen_raw.get("nms_class_mode", "per_class"),
-        pre_nms_points=det_gen_raw.get("pre_nms_points", 30000),
         # Inference distance clamp shares the task-level range (single source of
         # truth) so a custom range is honoured at inference/export, not just loss.
         min_distance=task.get("min_distance", 0.5),
@@ -286,8 +273,7 @@ _LOSS_KEYS = frozenset({
 
 
 def _build_loss_config(l: Dict[str, Any]) -> LossConfig:
-    # max_delta is a known vestigial TF-Vision key (not used by this codebase).
-    _warn_unknown_keys(l, _LOSS_KEYS, "losses", ignored=frozenset({"max_delta"}))
+    _warn_unknown_keys(l, _LOSS_KEYS, "losses")
     acsl_raw = l.get("acsl", {})
     acsl_cfg = AcslConfig(
         use_acsl=acsl_raw.get("use_acsl", False),
@@ -328,20 +314,8 @@ _DATA_KEYS = frozenset({
     "private_threadpool_size", "parser", "distance_data",
 })
 
-# Keys present in the experiment YAMLs that the loader intentionally does not
-# consume (TF-Vision vestigial flags / download toggles handled elsewhere).
-_DATA_KEYS_IGNORED = frozenset({
-    "tfds_download",
-    # poly_eval_gt_policy: vestigial. The polygon eval GT is always the PolyYOLO
-    # radial format; this key has no DataConfig field and is read nowhere. Listed
-    # here (not in _DATA_KEYS) so a stray YAML value is silently dropped without
-    # implying it is a functional knob.
-    "poly_eval_gt_policy",
-})
-
-
 def _build_data_config(d: Dict[str, Any]) -> DataConfig:
-    _warn_unknown_keys(d, _DATA_KEYS, "data", ignored=_DATA_KEYS_IGNORED)
+    _warn_unknown_keys(d, _DATA_KEYS, "data")
     parser_cfg    = _build_parser_config(d.get("parser", {}))
     dist_data_raw = d.get("distance_data")
     dist_data_cfg: Optional[DistanceDataConfig] = None
@@ -420,7 +394,6 @@ def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
         aug_scale_min=p.get("aug_scale_min", 1.0),
         aug_scale_max=p.get("aug_scale_max", 1.0),
         random_flip=p.get("random_flip", True),
-        letter_box=p.get("letter_box", True),
         resize_with_random_method=p.get("resize_with_random_method", True),
         skip_crowd_during_training=p.get("skip_crowd_during_training", True),
         dummy_distance=p.get("dummy_distance", True),
@@ -449,39 +422,20 @@ _TRAINER_KEYS = frozenset({
     "steps_per_loop", "train_steps", "validation_steps",
 })
 
-# TF-Vision trainer keys this custom training loop does not honor. They are not
-# wired into TrainerConfig; listing them here documents the intentional drop so a
-# typo in a *real* trainer key still warns.
-_TRAINER_KEYS_IGNORED = frozenset({
-    "validation_interval", "summary_interval", "train_tf_function",
-    "train_tf_while_loop", "eval_tf_function", "eval_tf_while_loop",
-    # Legacy linear-warmup block: never read (warmup is driven by
-    # optimizer_config.optimizer.sgd_torch.warmup_steps). Accepted silently so old
-    # YAMLs still load; do not re-add it to the live config.
-    "warmup",
-})
-
-
 def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
-    _warn_unknown_keys(t, _TRAINER_KEYS, "trainer", ignored=_TRAINER_KEYS_IGNORED)
+    _warn_unknown_keys(t, _TRAINER_KEYS, "trainer")
     opt_raw    = t.get("optimizer_config", {})
     ema_raw    = opt_raw.get("ema", {})
-    # The optimizer/schedule TYPE selects which nested param block to read. The current
-    # YAML nests `optimizer.sgd_torch` / `learning_rate.cosine` with no `type` key, so
-    # the defaults ('sgd' / 'cosine') reproduce exactly today's parse. New types read
-    # their own block, e.g. `optimizer: {type: adamw, adamw: {...}}`.
+    # The optimizer/schedule TYPE selects which nested param block to read, e.g.
+    # `optimizer: {type: adamw, adamw: {...}}`; defaults are 'sgd' / 'cosine'.
     lr_block   = opt_raw.get("learning_rate", {})
     lr_type    = lr_block.get("type", "cosine")
     lr_raw     = lr_block.get(lr_type, lr_block.get("cosine", lr_block))
     opt_block  = opt_raw.get("optimizer", {})
     opt_type   = opt_block.get("type", "sgd")
-    # The TYPE-SELECTED block wins; 'sgd_torch' (the legacy block name for sgd)
-    # is only the fallback. The reverse precedence silently read adamw/adam
-    # params from a leftover sgd_torch block when switching optimizer type.
-    sgd_raw    = opt_block.get(opt_type, opt_block.get("sgd_torch", opt_block))
-    # NOTE: the legacy trainer.warmup.* block is not parsed — SGD momentum/bias warmup is
-    # driven solely by OptimizerConfig.warmup_steps (sgd_torch.warmup_steps below); LR
-    # warmup is LrScheduleConfig.warmup_steps. A stray trainer.warmup block is ignored.
+    sgd_raw    = opt_block.get(opt_type, opt_block)
+    # SGD momentum/bias warmup is driven by OptimizerConfig.warmup_steps; LR
+    # warmup is LrScheduleConfig.warmup_steps.
 
     ema_cfg    = EmaConfig(
         average_decay=ema_raw.get("average_decay", 0.9999),

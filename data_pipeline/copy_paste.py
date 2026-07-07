@@ -178,7 +178,7 @@ class CopyAndPasteModule:
              [0, 0]],
         )  # [H, W, 3]
 
-        # Hard-mask composite: use alpha > 0.5 as binary mask (matches old codebase).
+        # Hard-mask composite: use alpha > 0.5 as binary mask.
         hard_mask = alpha_canvas > 0.5  # [H, W, 1] bool, broadcasts over channels
         blended = tf.where(hard_mask, obj_canvas, bg_img)
         bg_data = dict(bg_data)
@@ -248,15 +248,15 @@ class CopyAndPasteModule:
         else:
             n_pairs = max_v // 2
             pts = tf.reshape(obj_pts, [n_pairs, 2])       # [n_pairs, (x, y)]
-            valid = pts[:, 0] > -1.0                      # [n_pairs] — sentinel is -1.0 (design_register entry 10)
+            valid = pts[:, 0] > -1.0                      # [n_pairs] — reserved sentinel is exactly -1.0
 
             # Transform: x_bg = (paste_x + x_obj * new_w) / W
             x_bg = (paste_x_f + pts[:, 0] * new_w_f) / W_f
             y_bg = (paste_y_f + pts[:, 1] * new_h_f) / H_f
             # A valid vertex that lands outside the background image is invalidated
             # (-1 sentinel), UNLIKE mosaic (transform_boxes_polygons / random_perspective)
-            # which CLIPS out-of-frame vertices to the edge for box-GT consistency
-            # (design_register entry 9). Here clipping would pin the vertex to the edge
+            # which CLIPS out-of-frame vertices to the edge for box-GT consistency.
+            # Here clipping would pin the vertex to the edge
             # and inject a wrong radial distance into the pasted object's GT, so we drop
             # it instead.
             in_bounds = tf.logical_and(

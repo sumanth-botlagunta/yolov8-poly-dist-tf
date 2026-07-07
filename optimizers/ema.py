@@ -3,8 +3,7 @@
 EMA maintains shadow weights that are a running average of the model weights
 and are used exclusively during evaluation (swap in before eval, swap back after).
 
-Dynamic decay formula (dynamic_decay=True), the YOLOv5-style exponential ramp
-used by the original codebase:
+Dynamic decay formula (dynamic_decay=True), the YOLOv5-style exponential ramp:
     decay = average_decay * (1 - exp(-step / 2000))
 
 Decay starts at 0 (the shadow copies the live weights), rises with a

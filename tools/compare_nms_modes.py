@@ -57,8 +57,6 @@ def _build_generator(model_cfg, mode: str):
         max_boxes=dg.max_boxes,
         nms_thresh=dg.nms_thresh,
         score_thresh=dg.score_thresh,
-        pre_nms_points=dg.pre_nms_points,
-        nms_type=dg.nms_type,
         nms_class_mode=mode,
         reg_max=16,
         output_poly_size=model_cfg.output_poly_size,

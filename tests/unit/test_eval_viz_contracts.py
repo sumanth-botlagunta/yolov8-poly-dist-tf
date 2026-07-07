@@ -1,4 +1,4 @@
-"""Pinning tests for non-training (hygiene) bughunt fixes.
+"""Pinning tests for non-training behavior contracts (eval/viz/docs consistency).
 
   - polygon_metrics._radial_to_cartesian infers vertex count from len(radii)
     instead of hardcoding 24 (works for configurable angle_step).
@@ -20,7 +20,7 @@ REPO = os.path.join(os.path.dirname(__file__), "..", "..")
 
 
 # ---------------------------------------------------------------------------
-# polygon_metrics configurable vertex count (bug #1)
+# polygon_metrics configurable vertex count
 # ---------------------------------------------------------------------------
 
 def test_radial_to_cartesian_infers_vertex_count():
@@ -49,7 +49,7 @@ def test_polygon_evaluator_accepts_num_vertices():
 
 
 # ---------------------------------------------------------------------------
-# viz_utils conf_thresh threading (bug #2)
+# viz_utils conf_thresh threading
 # ---------------------------------------------------------------------------
 
 def test_draw_polygon_has_conf_thresh_param():
@@ -82,7 +82,7 @@ def test_no_hardcoded_0_4_in_draw_polygon_body():
 
 
 # ---------------------------------------------------------------------------
-# README checkpoint interval (bug #3)
+# README checkpoint interval
 # ---------------------------------------------------------------------------
 
 def test_readme_checkpoint_interval_is_formula_not_baked():
@@ -96,7 +96,7 @@ def test_readme_checkpoint_interval_is_formula_not_baked():
 
 
 # ---------------------------------------------------------------------------
-# export schema docs (bug #4)
+# export schema docs
 # ---------------------------------------------------------------------------
 
 def test_export_docstring_documents_output_schema():

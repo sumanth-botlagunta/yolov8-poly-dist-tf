@@ -6,7 +6,7 @@ installed editable; shell scripts use `bash <path>`.
 
 Most tools take `--config <experiment.yaml>` (from `configs/experiments/yolo/`) and a checkpoint
 path **prefix** (e.g. `/run/ckpt-100000`, no extension). See [configuration.md](configuration.md)
-for the config fields and [checkpoint_migration.md](checkpoint_migration.md) for warm-starting.
+for the config fields and [guides/finetuning.md](guides/finetuning.md) for warm-starting.
 
 ## Core workflow
 
@@ -51,10 +51,24 @@ path with three modes:
 - **watch** (`--watch --watch_dir <dir>`): poll `<dir>` and evaluate each new checkpoint as it
   appears, appending to `<dir>/eval_log.jsonl`. `--interval` — seconds between polls.
   `--max_evals` — stop after N evaluations (0 = unlimited).
+- `--limit_batches N` (any mode) — stop after N eval batches (0 = full split): a fast **sampled
+  probe**, not a substitute for the full-split numbers.
 ```bash
 python -m tools.eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000 --split val --per_category
 python -m tools.eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --all   --watch_dir /run
 python -m tools.eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --watch --watch_dir /run --interval 300
+```
+
+### `python -m tools.compare_nms_modes` — per-class vs class-agnostic NMS, side by side
+Runs the network once per batch and scores the same raw outputs through two detection generators
+that differ only in `nms_class_mode` (`per_class` vs `agnostic`), so both modes see byte-identical
+predictions. Prints a headline-metric comparison plus the per-class best-F1 movers, and writes
+both full ckpt-format reports. NMS is pure post-processing — valid for any existing checkpoint,
+no retraining.
+- `--config` (req), `--checkpoint` (req). `--split` — `val` (default) / `test`.
+- `--output_dir` — where the two reports go (default `<ckpt_dir>/nms_compare`).
+```bash
+python -m tools.compare_nms_modes --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000
 ```
 
 ### `python -m tools.infer` — folder inference: predictions JSON + visuals
@@ -75,13 +89,13 @@ python -m tools.infer --saved_model /export/saved_model --images /imgs \
 ## Export
 
 ### `python -m tools.device.export_device_dlc` — on-device SNPE/DLC export (most common)
-SavedModel that drop-in-replaces the legacy device DLC. See [device_export.md](device_export.md).
+SavedModel that drop-in-replaces the deployed device DLC. See [device_export.md](device_export.md).
 - `--config` (req), `--checkpoint` (req), `--output_dir` (req).
 - `--input_size` — `H,W` for the device (e.g. `672,416`).
 - `--verify` — run all contract checks (op names, baked `/255`, decode parity).
 - `--normalize` (default on) — bake `/255` so the graph accepts raw `[0,255]` input.
 - `--legacy_box_order` (default on) — reorder box channels `[l,t,r,b]→[t,l,b,r]` to match the
-  legacy on-device decoder; set `False` only if you decode with this repo / `gen_pred_json`.
+  on-device decoder (y-first); set `False` only if you decode with this repo / `gen_pred_json`.
 - `--debug_taps` — emit intermediate tap nodes for SavedModel-vs-DLC bisection.
 ```bash
 python -m tools.device.export_device_dlc --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000 --output_dir /export --input_size 672,416 --verify
@@ -93,32 +107,6 @@ Deploy SavedModel with NMS baked in; expects `[0,1]` input.
 - `--tflite` — also run the TFLite converter and write `model.tflite`.
 ```bash
 python -m tools.export_saved_model --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000 --output_dir /export
-```
-
-## Checkpoints
-
-### `python -m tools.checkpoint_migration` — migrate / warm-start
-Subcommands: `list`, `map`, `mapping`, `report`, `dump`, `migrate`. See
-[checkpoint_migration.md](checkpoint_migration.md).
-- `--ckpt` (req) — source checkpoint prefix. `--config` (req for map/migrate) — target YAML.
-- `--output` — output checkpoint prefix (migrate). `--modules backbone decoder [head]` — which
-  modules to transfer (default: 39-class rule). `--strategy auto|native|frozen|map|structural|name`.
-```bash
-python -m tools.checkpoint_migration migrate --ckpt /old/ckpt-N --config configs/experiments/yolo/yolov8_poly_dist.yaml --output /tmp/migrated/ckpt
-```
-
-### `python -m tools.trace_shapes` — compare two model sources by variable shape
-- `--src1` (req), `--src2` (req) — each a checkpoint prefix or an experiment YAML.
-- `--filter` — substring filter on variable names. `--only-mismatch` — show only shape mismatches.
-- `--by-shape`, `--stats-only`, `--no-colour` — output modes.
-```bash
-python -m tools.trace_shapes --src1 /old/ckpt-N --src2 configs/experiments/yolo/yolov8_poly_dist.yaml --only-mismatch
-```
-
-### `python -m tools.shared.compare_checkpoints` — name-matched checkpoint diff
-- `--ckpt1` (req), then `--ckpt2` **or** `--config`. `--modules`, `--grep`, `--no-colour`.
-```bash
-python -m tools.shared.compare_checkpoints --ckpt1 A --config configs/experiments/yolo/yolov8_poly_dist.yaml
 ```
 
 ## Pipeline
@@ -141,13 +129,6 @@ python -m tools.pipeline.diagnose_pipeline --config configs/experiments/yolo/yol
   omitted). Runs the diagnose + benchmark (cold & warm) and measures CPU throttle.
 ```bash
 bash tools/cloud_diagnose.sh configs/experiments/yolo/yolov8_poly_dist.yaml
-```
-
-### `python -m tools.pipeline.reencode_tfds_672` — build pre-resized 672² datasets
-One-time: stores `<name>_672` TFDS copies (672² JPEG) to cut decode cost.
-- `--datasets` (req) — TFDS name(s). `--data_dir` (req) — TFDS root. `--size` (default 672). `--splits`.
-```bash
-python -m tools.pipeline.reencode_tfds_672 --datasets <tfds_name> --data_dir ~/tensorflow_datasets
 ```
 
 ### `python -m tools.val_history` — inspect / extract the validation history
@@ -189,25 +170,12 @@ These localize an on-device accuracy gap (DLC vs host). See [device_export.md](d
 | `python -m tools.device.gen_pred_json_from_dlc` | Build a COCO prediction JSON from DLC/SavedModel raw outputs (edit the `SPLITS` list in-file; `--splits` overrides). `--raw_root --transform_pkl --output_json`. |
 | `python -m tools.device.validate_device_export` | Compare the in-repo model vs the device SavedModel on val images. `--config --checkpoint --saved_model`. |
 | `python -m tools.device.check_snpe_ready` | Scan an exported SavedModel for SNPE-incompatible ops. `<saved_model_dir>`. |
-
-On-device diagnostics live under `tools/device/debug/` (used as needed when a DLC export diverges):
-
-| Command | What it does |
-|---------|--------------|
-| `python -m tools.device.debug.diagnose_device_export` | Localize where the device graph diverges (eager → tf.function → SavedModel). `--config --checkpoint`. |
-| `python -m tools.device.debug.dump_savedmodel_raw` | Dump per-node `.raw` outputs in net-run layout. `--saved_model --raw_image`. |
-| `python -m tools.device.debug.compare_dlc_raw` | Node-by-node SavedModel-vs-DLC raw diff (numpy only). `--a --b`. |
-| `python -m tools.device.debug.compare_dlc_debug` | Recursive per-layer `--debug` tree comparison, ranked by divergence. |
-| `python -m tools.device.debug.compare_dlc_raw_batch` | Aggregate node diffs across many Result folders. |
-| `python -m tools.device.debug.savedmodel_on_device_raw` | Run the SavedModel on the device's `.raw` bytes, draw detections. `--saved_model --raw`. |
-| `python -m tools.device.debug.visualize_device_export` | Visualize device SavedModel detections at device size. `--config --saved_model`. |
-| `python -m tools.device.debug.gen_pred_json_from_savedmodel` | Host twin of gen_pred_json_from_dlc (SavedModel instead of DLC raw). |
-| `python -m tools.device.debug.make_calibration_raws` | Build a calibration `.raw` set + input list for `snpe-dlc-quantize`. |
+| `python -m tools.device.make_calibration_raws` | Build a calibration `.raw` set + input list for `snpe-dlc-quantize`. |
 
 ## Future / recommended additions
 
 - **Distance validation.** The distance head is trained but never scored at validation time
-  ([design_register.md](design_register.md) entry 4). A future change would add a distance
+  (the shipped distance dataset is training-only). A future change would add a distance
   validation stream and wire `eval/distance_metrics.py` into the val loop. This is a
   training-semantics change (needs a held-out distance split), not a pure tooling add.
 - **Metrics dashboard.** `export_val_metrics` already emits parquet; a small notebook over the

@@ -135,7 +135,7 @@ def _decode(box, cls, H, W, conf_thr, nms_iou, num_classes, max_boxes=300,
             box_order='yfirst'):
     """DFL-decoded box[N,4] + raw cls[N,nc] -> detections in 672x416 PIXEL coords.
 
-    box_order: channel order of the box head. 'yfirst' ([t,l,b,r] — the legacy/DLC order
+    box_order: channel order of the box head. 'yfirst' ([t,l,b,r] — the deployed-DLC order
     that export_device_dlc emits by default with --legacy_box_order) is reordered to
     x-first [l,t,r,b] before the decode below. 'xfirst' assumes [l,t,r,b] already (an
     export with --legacy_box_order=False). A MISMATCH TRANSPOSES EVERY BOX — the classic
@@ -199,7 +199,7 @@ def main():
     ap.add_argument('--input_size', default='672,416', help='H,W')
     ap.add_argument('--num_classes', type=int, default=39)
     ap.add_argument('--box_order', default='yfirst', choices=['yfirst', 'xfirst'],
-                    help="box head channel order of the DLC raws. 'yfirst' = the legacy/DLC "
+                    help="box head channel order of the DLC raws. 'yfirst' = the deployed-DLC "
                          "order ([t,l,b,r], export_device_dlc --legacy_box_order default), "
                          "reordered to x-first before decode. Use 'xfirst' ONLY for raws from "
                          "an export with --legacy_box_order=False. Mismatch transposes every box.")

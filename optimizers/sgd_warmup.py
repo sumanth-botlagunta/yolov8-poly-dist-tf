@@ -16,9 +16,9 @@ update (exact PyTorch / TF-model-garden SGDTorch semantics):
 Because the wd·w term accumulates in the velocity buffer, the steady-state shrink
 is ≈ lr·wd/(1−μ) — ~16× stronger at μ=0.937 than the decoupled form
 w ← w·(1−lr·wd) previously used here. The decoupled form silently
-under-regularized the model relative to the legacy optimizer (train loss kept
-falling while val F1 plateaued early, weight_norm climbed, grad_norm rose late —
-the classic sharp-minimum signature). Train-semantics change: fresh runs only.
+under-regularized the model (train loss kept falling while val F1 plateaued
+early, weight_norm climbed, grad_norm rose late — the classic sharp-minimum
+signature). Train-semantics change: fresh runs only.
 
 Classes:
     SGDTorch: SGD optimizer compatible with tf.train.Checkpoint via tf.Module.

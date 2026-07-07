@@ -35,9 +35,9 @@ class YoloV8Layer:
 
     - ``per_class``: NMS runs independently per class — two overlapping boxes
       with different argmax classes never suppress each other.
-    - ``agnostic``: ONE NMS over all boxes regardless of class (the original
-      codebase's mode) — at each location only the highest-scored box survives,
-      so cross-class duplicates are removed.
+    - ``agnostic``: ONE NMS over all boxes regardless of class — at each
+      location only the highest-scored box survives, so cross-class
+      duplicates are removed.
 
     Output predictions schema:
         bbox:           float32 [batch, max_boxes, 4]     yxyx normalized [0,1]
@@ -55,8 +55,6 @@ class YoloV8Layer:
         max_boxes: int = 300,
         nms_thresh: float = 0.65,
         score_thresh: float = 0.05,
-        pre_nms_points: int = 30000,
-        nms_type: str = "greedy",
         nms_class_mode: str = "per_class",
         reg_max: int = 16,
         output_poly_size: int = 24,
@@ -74,7 +72,6 @@ class YoloV8Layer:
         self.nms_thresh       = nms_thresh
         self.score_thresh     = score_thresh
         self.nms_class_mode   = nms_class_mode
-        self.pre_nms_points   = pre_nms_points
         self.reg_max          = reg_max
         self.output_poly_size = output_poly_size
         self.min_distance     = min_distance

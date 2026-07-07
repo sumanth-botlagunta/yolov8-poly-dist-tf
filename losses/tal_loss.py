@@ -219,14 +219,12 @@ class TaskAlignedLossExtended:
         # but the weighting math is NOT implemented here. The flag used to be a
         # silent no-op: a user could set `use_acsl: true` in YAML and train as if
         # it had taken effect. Fail loud instead so the dead knob can never lie.
-        # See docs/design_register.md entry "ACSL config knob is not implemented".
         if use_acsl:
             raise NotImplementedError(
                 "use_acsl=True is not supported: the ACSL class-suppression "
                 "weighting is parsed from config (AcslConfig) but not implemented "
                 "in TaskAlignedLossExtended._class_loss. Set acsl.use_acsl=false "
-                "(the default) until the weighting is implemented. See "
-                "docs/design_register.md."
+                "(the default) until the weighting is implemented."
             )
 
         self._assigner_fn = TaskAlignedAssigner(

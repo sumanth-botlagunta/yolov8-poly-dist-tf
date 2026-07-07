@@ -1,19 +1,19 @@
 """Export a trained checkpoint to a SavedModel laid out as a DROP-IN replacement
-for the legacy on-device Qualcomm SNPE DLC.
+for the deployed on-device Qualcomm SNPE DLC.
 
 Unlike ``tools/export_saved_model.py`` (which bakes NMS into the graph and emits
 the post-processed deploy dict for [0, 1]-normalized input), this tool reproduces
-the *legacy device contract* so the existing SNPE conversion / quantization /
+the *deployed device contract* so the existing SNPE conversion / quantization /
 net-run / result-extraction pipeline keeps working **unchanged** — the new ``.dlc``
-simply replaces the old one.
+simply replaces the deployed one.
 
-Legacy contract (reverse-engineered from the on-device tooling — see the
+Device contract (reverse-engineered from the on-device tooling — see the
 ``snpe-tensorflow-to-dlc`` command and the result-extraction script in
 ``docs/device_export.md``):
 
     Input  node:  ``input_image``   float32  [1, 672, 416, 3]   pixels in [0, 255]
     Output nodes (one flat tensor per head, levels concatenated 3→4→5, channels-last,
-                  batch dim dropped → [N, C]). ``box`` is DFL-DECODED (the legacy DLC
+                  batch dim dropped → [N, C]). ``box`` is DFL-DECODED (the deployed DLC
                   bakes it in); the rest are RAW (the on-device ``YoloV8LayerModified``
                   applies sigmoid/softplus/exp + stride/anchor/NMS, and stride/anchor to
                   box):
@@ -25,7 +25,7 @@ Legacy contract (reverse-engineered from the on-device tooling — see the
         poly_conf   float32 [N, poly_size]    (= [5733, 24])  raw (pre-sigmoid)
         dist        float32 [N, 1]            (= [5733,  1])  raw log-distance
 
-    ``box`` decode (matches the legacy DLC and detection_generator._decode_dfl):
+    ``box`` decode (matches the deployed DLC and detection_generator._decode_dfl):
         [N, 64] → reshape [N, 4, 16] → softmax over bins → Σ·[0..15] (1×1 conv) → [N, 4].
 
     N = total anchors over the 3 FPN levels for the given input size
@@ -72,7 +72,7 @@ try:
     flags.DEFINE_string('checkpoint', None, 'Checkpoint path prefix.',          required=True)
     flags.DEFINE_string('output_dir', None, 'Directory to write the SavedModel.', required=True)
     flags.DEFINE_string('input_size', '672,416',
-                        'Device input H,W (comma-separated). Matches the legacy DLC '
+                        'Device input H,W (comma-separated). Matches the deployed DLC '
                         '(--input_dim input_image 1,H,W,3).')
     flags.DEFINE_bool  ('normalize', True,
                         'Bake /255 into the graph so the device can feed raw [0,255] '
@@ -92,7 +92,7 @@ try:
                         'and box_ops.dist2bbox(ver=1) does anchor-lt with NO axis reverse, so '
                         'it requires distance[0]=top, [1]=left, [2]=bottom, [3]=right. The '
                         "model/repo-native order is [left,top,right,bottom] (x-first); without "
-                        'this swap the legacy decode applies x-offsets on the y-axis and every '
+                        'this swap the on-device decode applies x-offsets on the y-axis and every '
                         'box is transposed (the host=0.68 / device=0.19 gap). Set False to keep '
                         'the x-first order (decode with this repo or tools/device/gen_pred_json_from_dlc.py).')
 except flags.DuplicateFlagError:
@@ -100,7 +100,7 @@ except flags.DuplicateFlagError:
 
 log = logging.getLogger(__name__)
 
-# Legacy output-node order is irrelevant (the extractor reads by name), but we
+# Output-node order is irrelevant to the extractor (it reads by name), but we
 # keep the canonical head order for readable logs / signature.
 _LEVELS = ["3", "4", "5"]
 
@@ -221,8 +221,8 @@ def main(_):
     _force_float32_policy()
 
     # Build at the device input size. The model is fully convolutional, so a
-    # 672×672-trained checkpoint restores and runs at 672×416 unchanged (same as
-    # the legacy export, which also ran 672×416).
+    # 672×672-trained checkpoint restores and runs at 672×416 unchanged (the
+    # input size the deployed DLC runs at).
     model_cfg.input_size = [H, W, 3]
     poly_size  = model_cfg.output_poly_size
     n_classes  = model_cfg.num_classes
@@ -276,7 +276,7 @@ def main(_):
     # box/cls/poly_*/dist (and input_image). A plain tf.saved_model.save buries them
     # in a StatefulPartitionedCall and renames the outputs to Identity:0.. — so we
     # freeze (inline + variables→constants), promote each tagged op to a clean
-    # top-level Identity, and re-emit a v1 SavedModel mirroring the legacy graph.
+    # top-level Identity, and re-emit a v1 SavedModel with those top-level nodes.
     _save_named_savedmodel(serving_fn, head_names, FLAGS.output_dir)
     log.info("Device SavedModel written to %s", FLAGS.output_dir)
 
@@ -299,14 +299,14 @@ def main(_):
 
 def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16, debug_taps=False,
                      legacy_box_order=True):
-    """Build the device serving tf.function (legacy-DLC contract).
+    """Build the device serving tf.function (deployed-DLC contract).
 
     Bakes /255 (when ``normalize``), runs the raw (deploy=False) model, concatenates
     each head across FPN levels 3→4→5 (row-major), and emits one ``tf.identity``-tagged
     tensor per head named exactly box/cls/poly_*/dist — with the batch dim dropped so
-    shapes are ``[N, C]`` (matching the legacy DLC nodes).
+    shapes are ``[N, C]`` (matching the deployed DLC nodes).
 
-    The ``box`` head additionally bakes the DFL "integral" decode the legacy DLC
+    The ``box`` head additionally bakes the DFL "integral" decode the deployed DLC
     contains: reshape ``[1,N,64]→[1,N,4,16]`` → ``softmax`` over the 16 bins → a 1×1
     ``conv2d`` with constant weights ``[0,1,…,15]`` (shape [1,1,16,1], bias 0) → reshape
     ``[N,4]``. So ``box`` is the 4 LTRB distances (pre-stride), NOT the raw [N,64]
@@ -342,7 +342,7 @@ def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16, debug_taps=F
                     # Reorder to [top,left,bottom,right] (y-first) so the deployed
                     # box_ops.dist2bbox(ver=1) — which does anchor(y,x) - lt with NO axis
                     # reverse — reads each offset on the correct axis. Without this the
-                    # legacy decoder applies the left/right (x) offsets to the y-axis.
+                    # on-device decoder applies the left/right (x) offsets to the y-axis.
                     x = tf.gather(x, [1, 0, 3, 2], axis=1)  # [l,t,r,b] -> [t,l,b,r]
             else:
                 x = tf.reshape(x, [N, c])                   # [N, c] raw (batch dropped)
@@ -523,7 +523,7 @@ def _save_named_savedmodel(serving_fn, head_names, output_dir):
 
 def _verify(saved_model_dir, model, H, W, n_anchors, head_chan, do_norm,
             legacy_box_order=True):
-    """Assert the exported graph matches the legacy device contract."""
+    """Assert the exported graph matches the deployed device contract."""
     import numpy as np
     from tensorflow.python.saved_model import loader_impl
 
@@ -560,12 +560,12 @@ def _verify(saved_model_dir, model, H, W, n_anchors, head_chan, do_norm,
     log.info("[ok] signature output nodes present: %s", sorted(got))
 
     # 2) shapes / element counts. box is DFL-decoded to [N, 4]; the rest are raw
-    #    [N, C]; all have the batch dim dropped (legacy-DLC node layout).
+    #    [N, C]; all have the batch dim dropped (deployed-DLC node layout).
     for name, c in head_chan:
         oc  = 4 if name == 'box' else c
         shp = tuple(out[name].shape)
         assert shp == (n_anchors, oc), f"{name}: expected ({n_anchors},{oc}), got {shp}"
-    log.info("[ok] node shapes match legacy layout (box [N,4], others [N,C], no batch dim)")
+    log.info("[ok] node shapes match the deployed layout (box [N,4], others [N,C], no batch dim)")
 
     # 3) /255 equivalence for the RAW heads: device([0,255]) == concat(raw-model(img/255)),
     #    batch dropped. Covers cls/poly_*/dist (box is decoded, checked in 4).
@@ -592,7 +592,7 @@ def _verify(saved_model_dir, model, H, W, n_anchors, head_chan, do_norm,
             box_ref = box_ref[:, [1, 0, 3, 2]]                            # -> [t,l,b,r]
         _assert_close('box (DFL)', out['box'].numpy(), box_ref)
         log.info("[ok] box reproduces the in-repo DFL decode (softmax + Σ·bins, pre-stride%s)",
-                 ", reordered [t,l,b,r] for legacy decode" if legacy_box_order else "")
+                 ", reordered [t,l,b,r] for the on-device decode" if legacy_box_order else "")
 
     log.info("---- verification PASSED ----")
 

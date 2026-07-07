@@ -150,7 +150,8 @@ class TestPolygonEvaluator(unittest.TestCase):
     def test_class_aware_matching_rejects_cross_class(self):
         """A detection overlapping a GT at IoU>=0.5 but of a DIFFERENT class must not
         be counted as a recall when classes are supplied (COCO semantics). Without
-        classes the same overlap matches (legacy class-agnostic behaviour)."""
+        classes the same overlap matches — matching falls back to class-agnostic
+        when class info is not provided."""
         args = self._single_batch(0.1, 0.1)   # det box == gt box (IoU 1.0)
         pred_cls = np.array([[1]], dtype=np.int64)   # detection is class 1
         gt_cls   = np.array([[0]], dtype=np.int64)   # GT is class 0

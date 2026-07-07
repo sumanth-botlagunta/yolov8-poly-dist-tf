@@ -44,9 +44,13 @@ Anchor-free (1 anchor/cell). Anchor points are cell centers: `(i+0.5)·stride`, 
 for strides 8/16/32 — built inside the loss (`losses/tal_loss.py`) and the detection generator.
 
 ## Detection generator — `models/detection_generator.py`
-Post-processing for inference (`deploy=True`): DFL decode → xyxy boxes, **per-class greedy NMS**
+Post-processing for inference (`deploy=True`): DFL decode → xyxy boxes, **greedy NMS**
 (`max_boxes=300`, `nms_thresh=0.65`, `score_thresh=0.05`), and decode of polygon + distance
-outputs. Each class is NMS-filtered independently — no cross-class suppression. Distance is
+outputs. The NMS suppression scope is config-selectable (`detection_generator.nms_class_mode`):
+`per_class` (default) filters each class independently — no cross-class suppression — while
+`agnostic` runs one NMS over all boxes, suppressing cross-class duplicates at the same location.
+It is eval-time post-processing only (no effect on training); `python -m tools.compare_nms_modes`
+scores both modes side-by-side on one checkpoint. Distance is
 `exp`'d from log-scale and clipped to `[min_distance, max_distance]` (`[0.5, 10.0]` m).
 Polygon outputs `(conf, dist, angle)` are all sigmoid/softmax-activated; `conf` values are not
 raw logits.

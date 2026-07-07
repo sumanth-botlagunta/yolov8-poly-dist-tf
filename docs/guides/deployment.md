@@ -23,20 +23,21 @@ python -m tools.device.export_device_dlc \
     --verify
 ```
 This prefers EMA weights, bakes in `/255`, emits a **float32** top-level-named graph, **folds
-BatchNorm into the preceding conv** (so the DLC quantizes correctly), and keeps the legacy box
+BatchNorm into the preceding conv** (so the DLC quantizes correctly), and keeps the on-device box
 channel order (`--legacy_box_order`, default ON — the device decoder is y-first `[t,l,b,r]`).
 `--verify` runs all contract checks (see [device_export.md](../device_export.md#troubleshooting--verify);
 it judges by **relative magnitude**, not element count — benign fused/unfused accumulation passes).
 
-## 2. (Optional) eyeball the SavedModel before converting
+## 2. (Optional) sanity-check the SavedModel before converting
 
 ```bash
-python -m tools.device.debug.visualize_device_export \
+python -m tools.device.validate_device_export \
     --config /path/.../yolov8_poly_dist.yaml \
-    --saved_model /path/to/export/saved_model --output_dir /tmp/device_viz
+    --checkpoint /path/to/run_dir/ckpt-<step> \
+    --saved_model /path/to/export/saved_model
 ```
-Decodes the SavedModel's raw heads with the in-repo decoder and draws detections at the device
-size — a quick "are the boxes sane" check before SNPE.
+Compares the in-repo model against the device SavedModel on val images — a quick "are the boxes
+sane" check before SNPE.
 
 ## 3. Convert + quantize + run (SNPE — unchanged commands)
 
@@ -54,7 +55,7 @@ size — a quick "are the boxes sane" check before SNPE.
 snpe-net-run --container model_quant.dlc --input_list eval_raw_list.txt --perf_profile burst
 ```
 Build a representative calibration `.raw` set + list with
-`tools/device/debug/make_calibration_raws.py` (use diverse images, e.g. a COCO subset — not your
+`tools/device/make_calibration_raws.py` (use diverse images, e.g. a COCO subset — not your
 eval set, to avoid bias). Per-channel weights + CLE + bias-correction materially improve int8
 accuracy.
 
@@ -68,9 +69,9 @@ python -m tools.device.gen_pred_json_from_dlc \
     --raw_root /path/to/netrun/output --transform_pkl /path/to/letterbox_transform.pkl \
     --output_json device_predictions.json --box_order yfirst
 ```
-Run the SavedModel on the **same** images (host twin) for an apples-to-apples reference:
+Run the exported SavedModel on the **same** images (host twin) for an apples-to-apples reference:
 ```bash
-python -m tools.device.debug.gen_pred_json_from_savedmodel --saved_model /path/.../saved_model ...
+python -m tools.infer --saved_model /path/.../saved_model --images <same_images> --emit json ...
 ```
 A healthy export: SavedModel-JSON ≈ checkpoint eval; CPU `.dlc` ≈ SavedModel; quantized `.dlc`
 slightly below (int8). A large gap means something upstream broke — go to step 5.
@@ -83,18 +84,12 @@ python -m tools.device.check_snpe_ready /path/to/export/saved_model
 
 # in-repo model vs the device SavedModel, on val images
 python -m tools.device.validate_device_export --config <cfg> --checkpoint <ckpt> --saved_model <sm>
-
-# where does the device GRAPH diverge (eager → tf.function → SavedModel)?
-python -m tools.device.debug.diagnose_device_export --config <cfg> --checkpoint <ckpt>
-
-# per-layer DLC-vs-reference comparison (snpe-net-run --debug dumps)
-python -m tools.device.debug.compare_dlc_debug ...
 ```
 The usual culprits, in order: **box channel order** (transposed boxes → match `--box_order` to the
-export; `yfirst` is the legacy/DLC order and the default),
+export; `yfirst` is the on-device/DLC order and the default),
 **un-folded BatchNorm** (quantizes badly — `check_snpe_ready` flags it), and **the calibration set**
 (too small/biased → poor int8). See [device_export.md](../device_export.md) for the contract.
 
 ## Related
-- Reference: [device_export.md](../device_export.md) · [scripts.md](../scripts.md) (the `tools.device.*` and `tools.device.debug.*` tables)
+- Reference: [device_export.md](../device_export.md) · [scripts.md](../scripts.md) (the `tools.device.*` table)
 - For host/server serving instead of device, see `tools/export_saved_model.py` ([scripts.md](../scripts.md)).

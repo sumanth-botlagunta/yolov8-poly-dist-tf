@@ -75,11 +75,6 @@ class DecoderConfig:
 @dataclasses.dataclass
 class HeadConfig:
     smart_bias: bool = True
-    # Head activation. "same" inherits norm_activation.activation. The original
-    # codebase hardcoded swish in the backbone/decoder specs while the head used
-    # the config activation (relu) — this field lets the head diverge from the
-    # trunk the same way (trunk swish + head relu).
-    activation: str = "same"
 
 
 @dataclasses.dataclass
@@ -87,14 +82,11 @@ class DetectionGeneratorConfig:
     max_boxes: int = 300
     nms_thresh: float = 0.65
     score_thresh: float = 0.05
-    nms_type: str = "greedy"
     # NMS suppression scope: "per_class" runs NMS independently per class (two
     # overlapping boxes of different classes both survive); "agnostic" runs ONE
-    # NMS over all boxes regardless of class (the original codebase's mode —
-    # cross-class duplicates at the same location are suppressed). Eval-time
-    # post-processing only; no effect on training.
+    # NMS over all boxes regardless of class, suppressing cross-class duplicates
+    # at the same location. Eval-time post-processing only; no effect on training.
     nms_class_mode: str = "per_class"
-    pre_nms_points: int = 30000
     min_distance: float = 0.5
     max_distance: float = 10.0
 
@@ -227,7 +219,6 @@ class ParserConfig:
     aug_scale_min: float = 1.0
     aug_scale_max: float = 1.0
     random_flip: bool = True
-    letter_box: bool = True
     resize_with_random_method: bool = True
     skip_crowd_during_training: bool = True
     dummy_distance: bool = True
@@ -327,8 +318,8 @@ class OptimizerConfig:
     # Adam/AdamW moment coefficients (ignored by SGD).
     beta_1: float = 0.9
     beta_2: float = 0.999
-    # SGD momentum/bias warmup length (the legacy nested WarmupConfig was never read and
-    # has been removed). NOT the LR warmup — that lives on LrScheduleConfig.warmup_steps.
+    # SGD momentum/bias warmup length. NOT the LR warmup — that lives on
+    # LrScheduleConfig.warmup_steps.
     warmup_steps: int = 7164
     ema: EmaConfig = dataclasses.field(default_factory=EmaConfig)
     learning_rate: LrScheduleConfig = dataclasses.field(default_factory=LrScheduleConfig)

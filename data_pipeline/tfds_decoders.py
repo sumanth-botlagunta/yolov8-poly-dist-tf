@@ -117,10 +117,10 @@ class PolygonDecoder:
         image = tf.cast(image, tf.uint8)
 
         shape = tf.shape(image)
-        # Prefer explicitly-stored ORIGINAL dims when present (written by
-        # tools/pipeline/reencode_tfds_672.py for pre-resized dataset variants): the
-        # copy-paste resolution correction needs the original capture size,
-        # which tf.shape() can no longer provide once images are stored small.
+        # Prefer explicitly-stored ORIGINAL dims when present (pre-resized
+        # dataset variants carry them): the copy-paste resolution correction
+        # needs the original capture size, which tf.shape() can no longer
+        # provide once images are stored small.
         try:
             height = tf.cast(data['orig_height'], tf.int32)
             width = tf.cast(data['orig_width'], tf.int32)

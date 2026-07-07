@@ -29,10 +29,7 @@ task:
   per_category_metrics: false
 
   norm_activation:
-    # Trunk (backbone + decoder) activation. The original codebase hardcoded
-    # swish in its backbone/decoder layer specs; its config activation (relu)
-    # only ever applied to the head (see model.head.activation below).
-    activation: swish
+    activation: relu
     norm_epsilon: 0.001
     norm_momentum: 0.97
     use_sync_bn: false
@@ -50,8 +47,6 @@ task:
         max_level: 5
         depth_scale: 1.0
         width_scale: 1.0
-        dilate: false
-        use_reorg_input: false
         use_separable_conv: false
     decoder:
       type: yolo_decoder
@@ -60,12 +55,8 @@ task:
         type: s
         activation: same
         use_separable_conv: false
-        model_id: null
     head:
       smart_bias: true
-      # Head activation ("same" would inherit the trunk's swish). The original
-      # codebase's head used the config activation: relu.
-      activation: relu
     anchor_boxes:
       anchors_per_scale: 1
       boxes: [[1, 1]]
@@ -73,8 +64,6 @@ task:
     detection_generator:
       max_boxes: 300
       nms_thresh: 0.65
-      nms_type: greedy
-      pre_nms_points: 30000
       topN_per_anchor: 1
 
   losses:
@@ -104,7 +93,6 @@ task:
     tfds_split: "train,train,train"
     tfds_sampling_weights: [95, 2, 3]
     tfds_data_dir: /home/user/tensorflow_datasets/
-    tfds_download: true
     tfds_for_cnp: "cleaner_copy_paste:1.0.0"
     tfds_for_cnp_split: train_f
     global_batch_size: 128
@@ -115,7 +103,6 @@ task:
     drop_remainder: true
     with_polygons: false        # ← no polygon labels
     with_distance: false
-    poly_eval_gt_policy: polyyolo
     class_remap_json_path: null
     distance_data: null
     parser:
@@ -134,7 +121,6 @@ task:
       aug_scale_min: 1.0
       aug_scale_max: 1.0
       random_flip: true
-      letter_box: true
       resize_with_random_method: true
       skip_crowd_during_training: true
       dummy_distance: true
@@ -195,7 +181,6 @@ task:
       # it implied flips that the eval path never applies. Kept false for clarity
       # and parity with yolov8_poly_dist.yaml.
       random_flip: false
-      letter_box: true
       resize_with_random_method: false
       skip_crowd_during_training: true
       dummy_distance: true
@@ -237,8 +222,8 @@ trainer:
         decay_steps: 635400   # = 2118 steps/epoch x 300 epochs
         alpha: 0.01
     optimizer:
-      type: sgd_torch
-      sgd_torch:
+      type: sgd
+      sgd:
         name: SGD
         momentum: 0.937
         momentum_start: 0.8
@@ -247,9 +232,8 @@ trainer:
         warmup_steps: 6354   # 3 epochs x 2118
         weight_keys: [kernel, weight]
         bias_keys: [bias, beta]
-        # warmup_steps above is the SOLE warmup control (read by task.py via
-        # OptimizerConfig.warmup_steps). The legacy trainer.warmup.* block was never
-        # read and has been removed.
+        # warmup_steps above is the sole SGD momentum/bias warmup control
+        # (read by task.py via OptimizerConfig.warmup_steps).
 
 runtime:
   distribution_strategy: mirrored

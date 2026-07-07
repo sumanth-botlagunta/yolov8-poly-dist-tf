@@ -8,7 +8,7 @@
 | Location | Scope | Needs TFDS? |
 |----------|-------|-------------|
 | `tests/unit/` | pure component unit tests: backbone, decoders, model forward, EMA, sgd_warmup, tal_assigner, coco/distance/polygon evaluators (including crowd/dontcare handling), config loading, viz_utils | no |
-| `tests/integration/` | end-to-end pipeline, checkpoint migration, weight-map migration | no |
+| `tests/integration/` | end-to-end pipeline, checkpoint loading, multi-GPU | no |
 | `tests/smoke/` | training-loop smoke (`TestDrySmoke` on synthetic data, 10 steps) + real-data smoke (`TestRealDataSmoke`, `@pytest.mark.smoke`) | only the marked real-data class |
 | `tests/test_*.py` (top level) | component tests: decoders, parser, copy_paste, mosaic, losses (computation + reference parity + polygon conventions + distance loss), polygon preprocessing, batch shapes | no |
 
@@ -24,23 +24,20 @@ canvas-warp geometry/label/mask-partition tests; warp-scale-bounds distribution 
 `test_polygon_preprocessing.py` (includes segment-equivalence tests asserting exact output parity
 of the `unsorted_segment_max` / `segment_min` formulation vs the old one-hot reference).
 
-**Unit test files (44 files):** `test_backbone.py`, `test_bf16_policy.py` (bfloat16 Keras policy
+**Unit test files (selection):** `test_backbone.py`, `test_bf16_policy.py` (bfloat16 Keras policy
 applied correctly, heads remain float32), `test_coco_crowd_dontcare.py`,
 `test_coco_evaluator.py`, `test_config_loading.py`, `test_decoders.py`,
 `test_detection_generator_clip.py` (final boxes clipped to [0,1] after NMS),
 `test_distance_evaluator.py`, `test_ema.py`, `test_model_forward.py`,
 `test_polygon_evaluator.py`,
-`test_reencode_builder.py` (672² TFDS re-encode round trip on a synthetic source;
-`importorskip`s tfds, so it skips in environments without tensorflow-datasets),
 `test_sgd_warmup.py`, `test_tal_assigner.py`,
 `test_task_validation_streaming.py`,
 `test_trainer_epoch_math.py` (verifies `YoloV8Trainer._steps_for_epoch` for fresh starts, full
 epochs, and mid-epoch resume remainder),
 `test_viz_utils.py`.
 
-**Integration test files (6 files):** `test_full_pipeline.py`, `test_checkpoint_migration.py`,
-`test_weight_map_migration.py`, `test_multigpu.py`, `test_ckpt_eval_loading.py`,
-`test_native_checkpoint_load.py`.
+**Integration test files (4 files):** `test_full_pipeline.py`, `test_multigpu.py`,
+`test_ckpt_eval_loading.py`, `test_native_checkpoint_load.py`.
 
 `test_multigpu.py` runs a real 2-replica `MirroredStrategy` on two **virtual CPU devices** to
 validate the distributed-training machinery (global-count loss normalizers, cross-replica
