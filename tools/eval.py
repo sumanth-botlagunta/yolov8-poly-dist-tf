@@ -73,6 +73,9 @@ try:
     flags.DEFINE_string('failures_dir', None, 'Where to write failure images '
                         '(default <output_dir>/failures or /tmp/eval_failures).')
     flags.DEFINE_integer('failures_per_class', 8, 'Worst cases to keep per class per kind.')
+    flags.DEFINE_integer('limit_batches', 0, 'Stop after this many batches (0 = full split). '
+                         'Makes a train-split probe affordable: ~250 batches gives a '
+                         'val-sized sample instead of an hours-long full pass.')
 except flags.DuplicateFlagError:
     pass
 
@@ -94,7 +97,8 @@ def _load_model_from_checkpoint(config, ckpt_path: str) -> tf.keras.Model:
 
 
 def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
-                        collect_json: bool = False, failure_collector=None):
+                        collect_json: bool = False, failure_collector=None,
+                        limit_batches: int = 0):
     """Evaluate one checkpoint and return (metrics, dt_results).
 
     Shared by every mode. Builds the model, restores EMA weights, runs inference
@@ -237,6 +241,10 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
 
         total_batches += 1
         pbar.update(1)
+        if limit_batches and total_batches >= limit_batches:
+            log.info("Stopping at --limit_batches=%d (sampled probe, not the full split).",
+                     limit_batches)
+            break
 
     pbar.close()
     log.info("Evaluation complete: %d batches total.", total_batches)
@@ -280,7 +288,8 @@ def _run_single(config, task):
 
     metrics, dt_results = evaluate_checkpoint(
         config, task, FLAGS.checkpoint, split=FLAGS.split,
-        collect_json=bool(FLAGS.output_json), failure_collector=failure_collector)
+        collect_json=bool(FLAGS.output_json), failure_collector=failure_collector,
+        limit_batches=FLAGS.limit_batches)
     coco_ev = metrics.pop('_coco_evaluator')
 
     _print_metrics(metrics)
