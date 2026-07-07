@@ -78,3 +78,4 @@ wandb/
 mlruns/
 .claude/projects/
 prompts/
+docs/codebase_guide/
