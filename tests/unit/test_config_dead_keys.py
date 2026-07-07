@@ -1,6 +1,6 @@
 """Pinning tests for dead/typo YAML key handling in configs/yaml_loader.
 
-Covers the bughunt fixes:
+Pinned contracts:
   * verbose_eval_results_per_category was a silently-ignored data key; per-category
     eval is gated on task.per_category_metrics instead. The dead key is removed
     from the live YAML, and _build_data_config now warns on unknown data keys.
@@ -73,14 +73,13 @@ class TestUnknownKeyWarnings(unittest.TestCase):
             any("verbose_eval_results_per_category" in m for m in cm.output)
         )
 
-    def test_known_ignored_data_key_does_not_warn(self):
-        logger = logging.getLogger("configs.yaml_loader")
-        with self.assertLogs(logger, level="WARNING") as cm:
-            # tfds_download is intentionally ignored; emit one real warning so
-            # assertLogs has something, then assert tfds_download is NOT in it.
-            logger.warning("sentinel")
+    def test_removed_data_key_warns(self):
+        # tfds_download was removed from the YAML surface; the loader has no
+        # silent-tolerance list, so a stale key must warn instead of being
+        # dropped as if it did something.
+        with self.assertLogs("configs.yaml_loader", level="WARNING") as cm:
             _build_data_config({"tfds_download": True})
-        self.assertFalse(any("tfds_download" in m for m in cm.output))
+        self.assertTrue(any("tfds_download" in m for m in cm.output))
 
     def test_unknown_trainer_key_warns(self):
         with self.assertLogs("configs.yaml_loader", level="WARNING") as cm:
@@ -89,10 +88,11 @@ class TestUnknownKeyWarnings(unittest.TestCase):
             any("totally_bogus_trainer_key" in m for m in cm.output)
         )
 
-    def test_known_ignored_trainer_keys_do_not_warn(self):
-        logger = logging.getLogger("configs.yaml_loader")
-        with self.assertLogs(logger, level="WARNING") as cm:
-            logger.warning("sentinel")
+    def test_removed_trainer_keys_warn(self):
+        # Keys this trainer never honored are no longer silently tolerated —
+        # they must surface in the unknown-key warning so a stale YAML is
+        # visibly stale rather than quietly partially applied.
+        with self.assertLogs("configs.yaml_loader", level="WARNING") as cm:
             _build_trainer_config({
                 "validation_interval": 2118,
                 "summary_interval": 2118,
@@ -101,7 +101,7 @@ class TestUnknownKeyWarnings(unittest.TestCase):
             })
         joined = " ".join(cm.output)
         for k in ("validation_interval", "summary_interval", "train_tf_function"):
-            self.assertNotIn(k, joined)
+            self.assertIn(k, joined)
 
 
 class TestDataConfigDefaultsMatchEmptyYaml(unittest.TestCase):

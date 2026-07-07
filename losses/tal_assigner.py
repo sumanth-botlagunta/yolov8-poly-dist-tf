@@ -5,8 +5,8 @@ Implements the TAL assignment algorithm from YOLOv8:
     top-k candidates per GT, filtered by spatial constraint,
     duplicates resolved by max-CIoU.
 
-The overlap metric is COMPLETE IoU, not plain IoU: the reference recipe
-(and the original codebase) rank candidate anchors by
+The overlap metric is COMPLETE IoU, not plain IoU: Ultralytics YOLOv8
+ranks candidate anchors by
 ``bbox_iou(..., CIoU=True).clamp(0)``, so an anchor whose predicted box has
 the same raw overlap but a worse center offset / aspect mismatch ranks
 lower. Raised to beta=6 this materially changes which anchors become
@@ -121,11 +121,10 @@ class TaskAlignedAssigner:
 
         # ── 1. CIoU between predictions and GTs ─────────────────────────
         # pd_bboxes [B, A, 4] × gt_bboxes [B, M, 4] → [B, A, M]. Complete IoU
-        # (center-distance + aspect penalties), clamped at 0 — matching the
-        # reference recipe's bbox_iou(..., CIoU=True).clamp_(0). Plain
-        # intersection/union ranked off-center candidates too favorably at
-        # beta=6 (a genuine divergence from the recipe this model was built
-        # to reproduce). Padded GT rows ([0,0,0,0]) stay finite through the
+        # (center-distance + aspect penalties), clamped at 0 — matching
+        # Ultralytics' bbox_iou(..., CIoU=True).clamp_(0). Plain
+        # intersection/union ranks off-center candidates too favorably at
+        # beta=6. Padded GT rows ([0,0,0,0]) stay finite through the
         # atan2/eps guards and are zeroed downstream via mask_gt.
         pd_exp = pd_bboxes[:, :, tf.newaxis, :]   # [B, A, 1, 4]
         gt_exp = gt_bboxes[:, tf.newaxis, :, :]   # [B, 1, M, 4]

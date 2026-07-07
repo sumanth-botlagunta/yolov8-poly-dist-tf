@@ -3,11 +3,13 @@
 EMA maintains shadow weights that are a running average of the model weights
 and are used exclusively during evaluation (swap in before eval, swap back after).
 
-Dynamic decay formula (dynamic_decay=True):
-    decay = min(average_decay, (1 + step) / (10 + step))
+Dynamic decay formula (dynamic_decay=True), the YOLOv5-style exponential ramp:
+    decay = average_decay * (1 - exp(-step / 2000))
 
-This starts near 0 and gradually approaches average_decay=0.9999, giving
-early training steps less influence than later ones.
+Decay starts at 0 (the shadow copies the live weights), rises with a
+2000-step time constant (~0.63 * average_decay at step 2000), and is within
+1% of average_decay=0.9999 by ~step 10k — so the EMA smooths in over the
+first few epochs and holds the full averaging horizon from then on.
 
 Classes:
     ExponentialMovingAverage: Wraps any tf.keras optimizer with EMA tracking.
@@ -71,11 +73,16 @@ class ExponentialMovingAverage(tf.Module):
             self._optimizer.build(variables)
 
     def _get_decay(self) -> tf.Tensor:
-        """Compute effective decay for the current step."""
+        """Compute effective decay for the current step.
+
+        Dynamic decay is the YOLOv5-style exponential ramp
+        ``average_decay * (1 - exp(-step/2000))`` — asymptotic to
+        average_decay, so no explicit min() clamp is needed.
+        """
         if self._dynamic_decay:
             step = tf.cast(self._ema_step, tf.float32)
             return tf.cast(
-                tf.minimum(self._average_decay, (1.0 + step) / (10.0 + step)),
+                self._average_decay * (1.0 - tf.math.exp(-step / 2000.0)),
                 tf.float32,
             )
         return tf.constant(self._average_decay, dtype=tf.float32)
@@ -154,8 +161,10 @@ class ExponentialMovingAverage(tf.Module):
         if not getattr(self._optimizer, 'accepts_clip_norm', False):
             kwargs.pop('clip_norm', None)
         result = self._optimizer.apply_gradients(grads_and_vars, **kwargs)
-        # Increment BEFORE computing decay (matches Ultralytics ModelEMA): the first
-        # averaging update therefore uses decay = (1+1)/(10+1), not (1+0)/(10+0).
+        # Increment BEFORE computing decay (matches the reference implementations,
+        # which read optimizer.iterations after the update): the first averaging
+        # update uses step=1, i.e. a near-zero decay — the shadow starts as a
+        # copy of the live weights and smooths in from there.
         self._ema_step.assign_add(1)
         decay = self._get_decay()
         for var, shadow in zip(self._model_vars, self._shadows):

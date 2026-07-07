@@ -13,11 +13,10 @@ The authoritative hyperparameter reference is the experiment YAML you train with
 (architecture, data pipeline, losses, training, testing). The older
 `docs/implementation_plan.md` / top-level `MASTER_PLAN.md` references are obsolete and gone.
 
-`docs/design_register.md` documents non-obvious design choices (crowd policy, additive HSV,
+`.claude/design_register.md` documents non-obvious design choices (crowd policy, additive HSV,
 warmup ramp direction, polygon conf-over-all-bins, mosaic canvas formulation, `-1.0` polygon
-sentinel, etc.) and the reasoning behind them. Several differ from stock YOLOv8 for parity with
-the original codebase or a measured performance reason, and several affect training — so changing
-them means re-training.
+sentinel, etc.) and the reasoning behind them. Several differ from stock YOLOv8 for a measured
+or historical reason, and several affect training — so changing them means re-training.
 
 ## What This System Does
 
@@ -26,6 +25,9 @@ A TensorFlow reimplementation of YOLOv8 with two extensions beyond standard dete
 2. **Distance estimation** from a separate dataset merged at the batch level
 
 Input: 672×672×3, Backbone: CSPDarkNetV8-S, 39 classes, 6 output heads (box, cls, poly_angle, poly_dist, poly_conf, dist).
+All convolutions use relu (`norm_activation.activation`); activation layers carry no
+weights, so checkpoints load across activation settings — but weights are only
+meaningful under the activation they were trained with.
 
 Three config-driven tiers share the same code:
 
@@ -39,7 +41,7 @@ Three config-driven tiers share the same code:
 
 ### Data Pipeline
 
-Multi-TFDS weighted sampling (each source `.repeat()`ed → stationary weights, infinite stream; images stay **encoded** through shuffle via `SkipDecoding`) → decode → pre-resize to 672² → Copy-Paste (composites at 672²; object scaled by `current/original` dims so relative size matches full-res compositing exactly) → Mosaic (**G-in/(G//R)-out**, default `group_size`=32 / `decodes_per_output`=4 → 8 outputs; each output picks 4 source images via a windowed slice of one per-group permutation, R=4 = stock-YOLO no-reuse; **canvas formulation**: per-TILE flip (independent 0.5 each; the canvas is never mirrored whole) → per-image resize (long side = output; per-tile INDEPENDENT scale draw when `tile_scale_min/max` set — poly_dist has it OFF pending the original's per-tile jitter value) → `_place_in_cell` into the 2× canvas → ONE `random_perspective` warp to the output (poly_dist parity: scale `[0.4, 1.9]`, rotation OFF, translate 0; non-mosaic singles instead flip once + warp with the PARSER-level `aug_scale_min/max`=1.0 + `aug_rand_translate`=0.1 — the mosaic module owns flip during training, the parser flip is disabled for the train stream); the composed-affine variant was reverted — ~3× slower on the production CPU) → small post-unbatch shuffle → Polygon preprocessing → **uint8 out**. Color augmentation (normalize → HSV jitter → albumentations) runs per-BATCH on the GPU inside `train_step` (`data_pipeline/batch_color_aug.py`) with exactly the per-image randomness the parsers used to apply; albumentations applies only to detection rows (`ignore_bg == 0`).
+Multi-TFDS weighted sampling (each source `.repeat()`ed → stationary weights, infinite stream; images stay **encoded** through shuffle via `SkipDecoding`) → decode → pre-resize to 672² → Copy-Paste (composites at 672²; object scaled by `current/original` dims so relative size matches full-res compositing exactly) → Mosaic (**G-in/(G//R)-out**, default `group_size`=32 / `decodes_per_output`=4 → 8 outputs; each output picks 4 source images via a windowed slice of one per-group permutation, R=4 = stock-YOLO no-reuse; **canvas formulation**: per-TILE flip (independent 0.5 each; the canvas is never mirrored whole) → per-image resize (long side = output; per-tile INDEPENDENT scale draw when `tile_scale_min/max` set — poly_dist has it OFF) → `_place_in_cell` into the 2× canvas → ONE `random_perspective` warp to the output (poly_dist: scale `[0.4, 1.9]`, rotation OFF, translate 0; non-mosaic singles instead flip once + warp with the PARSER-level `aug_scale_min/max`=1.0 + `aug_rand_translate`=0.1 — the mosaic module owns flip during training, the parser flip is disabled for the train stream); the composed-affine variant was reverted — ~3× slower on the production CPU) → small post-unbatch shuffle → Polygon preprocessing → **uint8 out**. Color augmentation (normalize → HSV jitter → albumentations) runs per-BATCH on the GPU inside `train_step` (`data_pipeline/batch_color_aug.py`) with exactly the per-image randomness the parsers used to apply; albumentations applies only to detection rows (`ignore_bg == 0`).
 
 The geometric transform (`random_perspective`) is applied inside the mosaic stage for **both** the 4-image mosaic and non-mosaic single images; the parser no longer applies a separate affine.
 
@@ -116,9 +118,9 @@ Distance loss: L1 on log-scale, masked to samples where `gt_distance > -10.0` (i
 
 ### Optimizer
 
-SGD with Nesterov momentum (0.937), cosine LR decay (initial=0.01, alpha=0.01) over the full `train_steps` (`optimizers/sgd_warmup.py`). EMA with dynamic decay: `min(0.9999, (1+step)/(10+step))` (`optimizers/ema.py`). EMA weights are swapped in for evaluation and swapped back afterward.
+SGD with Nesterov momentum (0.937), cosine LR decay (initial=0.01, alpha=0.01) over the full `train_steps` (`optimizers/sgd_warmup.py`). EMA with dynamic decay: `0.9999 × (1 − exp(−step/2000))` — the standard YOLOv5/YOLOv8 ModelEMA ramp (`optimizers/ema.py`). EMA weights are swapped in for evaluation and swapped back afterward.
 
-The optimizer and LR schedule are **config-selectable** via a registry (`optimizers/factory.py`): `optimizer.type` = `sgd` (default; `sgd_torch` is an accepted alias) / `adamw` / `adam`; `learning_rate.type` = `cosine` (default) / `linear` / `step` / `polynomial` / `constant`, plus an optional linear LR-warmup. Defaults reproduce the SGD+cosine path byte-identically. Gradient clipping is `task.gradient_clip_norm` (SGD clips per-call; keras optimizers set `global_clipnorm`).
+The optimizer and LR schedule are **config-selectable** via a registry (`optimizers/factory.py`): `optimizer.type` = `sgd` (default) / `adamw` / `adam`; `learning_rate.type` = `cosine` (default) / `linear` / `step` / `polynomial` / `constant`, plus an optional linear LR-warmup. Defaults reproduce the SGD+cosine path byte-identically. Gradient clipping is `task.gradient_clip_norm` (SGD clips per-call; keras optimizers set `global_clipnorm`).
 
 ## Actual File Layout
 
@@ -170,22 +172,18 @@ scripts/
   run_train.py         # entry point (config load, validation, strategy, runtime flags)
 tools/                 # core workflow tools (top level)
   eval.py export_saved_model.py benchmark_pipeline.py infer.py
-  checkpoint_migration.py trace_shapes.py
+
+  compare_nms_modes.py  # per-class vs class-agnostic NMS, side by side on one checkpoint
   val_history.py        # extract <run>/val_history.jsonl -> txt/json/csv (--epoch/--best/--list)
   val_report_txt.py     # render a single report JSON -> ckpt-format txt
   cloud_diagnose.sh train_supervisor.sh
   device/              # SNPE/DLC export — core on-device workflow
     export_device_dlc.py validate_device_export.py gen_pred_json_from_dlc.py
-    check_snpe_ready.py
-    debug/             # on-device diagnostics (used as needed during DLC debugging)
-      diagnose_device_export.py compare_dlc_raw.py compare_dlc_debug.py
-      compare_dlc_raw_batch.py dump_savedmodel_raw.py savedmodel_on_device_raw.py
-      visualize_device_export.py gen_pred_json_from_savedmodel.py make_calibration_raws.py
+    check_snpe_ready.py make_calibration_raws.py
   shared/              # utility modules imported by the tools
-    runtime_setup.py ckpt_loading.py checkpoint_weight_map.py
-    legacy_weight_map_frozen.py _table.py compare_checkpoints.py
+    runtime_setup.py ckpt_loading.py progress.py
   pipeline/            # data-pipeline diagnostics + dataset re-encoding
-    diagnose_pipeline.py reencode_tfds_672.py export_val_metrics.py bench_mosaic_device.py
+    diagnose_pipeline.py export_val_metrics.py
 tests/                 # unit/ integration/ smoke/ + component tests
 ```
 
@@ -197,7 +195,7 @@ tests/                 # unit/ integration/ smoke/ + component tests
   ignored). `scripts/run_train.py:_validate_config` checks invariants
   (e.g. `output_poly_size == 360 // angle_step`) before training.
 - Common workflows are documented as copy-paste commands in `docs/scripts.md`
-  (training/eval/export/benchmark/migrate/infer).
+  (training/eval/export/benchmark/infer).
 - Runtime flags (XLA via `tf.config.optimizer.set_jit`, mixed precision via the global Keras
   policy, distribution strategy) are applied in `scripts/run_train.py:_apply_runtime_config`
   from `RuntimeConfig`. Default precision is `float32`.
@@ -207,7 +205,7 @@ tests/                 # unit/ integration/ smoke/ + component tests
 `pytest` suite under `tests/`:
 - `tests/unit/` — backbone, decoders, model forward, EMA, sgd_warmup, tal_assigner, and the
   coco/distance/polygon evaluators
-- `tests/integration/` — full pipeline, checkpoint migration
+- `tests/integration/` — full pipeline, native warm-start loading
 - `tests/smoke/` — 10-step end-to-end training
 - top-level — decoders, parser, mosaic, copy_paste, losses, polygon preprocessing, batch shapes
 
@@ -218,9 +216,14 @@ Run with `/test` or `pytest tests/unit tests/smoke -v`.
 - **Copy-Paste order**: applied on decoded data *before* Mosaic
 - **Copy-Paste source**: separate TFDS `cleaner_copy_paste:1.0.0` with RGBA images (4-channel alpha mask)
 - **Crowd handling**: `skip_crowd_during_training=True` filters at parse time; `ignore_bg` flag masks class loss at loss time
+- **NMS suppression scope is config-selectable** (`detection_generator.nms_class_mode`): `per_class`
+  (default) vs `agnostic` (one NMS over all boxes regardless of class). Eval-time only. Measured
+  head-to-head (`tools/compare_nms_modes.py`): agnostic loses recall on region classes that
+  legitimately contain other objects (bathroom/entrance/doorway) — more than its precision gain —
+  so `per_class` stays the default.
 - **Smart bias init**: class bias = `log(5 / num_classes / (input_size/stride)^2)`; box bias = 1.0
   (`input_size` is the live model input, 672 — matches all checkpoints, which are 672×672)
-- **Seed-init (fresh runs only)**: two mutually-exclusive, resume-skipped paths in `task.initialize` (`train/task.py`). `task.finetune_from` = **fine-tuning** (same task): loads the FULL model from a trained `ckpt-N`'s EMA/deployed weights (`restore_eval_weights`) into a fresh optimizer/EMA/step. `task.init_checkpoint` = **transfer-init**: loads only the selected modules (default backbone + decoder; head randomly initialized) via `migrate_checkpoint`. The trainer skips both when a resumable checkpoint exists (`_will_resume`) — so a dropped fine-tune just resumes normally. `--finetune_from` CLI overrides the config field.
+- **Seed-init (fresh runs only)**: two mutually-exclusive, resume-skipped paths in `task.initialize` (`train/task.py`). `task.finetune_from` = **fine-tuning** (same task): loads the FULL model from a trained `ckpt-N`'s EMA/deployed weights (`restore_eval_weights`) into a fresh optimizer/EMA/step. `task.init_checkpoint` = **transfer-init**: full-model restore via `restore_eval_weights` (handles trainer/EMA checkpoint layouts completely — a bare `model/` object-graph restore misses list-tracked C2f variables), then non-selected modules (default: head) are put back to their fresh random init. The trainer skips both when a resumable checkpoint exists (`_will_resume`) — so a dropped fine-tune just resumes normally. `--finetune_from` CLI overrides the config field.
 - **Backbone config**: despite `depth_scale: 1.0` / `width_scale: 1.0` in the YAML, model_id is `cspdarknetv8s` (small) — the model_id takes precedence
 - **Polygon conf in predictions**: `predictions['polygons'][:, :, :, 0]` values are already sigmoid-activated by the detection generator — they are not raw logits. Apply your threshold directly.
 - **Polygon angle is a sub-bin offset**: the `poly_angle` channel is the offset within a bin (`(vertex_angle − bin_start)/angle_step ∈ [0,1)`), **not** a one-hot of the dominant bin. Decode the vertex angle as `(i + sigmoid(pred))·angle_step`; this is consumed in `detection_generator` / `polygon_metrics` / `viz_utils`. (See `losses/polygon_loss.py` for the masked-mean conventions.)
@@ -233,11 +236,10 @@ Run with `/test` or `pytest tests/unit tests/smoke -v`.
 - **Mosaic image path is the canvas formulation**: per-image `tf.image.resize` at the drawn scale → `_place_in_cell` into the 2× canvas → ONE `apply_perspective_image` warp to the output (`make_perspective_matrix` / `transform_boxes_polygons` in `augmentations.py`). A composed-affine variant (fold each quadrant's affine into `M`, warp each source full-frame) was tried and **measured ~3× slower on the production CPU** (`ImageProjectiveTransformV3` is several times costlier per pixel than `tf.image.resize`; 4 full warps per mosaic vs 4 resizes + 1 warp) — don't reintroduce it without a cloud measurement. Both forms are geometrically identical; the label path never changed.
 - **Parsers emit uint8**: color aug (normalize/HSV/albumentations) happens per-batch on GPU in `train_step` via `data_pipeline/batch_color_aug.py` (exact per-image randomness; equivalence-tested). `validation_step` just casts `/255`. TensorBoard `train/augmentations` images are therefore pre-color-aug (geometry + labels only).
 - **Copy-paste runs on the pre-resized 672² background**: `CopyAndPasteModule` scales the object by `(current/original)` per axis (original dims from the `height`/`width` fields), so the relative-size distribution is exactly the full-resolution one. Without those fields the correction is 1 (backward compatible).
-- **Per-tile independent scale is config-gated** (`mosaic.tile_scale_min/max`): when enabled, each mosaic tile's placement scale (long side = output size) is multiplied by its own uniform draw, so one mosaic carries 4 different object scales — the original-codebase formulation, and the strongest scale-invariance signal the detector gets. The poly_dist YAML enables it at the original values `[0.4, 1.9]` (with warp gain `aug_scale_min/max` also at `[0.4, 1.9]`; compounded per-object range ≈ `[0.16, 3.6]`×). `0/0` disables it: tiles at a consistent scale (upright panels), size variety only from the warp gain (stock `[0.5, 1.5]`). Tiles anchor at the moving center, so overscaled tiles overflow AWAY from other cells (no cross-cell label corruption); `tile_scale_max` is capped at 2.0 by `_validate_config` — beyond that an overflowing tile can map a real polygon vertex below the `-1.0` sentinel. Rotation stays **rare** (`rotate_prob` default 0.10, ±`degrees`, `shear` 0; `rotate_prob >= 1.0` keeps the legacy always-rotate path with identical RNG draw order).
+- **Per-tile independent scale is config-gated** (`mosaic.tile_scale_min/max`): when enabled, each mosaic tile's placement scale (long side = output size) is multiplied by its own uniform draw, so one mosaic carries 4 different object scales — the strongest scale-invariance signal the detector gets. The poly_dist YAML keeps it OFF (`0/0`); the mosaic warp gain `aug_scale_min/max` is `[0.4, 1.9]`. `0/0` means: tiles at a consistent scale (upright panels), size variety only from the warp gain (stock `[0.5, 1.5]`). Tiles anchor at the moving center, so overscaled tiles overflow AWAY from other cells (no cross-cell label corruption); `tile_scale_max` is capped at 2.0 by `_validate_config` — beyond that an overflowing tile can map a real polygon vertex below the `-1.0` sentinel. Rotation stays **rare** (`rotate_prob` default 0.10, ±`degrees`, `shear` 0; `rotate_prob >= 1.0` takes the unconditional-rotate path with identical RNG draw order).
 - **Warp scale gain uses explicit bounds**: `make_perspective_matrix(scale_min=, scale_max=)` draws from the configured `[aug_scale_min, aug_scale_max]` (poly_dist: [0.5, 1.5]). The symmetric-magnitude form is kept for back-compat but widened the configured bounds — the mostly-gray-frame bug (since fixed).
-- **Polygon vertex resampling is ARC-LENGTH**: `parser.resample_points: 64` (poly_dist YAML, both streams; dataclass default 0). `resample_polygons` samples 64 points **uniformly along the closed contour, interpolating on edges** — NOT subsampling stored vertices. This is what makes the 24-bin radial target track shapes: a 4-corner rectangle previously kept only its 4 corners → ≤4 occupied bins (drawn as a diamond, long edges left conf=0); arc sampling fills every bin the boundary crosses (rectangle → 24 bins). Sampled points lie exactly on the original contour; dense contours match the old behavior within 1e-3. Train-semantics change — fresh-run only.
+- **Polygon vertex resampling is ARC-LENGTH**: `parser.resample_points: 64` (tier YAMLs, both streams; 0 = off). Two jobs: (1) it CAPS the polygon column width at `[N, 128]` through the whole pipeline — raw stored polygons run up to `[N, 10940]`, so disabling it multiplies padded-batch memory and per-op cost on every polygon transform; (2) uniform sampling along the closed contour fills every radial bin the boundary crosses (a 4-corner rectangle otherwise occupies ≤4 of 24 bins). Measured metric impact of (2) is nil, but (1) makes 64 the right setting regardless. Train-semantics — changing it needs a fresh run.
 - **Copy-paste polygon fit = even resample, not truncation**: the cnp source decoder does NOT resample, so a pasted object can carry far more polygon columns than the (resampled) background. When `cur_cols >= n_poly_cols`, copy-paste **evenly resamples** the valid vertices to the column budget (`resample_polygons`) instead of slicing the first N — slicing kept only a leading contour arc (~3% of the loop) and corrupted the radial target. `resample_polygons` itself stable-argsorts valid-first to **compact scattered sentinels** before sampling, because copy-paste invalidates out-of-bounds vertices in place (interleaved `-1`s); on decode-time prefix input the sort is a no-op (byte-identical). Both are **train-semantics** changes: they alter the polygon GT for copy-pasted objects, so do not merge into a live run mid-flight.
-- **Pre-resized dataset variants**: `tools/pipeline/reencode_tfds_672.py` builds `<name>_672` TFDS copies (672² JPEG + `orig_height`/`orig_width`, which `PolygonDecoder` prefers). Detection sets only — the distance parser letterboxes (aspect-preserving) so servingbot must stay full-resolution. The YAML carries commented switch-over lines.
 - **Polygon binning is a segment formulation**: `_preprocess_polygons_v2` uses `unsorted_segment_max` + first-winner `unsorted_segment_min` instead of a `[N, P, 24]` one-hot — exactly output-equivalent including argmax-first tie behavior (tests assert equality).
 - **Runtime defaults (poly_dist YAML)**: `one_device` on 1 GPU, `mixed_bfloat16` (heads pinned float32 in `models/head.py`, no loss scaling needed), thread-pool caps for cgroup-capped hosts (`runtime.inter_op_threads`/`intra_op_threads`, `train_data.private_threadpool_size`). The training stream sets `tf.data` `deterministic=False` (sample order is not seed-reproducible; augmentation randomness unaffected).
 - **Polygon sub-losses are logged separately**: TensorBoard tags `train/poly_angle_loss`, `train/poly_dist_loss`, and `train/poly_conf_loss` allow diagnosing which polygon component is not converging.

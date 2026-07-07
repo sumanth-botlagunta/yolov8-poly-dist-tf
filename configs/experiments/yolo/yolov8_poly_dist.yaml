@@ -44,8 +44,6 @@ task:
         max_level: 5
         depth_scale: 1.0
         width_scale: 1.0
-        dilate: false
-        use_reorg_input: false
         use_separable_conv: false
     decoder:
       type: yolo_decoder
@@ -54,7 +52,6 @@ task:
         type: s
         activation: same
         use_separable_conv: false
-        model_id: null
     head:
       smart_bias: true
     anchor_boxes:
@@ -65,8 +62,6 @@ task:
       max_boxes: 300
       nms_thresh: 0.65
       score_thresh: 0.05
-      nms_type: greedy
-      pre_nms_points: 30000
       topN_per_anchor: 1
       path_scales:
         '1': 2
@@ -87,7 +82,6 @@ task:
     tal_alpha: 0.5
     tal_beta: 6.0
     topk: 10
-    max_delta: .inf
     acsl:
       use_acsl: false
       bg_common_ratio: 0.38
@@ -103,13 +97,11 @@ task:
     # Optional pre-resized 672² variants (cheaper decode, e.g. to afford a higher
     # decodes_per_output). Build ONCE, then swap (training only; keep validation
     # on the originals):
-    #   python -m tools.pipeline.reencode_tfds_672 --data_dir <tfds dir> \
     #     --datasets cleaner_polygon2026:2.0.0,field_misrecog2026:1.0.0,station_misrecog:1.1.0
     # tfds_name: "cleaner_polygon2026_672:2.0.0,field_misrecog2026_672:1.0.0,station_misrecog_672:1.1.0"
     tfds_split: "train,train,train"
     tfds_sampling_weights: [95, 2, 3]
     tfds_data_dir: /home/user/tensorflow_datasets/
-    tfds_download: true
     tfds_for_cnp: "cleaner_copy_paste:1.0.0"
     tfds_for_cnp_split: train_f
     global_batch_size: 128
@@ -123,7 +115,6 @@ task:
     drop_remainder: true
     with_polygons: true
     with_distance: true
-    poly_eval_gt_policy: polyyolo
     class_remap_json_path: null
     parser:
       angle_step: 15
@@ -145,7 +136,6 @@ task:
       #  applied. Geometric aug is the mosaic-stage random_perspective below, set via
       #  mosaic.degrees / mosaic.shear / mosaic.translate.)
       random_flip: true
-      letter_box: true
       resize_with_random_method: true
       skip_crowd_during_training: true
       dummy_distance: true
@@ -236,7 +226,6 @@ task:
     drop_remainder: false
     with_polygons: true
     with_distance: false
-    poly_eval_gt_policy: polyyolo
     # Per-category eval metrics are enabled via task.per_category_metrics (above).
     distance_data: null
     parser:
@@ -257,7 +246,6 @@ task:
       # Evaluation is deterministic — the eval parse path never flips. This is
       # false to match reality; the eval parser would ignore `true` silently.
       random_flip: false
-      letter_box: true
       resize_with_random_method: false
       skip_crowd_during_training: true
       dummy_distance: true
@@ -308,23 +296,22 @@ trainer:
         decay_steps: 635400
         alpha: 0.01
     optimizer:
-      type: sgd_torch
-      sgd_torch:
+      type: sgd
+      sgd:
         name: SGD
         momentum: 0.937
         momentum_start: 0.8
         nesterov: true
         weight_decay: 0.0005
-        warmup_steps: 6354   # 3 epochs × 2118 steps (was 7164 = 3 × stale 2388)
+        warmup_steps: 6354   # 3 epochs × 2118 steps
         weight_keys: [kernel, weight]
         bias_keys: [bias, beta]
         clipnorm: null
         clipvalue: null
         global_clipnorm: null
         decay: 0.0
-        # warmup_steps above is the SOLE warmup control (read by task.py via
-        # OptimizerConfig.warmup_steps). The legacy trainer.warmup.* block was never
-        # read and has been removed.
+        # warmup_steps above is the sole SGD momentum/bias warmup control
+        # (read by task.py via OptimizerConfig.warmup_steps).
 
 runtime:
   # Single H100: one_device avoids MirroredStrategy variable wrapping overhead.
@@ -335,9 +322,6 @@ runtime:
   mixed_precision_dtype: bfloat16
   run_eagerly: false
   enable_xla: false
-  num_cores_per_replica: 1
-  num_packs: 1
-  per_gpu_thread_count: 0
   # Host CPU is cgroup-capped at ~13 cores while 128 are visible; cap TF's
   # pools to the real quota (tune on the machine if the cap changes).
   # The training step is GPU-bound, so its host pools get few threads; the

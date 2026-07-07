@@ -45,5 +45,4 @@ exp'd from log-space first). Near/far split at **5 m** (`_NEAR_FAR_THRESHOLD`).
 | `dist_abs_far` / `dist_absrel_far` | Same, restricted to **far** objects (gt ≥ 5 m). |
 
 > Distance is currently scored only when the eval split has distance labels. The shipped distance
-> dataset is training-only, so distance is **not** evaluated during normal validation — see
-> [design_register.md](design_register.md) entry 4.
+> dataset is training-only, so distance is **not** evaluated during normal validation.

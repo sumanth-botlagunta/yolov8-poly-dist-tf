@@ -1,12 +1,12 @@
-"""Pinning tests for the non-training ('hygiene') fixes.
+"""Pinning tests for behavior contracts that do not affect training semantics.
 
-Each test exercises the REAL failure mode of the corresponding fix, so that a
-regression to the old behavior fails loudly:
+Each test exercises the REAL failure mode it guards against, so that a
+regression fails loudly:
 
   - random_horizontal_flip / random_affine: polygon validity keys off the reserved
     -1.0 sentinel (`> -1.0`), NOT `>= 0.0`. A legitimately-negative canvas
-    coordinate is a real vertex and must be transformed, not skipped
-    (docs/design_register.md entry 10).
+    coordinate is a real vertex and must be transformed, not skipped —
+    a `>= 0.0` gate silently drops real edge-object vertices.
   - copy_paste.py OOB comment no longer falsely claims it 'matches mosaic'.
   - polygon_metrics.update docstring no longer mislabels the activated angle as
     'angle_logits'.
@@ -37,7 +37,7 @@ _EXPERIMENTS = ['yolov8_poly_dist', 'yolov8_poly', 'yolov8_bbox']
 
 
 # ---------------------------------------------------------------------------
-# Sentinel convention (flip / affine) — design_register entry 10
+# Sentinel convention (flip / affine): -1.0 is the only padding value
 # ---------------------------------------------------------------------------
 
 def test_flip_transforms_legit_negative_vertex_not_sentinel():
@@ -86,7 +86,7 @@ def test_affine_keeps_legit_negative_vertex_that_lands_in_view():
     # lands in-bounds: x = -0.0 is >=0; instead verify via a value just below 0 that
     # the > -1.0 gate (not >= 0.0) admits it. We confirm the gate by source value.
     src_valid = (np.array([-0.05]) > -1.0)
-    assert bool(src_valid[0]), "design_register entry 10: -0.05 must be a valid vertex"
+    assert bool(src_valid[0]), "-0.05 must be a valid vertex (only -1.0 is the sentinel)"
     # sentinel pair preserved
     assert pts[1, 0] == -1.0 and pts[1, 1] == -1.0, f"sentinel changed: {pts[1]}"
 
@@ -144,8 +144,8 @@ def test_optimizer_config_has_no_warmup_attr():
 
 
 def test_stray_trainer_warmup_block_is_ignored_not_crash():
-    """A legacy trainer.warmup.* block in YAML must load without error and have no
-    effect on the live config."""
+    """A stray trainer.warmup.* block in YAML (the removed WarmupConfig) must load
+    without error and have no effect on the live config."""
     for name in _EXPERIMENTS:
         cfg = load_config(os.path.join(_CFG_DIR, f'{name}.yaml'))
         oc = cfg.trainer.optimizer_config
@@ -237,8 +237,8 @@ def test_docs_do_not_claim_yaml_loader_uses_dacite():
 
 def test_bias_warmup_start_lr_is_absolute_in_code():
     """_effective_lr uses bias_lr_scale directly as the group-0/1 warmup start LR
-    (an absolute LR), NOT bias_lr_scale * base_lr. Pin the actual numeric behavior so
-    the docs (design_register entry 2, training.md) cannot drift back to '× base_lr'."""
+    (an absolute LR), NOT bias_lr_scale * base_lr. Pins the actual numeric behavior
+    so the documented description cannot drift back to '× base_lr'."""
     from optimizers.sgd_warmup import SGDTorch
 
     base_lr = 0.01
@@ -257,23 +257,15 @@ def test_bias_warmup_start_lr_is_absolute_in_code():
 
 
 def test_docs_describe_bias_lr_scale_as_absolute_not_times_base():
-    """The design register and training doc must not describe the bias warmup start as
+    """The training doc must not describe the bias warmup start as
     'bias_lr_scale × base_lr' / 'bias_lr_scale·base_lr' (the code uses it absolutely)."""
     docs_dir = os.path.join(os.path.dirname(__file__), '..', 'docs')
-    with open(os.path.join(docs_dir, 'design_register.md')) as f:
-        reg = f.read()
     with open(os.path.join(docs_dir, 'training.md')) as f:
         trn = f.read()
-    # design_register must no longer ASSERT the start is bias_lr_scale × base_lr.
-    assert 'start at\n`bias_lr_scale × base_lr`' not in reg and \
-        'start at `bias_lr_scale × base_lr`' not in reg, \
-        "design_register still says bias warmup starts at bias_lr_scale × base_lr"
-    # training.md must no longer say it ramps DOWN *from* bias_lr_scale·base_lr
+    # training.md must not say it ramps DOWN *from* bias_lr_scale·base_lr
     # (mentioning it only inside a 'not bias_lr_scale·base_lr' clarification is fine).
     assert 'down** from `bias_lr_scale·base_lr`' not in trn, \
         "training.md still says bias warmup ramps down from bias_lr_scale·base_lr"
-    # Both should now flag it as an absolute LR.
-    assert 'absolute' in reg.lower(), "design_register should note bias start is absolute"
     assert 'absolute' in trn.lower(), "training.md should note bias start is absolute"
 
 

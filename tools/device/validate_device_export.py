@@ -54,7 +54,7 @@ try:
     flags.DEFINE_float('iou_thr', 0.5, 'IoU threshold for the direct precision/recall/F1.')
     flags.DEFINE_bool('normalize_baked', True, 'SavedModel bakes /255 (feed raw [0,255]).')
     flags.DEFINE_string('box_order', 'yfirst', "box head order of the device SavedModel: "
-                        "'yfirst' (legacy/DLC default, --legacy_box_order; reordered to "
+                        "'yfirst' (deployed-DLC default, --legacy_box_order; reordered to "
                         "x-first to compare to the golden) or 'xfirst' (--legacy_box_order=False).")
 except flags.DuplicateFlagError:
     pass
@@ -75,7 +75,7 @@ def _reconstruct(dev_out, H, W, num_classes, max_boxes=300,
     """Rebuild deploy-dict detections from device outputs, as the on-device decoder must:
     box[N,4] LTRB pre-stride → stride+anchor → yxyx; cls raw → sigmoid → top-1 → NMS.
 
-    box_order: 'yfirst' ([t,l,b,r] — the legacy/DLC export default, --legacy_box_order) is
+    box_order: 'yfirst' ([t,l,b,r] — the deployed-DLC export default, --legacy_box_order) is
     reordered to x-first before decode; 'xfirst' assumes [l,t,r,b] (a --legacy_box_order=False
     export). A mismatch transposes every box."""
     box = dev_out['box'].numpy()                 # pre-stride; [t,l,b,r] if yfirst else [l,t,r,b]

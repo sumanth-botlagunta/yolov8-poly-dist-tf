@@ -51,13 +51,14 @@ Applied in `scripts/run_train.py:_apply_runtime_config` before any TF op runs.
 | Field | Default | Notes |
 |-------|---------|-------|
 | `input_size` | `[672, 672, 3]` | Live model input. Smart-bias init assumes this. |
-| `num_classes` | `39` | Drives head width AND the checkpoint-migration module rule. |
+| `num_classes` | `39` | Drives the cls head width and the smart-bias init. |
 | `angle_step` | `15` | Polygon angular bin size; `output_poly_size` must equal `360 // angle_step`. |
 | `output_poly_size` | `24` | Polygon vertices/bins. **Invariant:** `== 360 // angle_step`. |
 | `with_polygons` / `with_distance` | `true` | Toggle the polygon / distance heads (the three tiers). |
 | `deploy` | `true` | `true` bakes NMS into the forward pass (eval/export); the trainer sets it `false` for raw head outputs. |
 | `backbone` | `cspdarknetv8s` | **model_id takes precedence** over `depth_scale`/`width_scale` (both 1.0 in YAML but the model is `-S`). |
 | `detection_generator` | — | `max_boxes=300`, `nms_thresh=0.65`, `score_thresh=0.05`, distance range `[0.5, 10.0]`. |
+| `detection_generator.nms_class_mode` | `per_class` | NMS suppression scope: `per_class` runs NMS independently per class; `agnostic` runs ONE NMS over all boxes (suppresses cross-class duplicates at the same location). Eval-time post-processing only — compare both modes on a checkpoint with `python -m tools.compare_nms_modes`. |
 
 ## `task.losses` — `LossConfig`
 
@@ -75,7 +76,7 @@ normalization conventions.
 | `cls_loss_type` | `bce` | Classification loss: `bce` (default) · `focal` · `varifocal`. |
 | `label_smoothing` | `0.0` | Softens BCE targets (0 = off). |
 | `focal_gamma` / `focal_alpha` | 1.5 / 0.25 | Focal/varifocal parameters (ignored for `bce`). |
-| `acsl.use_acsl` | `false` | Parsed but **not implemented** — `use_acsl: true` raises (design_register entry 11). |
+| `acsl.use_acsl` | `false` | Parsed but **not implemented** — `use_acsl: true` raises at startup rather than silently no-op. |
 
 ## `task.train_data` / `validation_data` — `DataConfig`
 
@@ -95,9 +96,9 @@ normalization conventions.
 | Field | Default | Notes |
 |-------|---------|-------|
 | `resample_points` | `0` | Arc-length resample polygons to this many vertices at decode (poly_dist sets 64). Makes the 24-bin radial target track shapes. |
-| `aug_rand_hue` / `_saturation` / `_brightness` | 0.015 / 0.7 / 0.4 | HSV jitter (brightness is **additive** — design_register entry 3). |
-| `random_flip` / `letter_box` | `true` | Horizontal flip; aspect-preserving resize. |
-| `skip_crowd_during_training` | `true` | Drop `is_crowd` GT at parse time (design_register entry 1). |
+| `aug_rand_hue` / `_saturation` / `_brightness` | 0.015 / 0.7 / 0.4 | HSV jitter (brightness is **additive**, not multiplicative). |
+| `random_flip` | `true` | Horizontal flip. |
+| `skip_crowd_during_training` | `true` | Drop `is_crowd` GT at parse time. |
 | `albumentations_frequency` | `1.0` | Albumentations applied to detection rows only. |
 | `mosaic` | `MosaicConfig` | Mosaic + the post-mosaic `random_perspective` affine (below). |
 
@@ -131,21 +132,21 @@ for both mosaic and single images (the parser no longer applies a separate affin
 ### `task.trainer.optimizer_config` — `OptimizerConfig`
 
 The optimizer and LR schedule are config-selectable via `type` keys (registry in
-`optimizers/factory.py`); the defaults (`sgd_torch` / `cosine`) reproduce the previous
-hardcoded path exactly. Alternatives are additive.
+`optimizers/factory.py`); the `type` selects which nested parameter block is read
+(e.g. `optimizer: {type: sgd, sgd: {…}}`). Defaults are `sgd` / `cosine`.
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| `optimizer.type` | `sgd_torch` | Optimizer: `sgd`/`sgd_torch` (default) · `adamw` · `adam`. |
+| `optimizer.type` | `sgd` | Optimizer: `sgd` (default) · `adamw` · `adam`. Parameters live in the matching nested block (`sgd:` / `adamw:` / `adam:`). |
 | `beta_1` / `beta_2` | 0.9 / 0.999 | Adam/AdamW moment coefficients (ignored by SGD). |
 | `momentum` / `momentum_start` | 0.937 / 0.8 | Nesterov momentum (warms from start → momentum). |
 | `weight_decay` | `0.0005` | Applied to weight tensors (`kernel`) only, not biases/BN — per SGDTorch's three param groups. |
-| `warmup_steps` | `≈3 × steps_per_loop` | SGD momentum/bias warmup (≈3 epochs of steps); BN/bias groups ramp DOWN from `smart_bias_lr` (design_register entry 2). Set explicitly in the experiment YAML for the run's steps/epoch. |
+| `warmup_steps` | `≈3 × steps_per_loop` | SGD momentum/bias warmup (≈3 epochs of steps); the weight group's LR ramps UP from 0 while the BN/bias groups ramp DOWN from `smart_bias_lr`. Set explicitly in the experiment YAML for the run's steps/epoch. |
 | `learning_rate.type` | `cosine` | Schedule: `cosine` (default) · `linear` · `step` · `polynomial` · `constant`. |
 | `learning_rate.initial_learning_rate` / `decay_steps` / `alpha` | 0.01 / `steps_per_loop × epochs` / 0.01 | `decay_steps` should equal `steps_per_loop × epochs`, i.e. `train_steps // grad_accum_steps` (`run_train` warns otherwise). |
 | `learning_rate.step_size` / `gamma` / `power` | 30000 / 0.1 / 1.0 | Used by `step` (gamma every step_size) / `polynomial` (power) schedules. |
 | `learning_rate.warmup_steps` / `warmup_init_lr` | 0 / 0.0 | Optional linear LR-warmup wrapper (0 = off; SGD keeps its own momentum/bias warmup). |
-| `ema.average_decay` / `dynamic_decay` | 0.9999 / `true` | EMA `min(0.9999, (1+step)/(10+step))`. EMA weights are swapped in for eval. |
+| `ema.average_decay` / `dynamic_decay` | 0.9999 / `true` | EMA decay `0.9999 × (1 − exp(−step/2000))` (YOLOv5/v8 ModelEMA ramp). EMA weights are swapped in for eval. |
 
 Gradient clipping is `task.gradient_clip_norm` (default `0.0` = off): SGDTorch clips per-call,
 keras optimizers (adam/adamw) set `global_clipnorm`. Activation is `task.model.norm_activation.activation`
@@ -158,7 +159,7 @@ keras optimizers (adam/adamw) set `global_clipnorm`. Activation is `task.model.n
 | `finetune_from` | `None` | **Fine-tuning** (same task, new data): load the FULL model from a trained `ckpt-N`, preferring its EMA/deployed weights, into a **fresh optimizer/EMA/step** (new LR schedule). Overrides via `--finetune_from`. Mutually exclusive with `init_checkpoint`. Fresh-start-only (resume ignores it). See [guides/finetuning](guides/finetuning.md). |
 | `freeze_modules` | `[]` | Freeze whole modules (`trainable=False`; BN in inference mode) — subset of `{backbone, decoder, head}`. Excluded from grads/optimizer/EMA. At least one module must stay trainable. |
 | `freeze_backbone_layers` | `0` | Partial freezing: freeze the **first N** top-level backbone layers (`stem_conv1 … sppf`, 10 total) — the "freeze early layers, fine-tune the rest" recipe. `0` = off. The startup log lists what was frozen. |
-| `init_checkpoint` | `None` | **Transfer-init** (new task/head): warm-start source for the selected modules. Auto-detected: legacy → frozen/structural; **this codebase's own checkpoint → native**. See [checkpoint_migration](../tools/checkpoint_migration.py). |
+| `init_checkpoint` | `None` | **Transfer-init** (new task/head): warm-start source for the selected modules, from a checkpoint **produced by this codebase**. Loaded via the EMA-aware full-model loader (`tools/shared/ckpt_loading.py:restore_eval_weights` — EMA shadows preferred); non-selected modules keep their fresh init. Fresh-start-only (resume ignores it). |
 | `init_checkpoint_modules` | `[backbone, decoder]` | Which modules `init_checkpoint` warm-starts (head randomly initialized otherwise). For same-task continuation use `finetune_from` instead. |
 
 ## Validated invariants (`scripts/run_train.py:_validate_config`)

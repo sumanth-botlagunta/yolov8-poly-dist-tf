@@ -6,7 +6,8 @@ Validity keys off the reserved -1.0 polygon sentinel (`pts[:, :, 0] > -1.0`), NO
 `>= 0.0`. A vertex at a slightly-negative input-normalized coordinate that lands in-view
 after clipping is a real vertex and must survive (clipped to the [0,1] edge), keeping the
 polygon GT consistent with the box GT (boxes are clipped, not dropped, for the same
-overflow case). See docs/design_register.md entry 10.
+overflow case). Keying validity off non-negativity instead would silently delete real
+vertices whenever a mosaic tile overflows the canvas.
 """
 
 import numpy as np

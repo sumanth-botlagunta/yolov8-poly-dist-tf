@@ -28,7 +28,7 @@ Full documentation is in [`docs/`](docs/) — see the [index](#documentation) at
 | Activation | ReLU (default; configurable — silu/gelu/leaky_relu/mish/hardswish) |
 | Optimizer | SGDTorch (default) — coupled WD (torch semantics, through momentum), Nesterov, per-param-group, linear momentum warmup; selectable adamw/adam |
 | LR schedule | Cosine decay (default), initial 0.01, α=0.01, over the full `train_steps` (300 epochs); selectable linear/step/polynomial/constant |
-| EMA | Dynamic decay `min(0.9999, (1+step)/(10+step))` |
+| EMA | Dynamic decay `0.9999 × (1 − exp(−step/2000))` (YOLOv5/v8 ModelEMA ramp) |
 
 ---
 
@@ -141,7 +141,7 @@ txt/json/csv with `python -m tools.val_history <run_dir> --epoch N` (or `--best`
 ## Export
 
 Most deployments use the **on-device Qualcomm SNPE/DLC** export — it produces a SavedModel that
-is a drop-in replacement for the legacy device DLC (raw head outputs, `[0,255]` input,
+is a drop-in replacement for the deployed device DLC (raw head outputs, `[0,255]` input,
 DFL-decoded boxes):
 
 ```bash
@@ -179,7 +179,7 @@ optimizers/     SGDTorch (momentum warmup) + EMA
 eval/           COCO / polygon / distance evaluators + per-category report
 train/          task, custom trainer loop, viz
 scripts/        run_train.py (training entry point)
-tools/          eval, export, infer, benchmark, checkpoint_migration; + device/ shared/ pipeline/
+tools/          eval, export, infer, benchmark, compare_nms_modes; + device/ shared/ pipeline/
 tests/          unit / integration / smoke
 ```
 
@@ -197,8 +197,6 @@ tests/          unit / integration / smoke
 | Training — loop, EMA, epoch accounting, distributed | [docs/training.md](docs/training.md) |
 | Configuration — every YAML section/field + invariants | [docs/configuration.md](docs/configuration.md) |
 | Scripts & tools — every command, with inputs explained | [docs/scripts.md](docs/scripts.md) |
-| Checkpoint migration & warm-start | [docs/checkpoint_migration.md](docs/checkpoint_migration.md) |
 | On-device SNPE/DLC export | [docs/device_export.md](docs/device_export.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Testing | [docs/testing.md](docs/testing.md) |
-| Design decisions — non-obvious choices and their reasoning | [docs/design_register.md](docs/design_register.md) |

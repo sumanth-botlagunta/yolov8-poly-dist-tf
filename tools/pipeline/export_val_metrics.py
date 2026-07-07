@@ -92,7 +92,7 @@ def _write_parquet(path_best, path_all, best, allc):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--input', required=True,
-                    help='a val_history.jsonl, a run dir containing it, a legacy '
+                    help='a val_history.jsonl, a run dir containing it, an older-format '
                          'val_metrics/ dir, or a single report JSON')
     ap.add_argument('--out_dir', required=True)
     ap.add_argument('--formats', default='xlsx,csv',
@@ -114,7 +114,7 @@ def main():
     # Resolve input -> a list of report dicts. Sources, in order of preference:
     #   * a val_history.jsonl (the run's append-only store; one report per line)
     #   * a run directory containing val_history.jsonl
-    #   * a directory of legacy per-epoch epoch_*.json / step_*.json reports
+    #   * a directory of older per-epoch epoch_*.json / step_*.json reports
     #   * a single report JSON (e.g. <ckpt>_val.json, or one extracted with
     #     `tools/val_history.py --format json`)
     from eval import val_history

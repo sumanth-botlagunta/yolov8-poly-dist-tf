@@ -150,8 +150,8 @@ def _scale_box_poly_to_canvas(
     N = tf.shape(polys)[0]
     max_v = tf.shape(polys)[1]
     pts = tf.reshape(polys, [N, max_v // 2, 2])
-    # Source validity: -1.0 is the reserved polygon sentinel (design_register entry
-    # 10). A vertex with x strictly > -1.0 is a REAL vertex even when negative — a
+    # Source validity: -1.0 is the reserved polygon sentinel. A vertex with x
+    # strictly > -1.0 is a REAL vertex even when negative — a
     # mosaic-cell placement can legitimately map an in-view object's vertex to a
     # slightly-negative input-normalized coordinate. Using `> -1.0` (not `>= 0.0`)
     # carries that vertex into the canvas instead of overwriting it with -1.0; the
@@ -267,7 +267,6 @@ class Mosaic:
         output_size: List[int],
         mosaic_frequency: float = 0.5,
         mixup_frequency: float = 0.0,
-        letter_box: bool = True,
         mosaic_crop_mode: str = "scale",
         mosaic_center: float = 0.25,
         aug_scale_min: float = 0.5,
@@ -292,7 +291,6 @@ class Mosaic:
         self._W = output_size[1]
         self._mosaic_freq = mosaic_frequency
         self._mixup_freq  = mixup_frequency
-        self._letter_box  = letter_box
         self._crop_mode   = mosaic_crop_mode
         self._center      = mosaic_center
         self._scale_min   = aug_scale_min
@@ -304,7 +302,7 @@ class Mosaic:
         self._perspective = perspective
         self._translate   = translate
         self._rotate_prob = rotate_prob
-        # Per-tile independent scale (original-codebase formulation). When
+        # Per-tile independent scale. When
         # tile_scale_max > 0, each mosaic tile's placement scale is multiplied by
         # an INDEPENDENT uniform draw from [tile_scale_min, tile_scale_max], so
         # the 4 tiles of one mosaic appear at 4 different scales (intra-image
@@ -318,8 +316,8 @@ class Mosaic:
             )
         self._tile_scale_min = tile_scale_min
         self._tile_scale_max = tile_scale_max
-        # Non-mosaic (single) path warp params. The original codebase augments
-        # the two paths DIFFERENTLY: mosaics get the [aug_scale_min/max] warp
+        # Non-mosaic (single) path warp params. The two paths are augmented
+        # DIFFERENTLY: mosaics get the [aug_scale_min/max] warp
         # gain with no translate, singles get NO scale gain (1.0) but a small
         # translate. None = fall back to the mosaic values (back-compat for
         # direct constructions); input_reader wires the parser-level
@@ -331,8 +329,8 @@ class Mosaic:
         self._single_translate = (
             single_translate if single_translate is not None else translate)
         # Flip ownership: when True, this module flips — each mosaic TILE
-        # independently (original-codebase semantics: tiles flip before
-        # placement, the assembled canvas is never mirrored) and each single
+        # independently (tiles flip before placement, the assembled canvas
+        # is never mirrored) and each single
         # image once. The detection train parser's flip must then be OFF or
         # images would flip twice (input_reader wires that). Default False so
         # direct constructions (tests) keep deterministic geometry.
@@ -454,7 +452,7 @@ class Mosaic:
         (xmin ↔ 1 − xmax) and valid polygon x (keeping the -1 sentinel).
         Applied per mosaic TILE (before placement) and per single image, so
         tiles of one mosaic flip independently — the assembled canvas itself
-        is never mirrored (original-codebase semantics).
+        is never mirrored.
         """
         img, boxes, polys = random_horizontal_flip(
             ex['image'],
@@ -536,9 +534,9 @@ class Mosaic:
     def _single(self, ex: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
         """Non-mosaic path: flip + random_perspective with the SINGLE-path params.
 
-        Uses single_scale_min/max + single_translate (original codebase: no
-        scale gain and a small translate for non-mosaic images) rather than
-        the mosaic warp bounds.
+        Uses single_scale_min/max + single_translate (no scale gain and a
+        small translate for non-mosaic images) rather than the mosaic warp
+        bounds.
         """
         if self._random_flip:
             ex = self._flip_example(ex)
@@ -633,8 +631,8 @@ class Mosaic:
             w_in_f = tf.cast(w_in, tf.float32)
             # Placement scale: long side = output size (consistent upright tiles),
             # optionally multiplied by an INDEPENDENT per-tile draw from
-            # [tile_scale_min, tile_scale_max] (original-codebase formulation —
-            # each tile lands at its own scale, giving intra-image scale
+            # [tile_scale_min, tile_scale_max] (each tile lands
+            # at its own scale, giving intra-image scale
             # diversity on top of the single canvas->output warp gain). Tiles
             # are anchored at the moving center corner, so an overscaled tile
             # only ever overflows AWAY from the other cells and is cropped at
@@ -711,8 +709,8 @@ class Mosaic:
             'source_id':            one.get('source_id', tf.constant('mosaic')),
         }
 
-        # Annotation transform uses the SAME global M as the legacy single warp,
-        # so the label math is bit-identical to canvas-then-_warp.
+        # Annotation transform uses the SAME global M as the canvas→output
+        # image warp, so the label math is bit-identical to canvas-then-_warp.
         boxes_out, keep, polys_out = transform_boxes_polygons(
             boxes_all, polys_all, M,
             h_in=H2, w_in=W2,

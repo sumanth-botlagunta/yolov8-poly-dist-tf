@@ -222,9 +222,9 @@ class InputReader:
             def _pre_resize_for_mosaic(ex, H=_H, W=_W):
                 # Skip the (expensive, full-image float32) resize when the image
                 # is already exactly the target size — true for every record of
-                # a pre-resized dataset variant (tools/pipeline/reencode_tfds_672.py) and
-                # the occasional natively-sized capture. Runtime tf.cond because
-                # decoded shapes are dynamic; the identity branch is ~free.
+                # a pre-resized dataset variant and the occasional natively-sized
+                # capture. Runtime tf.cond because decoded shapes are dynamic;
+                # the identity branch is ~free.
                 img_in = ex['image']
                 shp = tf.shape(img_in)
 
@@ -259,7 +259,7 @@ class InputReader:
             # this, padded_batch pads every numeric field with 0, which is WRONG
             # for groundtruth_polygons: 0.0 is a valid (top-left) vertex coordinate,
             # so 0-padded rows would read as real vertices instead of the reserved
-            # -1.0 sentinel (see docs/design_register entry 10) and corrupt the
+            # -1.0 sentinel and corrupt the
             # PolyYOLO radial target. We pin -1.0 for polygons and the natural empty
             # value for every other field. Keyed by name so it survives spec
             # reordering; dtypes match the decoder exactly.
@@ -535,12 +535,11 @@ def build_input_reader_from_config(
             aug_scale_min=parser_cfg.aug_scale_min,
             aug_scale_max=parser_cfg.aug_scale_max,
             # Flip ownership: during training the Mosaic module flips (per
-            # TILE for mosaics, per image for singles — original-codebase
-            # semantics); the parser flipping the assembled output on top
-            # would mirror the mosaic canvas as a whole, which the original
-            # never does. Eval keeps the config value (false anyway).
+            # TILE for mosaics, per image for singles); the parser flipping
+            # the assembled output on top would mirror the mosaic canvas as
+            # a whole, which must never happen. Eval keeps the config value
+            # (false anyway).
             random_flip=parser_cfg.random_flip and not is_training,
-            letter_box=parser_cfg.letter_box,
             resize_with_random_method=parser_cfg.resize_with_random_method,
             albumentations_frequency=parser_cfg.albumentations_frequency,
             area_thresh=parser_cfg.area_thresh,
@@ -571,9 +570,9 @@ def build_input_reader_from_config(
             group_size=mosaic_cfg.group_size,
             decodes_per_output=mosaic_cfg.decodes_per_output,
             # Single-image (non-mosaic) path: the parser-level scale bounds
-            # and translate (original codebase: singles get scale 1.0 and a
-            # small translate; the mosaic warp bounds above apply to mosaics
-            # only). Flip is owned by the mosaic module during training.
+            # and translate (singles get scale 1.0 and a small translate;
+            # the mosaic warp bounds above apply to mosaics only). Flip is
+            # owned by the mosaic module during training.
             single_scale_min=parser_cfg.aug_scale_min,
             single_scale_max=parser_cfg.aug_scale_max,
             single_translate=parser_cfg.aug_rand_translate,

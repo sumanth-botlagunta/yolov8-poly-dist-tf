@@ -4,12 +4,12 @@ A checkpoint is the product of **config + code + data**; ``params.yaml`` already
 the config. This adds the other two (plus the invocation and environment) so the run
 directory answers "what exactly produced this checkpoint?" on its own:
 
-  * **code** — git commit + branch + dirty flag, and the uncommitted ``run.diff`` if any.
+  * **code** — git commit + branch + dirty flag.
   * **data** — each TFDS dataset's requested AND *resolved* version (best-effort).
   * **invocation** — the command line + the seed-init / resume sources.
   * **environment** — TF / Python / platform / host / GPUs + start time.
 
-Writes ``<output_dir>/run_metadata.json`` (and ``run.diff`` when the tree is dirty). Runs
+Writes ``<output_dir>/run_metadata.json``. Runs
 once at startup, never raises (provenance must not break training): every probe is wrapped.
 """
 
@@ -42,24 +42,12 @@ def _git_info(output_dir: str) -> dict:
     if commit is None:
         return {'available': False}
     status = _git(['status', '--porcelain'])
-    dirty = bool(status)
-    info = {
+    return {
         'available': True,
         'commit': commit,
         'branch': _git(['rev-parse', '--abbrev-ref', 'HEAD']),
-        'dirty': dirty,
-        'diff_file': None,
+        'dirty': bool(status),
     }
-    if dirty:                      # snapshot the uncommitted changes for exact repro
-        diff = _git(['diff', 'HEAD'])
-        if diff:
-            try:
-                with open(os.path.join(output_dir, 'run.diff'), 'w') as f:
-                    f.write(diff)
-                info['diff_file'] = 'run.diff'
-            except Exception:
-                pass
-    return info
 
 
 def _env_info() -> dict:
@@ -113,7 +101,7 @@ def _resolve_version(name_with_ver: str, data_dir) -> Optional[str]:
 
 def write_run_metadata(output_dir: str, config, resume_from: Optional[str] = None,
                        started_at: Optional[str] = None) -> Optional[str]:
-    """Write ``run_metadata.json`` (+ ``run.diff`` if dirty). Returns the path, or None
+    """Write ``run_metadata.json``. Returns the path, or None
     on failure (never raises — provenance must not break a training run)."""
     try:
         os.makedirs(output_dir, exist_ok=True)

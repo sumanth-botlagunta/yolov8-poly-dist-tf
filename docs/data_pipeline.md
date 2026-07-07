@@ -134,8 +134,8 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
   per-image placement scale is fixed (each source resized so its long side = output, then placed
   upright). Per-tile INDEPENDENT scale is config-gated (`mosaic.tile_scale_min/max`, poly_dist
   enables `[0.4, 1.9]`): each tile's placement scale gets its own uniform draw, so one mosaic
-  carries 4 different object scales (intra-image scale diversity, the original-codebase
-  formulation); `0/0` = consistent upright placement. `tile_scale_max <= 2.0` is enforced —
+  carries 4 different object scales (intra-image scale diversity — the strongest scale-invariance
+  signal the detector gets); `0/0` = consistent upright placement. `tile_scale_max <= 2.0` is enforced —
   beyond 2x an overflowing tile can map a real polygon vertex below the `-1.0` sentinel.
 - **Tiles are upright by default.** Rotation fires only on `rotate_prob` of outputs (default 0.10,
   ±`degrees`=10); `shear` defaults to 0. The split center shifts H+V (`mosaic_center`), so each
@@ -173,8 +173,7 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
 ## Polygon-GT correctness notes (train-semantics)
 
 These govern the polygon ground truth the loss sees. Changing them alters the targets, so
-they affect training — changing one mid-run would shift the GT a run is training against. See
-`docs/design_register.md` for the `-1.0` sentinel and clip-to-edge conventions they build on.
+they affect training — changing one mid-run would shift the GT a run is training against.
 
 - **`-1.0` is the only polygon sentinel.** Vertex validity is tested as `x > -1.0`, not
   `x >= 0.0`. A mosaic-canvas-overflow vertex with a slightly-negative input-normalized
@@ -197,7 +196,7 @@ they affect training — changing one mid-run would shift the GT a run is traini
   on decode-time prefix input the sort is a no-op and the output is byte-identical.
 
 - If decode + pre-resize still dominate (see `tools/pipeline/diagnose_pipeline.py` stage table),
-  build pre-resized dataset variants ONCE with `tools/pipeline/reencode_tfds_672.py`: stores 672²
+  point the YAML at pre-resized `<name>_672` dataset variants when available: they store 672²
   JPEG + `orig_height`/`orig_width` (which `PolygonDecoder` prefers, keeping the copy-paste
   resolution correction exact). Detection sets only — servingbot must stay full-resolution
   because the distance parser letterboxes (aspect-preserving), and copy_paste crops are RGBA.

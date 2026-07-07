@@ -38,8 +38,8 @@ Validation at startup (`run_train.py:_validate_config`) checks invariants such a
 ## Optimizer & schedule
 
 The optimizer and LR schedule are **config-selectable** (`optimizer.type` / `learning_rate.type`,
-registry in `optimizers/factory.py`); the defaults below (`sgd` / `cosine`; `sgd_torch` is an
-accepted alias for `sgd`) are the historical path and are reproduced byte-identically.
+registry in `optimizers/factory.py`); the defaults below are `sgd` / `cosine` (the `type` selects
+which nested YAML block is read, e.g. `optimizer: {type: sgd, sgd: {…}}`).
 Alternatives: optimizers `adamw` / `adam`;
 schedules `linear` / `step` / `polynomial` / `constant`; an optional linear LR-warmup wrapper.
 See [configuration.md](configuration.md) for the fields.
@@ -52,8 +52,8 @@ See [configuration.md](configuration.md) for the fields.
   groups use the schedule LR.
 - LR: cosine decay, initial 0.01, α=0.01, over `decay_steps` (= `steps_per_loop × train_epochs`);
   linear warmup over `warmup_steps`.
-- `optimizers/ema.py:ExponentialMovingAverage` — dynamic decay `min(0.9999, (1+step)/(10+step))`,
-  incremented before the decay is read (matches Ultralytics ModelEMA). EMA weights are swapped in
+- `optimizers/ema.py:ExponentialMovingAverage` — dynamic decay `0.9999 × (1 − exp(−step/2000))`,
+  incremented before the decay is read (the YOLOv5/v8 ModelEMA ramp). EMA weights are swapped in
   for evaluation (`swap_in`) and swapped back after (`swap_out`). It asserts the model is fully built when
   constructed (shadow/variable counts must match).
 

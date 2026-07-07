@@ -90,7 +90,6 @@ def _make_v8_parser(albumentations_frequency: float = 0.0):
         aug_scale_min=1.0,
         aug_scale_max=1.0,
         random_flip=False,
-        letter_box=True,
         albumentations_frequency=albumentations_frequency,
     )
 

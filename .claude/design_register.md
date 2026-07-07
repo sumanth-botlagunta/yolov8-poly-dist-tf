@@ -158,3 +158,37 @@ implementation defects:
   shared by decode-viz and the eval metric so they cannot drift — but tuning eval recall also moves the
   TensorBoard overlays. If the conf operating point is ever retuned, consider promoting it to a config
   field.
+
+## 15. Activation is relu everywhere (a swish parity claim was tested and rejected)
+
+A cross-codebase audit claimed the reference model ran a swish backbone/decoder with a relu
+head, which briefly landed here as a swish-trunk config. The claim failed verification: a
+training run with the swish trunk tracked the relu runs' val curves with no separation, and the
+maintainer confirmed relu is correct — the audit's swish extraction was wrong. All tier YAMLs
+use `norm_activation.activation: relu` for the whole network. General caveat that remains true:
+activation settings are train-semantics — activation layers hold no variables, so checkpoints
+*load* across activation settings but weights are only meaningful under the activation they
+were trained with. Do not flip activations on a run in flight.
+
+## 16. EMA dynamic decay is the exponential ramp
+
+`decay = average_decay × (1 − exp(−step/2000))` (`optimizers/ema.py`), the standard
+YOLOv5/YOLOv8 ModelEMA ramp. Decay starts at 0 (shadow = live weights), passes ~0.63×average_decay at
+one time constant (2000 steps), and is within 1% of `average_decay` by ~10k steps. The earlier
+hyperbolic form (`min(average_decay, (1+step)/(10+step))`) saturated much later — the eval
+weights averaged over a shorter horizon through the mid-training epochs, which skews mid-run
+val-curve comparisons against reference runs even though the final converged numbers barely
+differ. Eval-side only (the EMA never feeds back into training), but the swap changes which
+weights are checkpointed as eval weights — treat as fresh-run.
+
+## 17. Per-class NMS kept over class-agnostic (measured, not assumed)
+
+The original codebase ran class-agnostic NMS (one suppression pass over all classes). Ours is
+per-class (after top-1 masking), selectable via `detection_generator.nms_class_mode`. A
+head-to-head on one checkpoint (`tools/compare_nms_modes.py`, same raw predictions through both
+modes) showed agnostic **worse** overall on this data: the precision gain from removing
+cross-class duplicates is smaller than the recall loss on region classes that legitimately
+contain other objects (bathroom / entrance / doorway boxes get suppressed by the higher-scored
+objects inside them). Indoor scenes are full of nested different-class objects, so per-class
+suppression is the correct scope here; `per_class` remains the default and `agnostic` stays
+available for diagnostics.

@@ -37,7 +37,7 @@ def apply_albumentations(image: tf.Tensor, freq: float = 1.0) -> tf.Tensor:
     runs on GPU in graph mode — no Python GIL serialization, no per-image
     Python call overhead.
 
-    Transforms and probabilities match the original albumentations config:
+    Transforms and probabilities match the replaced albumentations config:
         Blur        3×3 box blur                        p=0.01
         MedianBlur  3×3 box blur (mean≈median at k=3)  p=0.01
         ToGray      rgb_to_grayscale tiled to 3ch       p=0.01
@@ -135,7 +135,7 @@ def random_horizontal_flip(
     N = tf.shape(polygons)[0]
     max_v = tf.shape(polygons)[1]
     pts = tf.reshape(polygons, [N, -1, 2])  # [N, n_pairs, (x, y)]
-    valid_x = pts[:, :, 0] > -1.0  # [N, n_pairs] — sentinel is exactly -1.0 (design_register entry 10)
+    valid_x = pts[:, :, 0] > -1.0  # [N, n_pairs] — reserved sentinel is exactly -1.0
     x_flipped = tf.where(valid_x, 1.0 - pts[:, :, 0], pts[:, :, 0])
     pts_flipped = tf.stack([x_flipped, pts[:, :, 1]], axis=-1)
     poly_flipped = tf.reshape(pts_flipped, [N, max_v])
@@ -179,11 +179,10 @@ def make_perspective_matrix(
 ) -> tf.Tensor:
     """Build the random 3x3 (INPUT-px → OUTPUT-px) perspective matrix.
 
-    Identical random matrix construction to the legacy ``random_perspective``
-    inline block: center on (w_in/2, h_in/2) → perspective → rotation·scale →
-    shear → translate-to-output-center. Same draw order (perspective px/py,
-    rotation angle, scale gain, shear x/y, translate x/y) so seeded streams shift
-    minimally.
+    Matrix construction: center on (w_in/2, h_in/2) → perspective →
+    rotation·scale → shear → translate-to-output-center. Fixed draw order
+    (perspective px/py, rotation angle, scale gain, shear x/y, translate x/y)
+    so seeded streams shift minimally when params change.
 
     Args:
         h_in, w_in: INPUT image dims (scalar tensors or python ints).
@@ -198,8 +197,8 @@ def make_perspective_matrix(
         rotate_prob: probability that rotation is applied at all. With
             probability ``1 - rotate_prob`` the rotation angle is forced to 0 so
             the output stays upright; otherwise the angle is drawn from
-            [-degrees, degrees]. Default 1.0 = always rotate (legacy behaviour,
-            exact RNG draw order preserved). Mosaic passes a small value (e.g.
+            [-degrees, degrees]. Default 1.0 = always rotate (single
+            unconditional draw, exact RNG order). Mosaic passes a small value (e.g.
             0.10) so most outputs are upright with rare ± rotation — matching the
             real YOLO mosaic, where ``degrees`` defaults to 0.
 
@@ -230,8 +229,8 @@ def make_perspective_matrix(
               px,  py,  one])
     # Rotation + scale (combined). Rotation is gated by rotate_prob: with
     # probability (1 - rotate_prob) the angle is forced to 0 so the output stays
-    # upright. rotate_prob >= 1.0 keeps the legacy single-draw path exactly (used
-    # by any caller that wants always-on rotation).
+    # upright. rotate_prob >= 1.0 keeps the single unconditional draw exactly
+    # (used by any caller that wants always-on rotation).
     ang = tf.random.uniform([], -degrees, degrees)
     if rotate_prob < 1.0:
         ang = tf.where(tf.random.uniform([]) < rotate_prob, ang, tf.zeros([]))
@@ -313,7 +312,7 @@ def transform_boxes_polygons(
 
     Boxes: transform 4 corners, re-fit AABB, clip to edge, keep by visible-area
     fraction + min side. Polygons: transform vertices, clip to [0,1], keep -1
-    padding. Identical math to the legacy ``random_perspective`` block.
+    padding.
 
     Returns:
         (boxes_clip [N,4] normalized to OUTPUT, keep_mask [N] bool,
@@ -351,8 +350,8 @@ def transform_boxes_polygons(
     N = tf.shape(polygons)[0]
     max_v = tf.shape(polygons)[1]
     pts = tf.reshape(polygons, [N, max_v // 2, 2])           # [N, P, (x, y)]
-    # Source validity: -1.0 is the reserved polygon sentinel (see docs/design_register
-    # entry 10). A vertex with x strictly > -1.0 is a REAL vertex even if it is
+    # Source validity: -1.0 is the reserved polygon sentinel. A vertex with x
+    # strictly > -1.0 is a REAL vertex even if it is
     # negative — mosaic-canvas overflow can legitimately place an in-view object's
     # vertex at a slightly-negative input-normalized coordinate. Using `> -1.0`
     # (not `>= 0.0`) transforms + clips-to-edge those vertices instead of dropping
@@ -401,8 +400,7 @@ def random_perspective(
     project's clip-to-edge convention); originally-padded (-1) vertices stay -1.
 
     Thin wrapper over ``make_perspective_matrix`` / ``apply_perspective_image`` /
-    ``transform_boxes_polygons``; behavior (and random draw order) is identical to
-    the legacy inline implementation.
+    ``transform_boxes_polygons``.
 
     Args:
         image:    uint8 [H, W, 3].
@@ -446,7 +444,8 @@ def random_perspective(
 
 
 # ---------------------------------------------------------------------------
-# Random affine (scale + translate letterbox) — legacy, retained for callers
+# Random affine (scale + translate letterbox) — superseded by
+# random_perspective; retained for existing callers
 # ---------------------------------------------------------------------------
 
 def random_affine(
@@ -527,7 +526,7 @@ def random_affine(
     max_v = tf.shape(polygons)[1]
     pts = tf.reshape(polygons, [N, max_v // 2, 2])  # [N, n_pairs, (x, y)]
 
-    valid_x = pts[:, :, 0] > -1.0  # [N, n_pairs] — sentinel is exactly -1.0 (design_register entry 10)
+    valid_x = pts[:, :, 0] > -1.0  # [N, n_pairs] — reserved sentinel is exactly -1.0
 
     x_out = (pts[:, :, 0] - x_start) / dx_range
     y_out = (pts[:, :, 1] - y_start) / dy_range
@@ -646,7 +645,7 @@ def resample_polygons(
     F = tf.shape(polygons)[1]
     pts = tf.reshape(polygons, [N, F // 2, 2])                       # [N, P, 2]
     P = tf.shape(pts)[1]
-    valid = pts[:, :, 0] > -1.0                                      # [N, P] — sentinel is -1.0 (design_register entry 10)
+    valid = pts[:, :, 0] > -1.0                                      # [N, P] — reserved sentinel is exactly -1.0
 
     # Compact the valid vertices to a contiguous prefix before sampling. Only the
     # copy-paste path (compact=True) needs this: it invalidates out-of-bounds

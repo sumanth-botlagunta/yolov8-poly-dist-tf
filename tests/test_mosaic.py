@@ -598,7 +598,7 @@ class TestMosaicCanvasWarp(unittest.TestCase):
         """center=0, identity affine, 4 solid HxW images → the 4 colors land in
         the TL/TR/BL/BR output quadrants (inner corner of each source).
 
-        With yc=xc=H=W and s_i=1 (nh=H, nw=W), the legacy canvas is 2H×2W with
+        With yc=xc=H=W and s_i=1 (nh=H, nw=W), the mosaic canvas is 2H×2W with
         image i placed so its center-adjacent corner abuts (H, W). M is the
         center-crop: output (x, y) ← canvas (x + W/2, y + H/2). So the output's
         TL quadrant samples canvas [W/2, W) — which is the inner (BR) corner of
@@ -811,7 +811,8 @@ class TestRotationGating(unittest.TestCase):
             self.assertEqual(o10, 0.0)
 
     def test_rotate_prob_one_always_rotates(self):
-        # legacy always-on path: essentially every draw has a nonzero angle
+        # rotate_prob>=1.0 takes the unconditional-rotate path: essentially
+        # every draw has a nonzero angle
         rotated = sum(1 for _ in range(200) if abs(self._offdiag(1.0)[0]) > 1e-6)
         self.assertGreater(rotated, 190)
 

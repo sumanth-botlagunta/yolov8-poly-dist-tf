@@ -989,8 +989,8 @@ class YoloV8Trainer:
         wall       = step_time + data_wait
         # Merged batch (detection + distance rows) — what the step actually consumed.
         throughput = self._merged_batch_size / max(wall, 1e-9)
-        # Ask the EMA wrapper itself (honors the configured average_decay and
-        # dynamic_decay; the old inline formula hardcoded 0.9999).
+        # Ask the EMA wrapper itself so the logged value honors the configured
+        # average_decay and dynamic_decay.
         ema_decay  = float(self._optimizer._get_decay())
 
         with self._tb_writer.as_default():
