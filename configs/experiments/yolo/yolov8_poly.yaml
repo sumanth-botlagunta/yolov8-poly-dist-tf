@@ -113,7 +113,7 @@ task:
       # downstream stage carries [N, 128] instead of [N, 2*max_vertices]. The 24-bin
       # radial target is exact for polygons with <= 64 vertices and within sampling
       # tolerance otherwise. Mirrors yolov8_poly_dist.yaml.
-      resample_points: 64
+      resample_points: 0
       aug_rand_hue: 0.015
       aug_rand_saturation: 0.7
       aug_rand_brightness: 0.4
@@ -169,7 +169,7 @@ task:
       # Must match the training-stream resampling: arc-length resample makes
       # sparse annotations fill all boundary-crossed bins; eval GT must use the
       # same representation or poly_mIoU penalizes correct full-shape predictions.
-      resample_points: 64
+      resample_points: 0
       aug_rand_hue: 0.0
       aug_rand_saturation: 0.0
       aug_rand_brightness: 0.0

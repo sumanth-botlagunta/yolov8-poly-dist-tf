@@ -163,12 +163,11 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
 - Colour augmentation (`batch_color_aug.py`) runs inside `train_step`; the `train/data_wait_ms`
   TensorBoard scalar (written by `YoloV8Trainer`) separates data-wait time from compute time,
   making it easy to tell whether the bottleneck is in tf.data or on the GPU.
-- `parser.resample_points: 64` (both the detection and distance streams in
-  `yolov8_poly_dist.yaml`) resamples polygons to 64 vertices at decode, so every downstream
-  stage carries `[N, 128]` instead of the raw stored width (up to `[N, 10940]`). Arc-length
-  resampling interpolates 64 points uniformly along the closed contour (interpolating on edges,
-  NOT subsampling original vertices), so for polygons with more than 64 original vertices the
-  radial target is within sampling tolerance, not exact; it is exact only for ≤64-vertex polygons.
+- `parser.resample_points` is 0 (off) in the tier YAMLs. When set to N>0, polygons are
+  arc-length-resampled to N vertices at decode, capping every downstream stage at `[N, 2N]`
+  columns instead of the raw stored width (up to `[N, 10940]`); points are interpolated
+  uniformly along the closed contour, not subsampled from stored vertices. With it off, the
+  raw width flows through the pipeline — watch padded-batch memory and `train/data_wait_ms`.
 
 ## Polygon-GT correctness notes (train-semantics)
 

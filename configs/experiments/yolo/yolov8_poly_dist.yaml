@@ -125,7 +125,7 @@ task:
       # carries [N, 128] instead of [N, 3972]. The 24-bin radial target is exact
       # for polygons with <= 64 vertices and within sampling tolerance otherwise
       # (tests/test_polygon_preprocessing.py).
-      resample_points: 64
+      resample_points: 0
       aug_rand_hue: 0.015
       aug_rand_saturation: 0.7
       aug_rand_brightness: 0.4
@@ -204,7 +204,7 @@ task:
         # Shrink servingbot's [N, 10940] polygon tensors at decode (the distance
         # stream's letterbox transforms every vertex; same exactness guarantee
         # as the detection stream's resample).
-        resample_points: 64
+        resample_points: 0
         aug_rand_hue: 0.015
         aug_rand_saturation: 0.7
         aug_rand_brightness: 0.4
@@ -235,7 +235,7 @@ task:
       # Must match the training-stream resampling: arc-length resample makes
       # sparse annotations fill all boundary-crossed bins; eval GT must use the
       # same representation or poly_mIoU penalizes correct full-shape predictions.
-      resample_points: 64
+      resample_points: 0
       aug_rand_hue: 0.0
       aug_rand_saturation: 0.0
       aug_rand_brightness: 0.0
