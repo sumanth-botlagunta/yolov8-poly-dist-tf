@@ -153,6 +153,7 @@ _RUNTIME_KEYS = frozenset({
     "distribution_strategy", "num_gpus", "mixed_precision_dtype", "run_eagerly",
     "enable_xla",
     "inter_op_threads", "intra_op_threads",
+    "disable_onednn",
 })
 
 def _build_runtime_config(r: Dict[str, Any]) -> RuntimeConfig:
@@ -165,6 +166,7 @@ def _build_runtime_config(r: Dict[str, Any]) -> RuntimeConfig:
         enable_xla=r.get("enable_xla", False),
         inter_op_threads=r.get("inter_op_threads", 0),
         intra_op_threads=r.get("intra_op_threads", 0),
+        disable_onednn=r.get("disable_onednn", False),
     )
 
 
@@ -433,7 +435,9 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
     lr_raw     = lr_block.get(lr_type, lr_block.get("cosine", lr_block))
     opt_block  = opt_raw.get("optimizer", {})
     opt_type   = opt_block.get("type", "sgd")
-    sgd_raw    = opt_block.get(opt_type, opt_block)
+    # Params come from the type-named block; a type without its own block (e.g.
+    # sgd_legacy, which shares SGD's params) falls back to the sgd block.
+    sgd_raw    = opt_block.get(opt_type, opt_block.get("sgd", opt_block))
     # SGD momentum/bias warmup is driven by OptimizerConfig.warmup_steps; LR
     # warmup is LrScheduleConfig.warmup_steps.
 

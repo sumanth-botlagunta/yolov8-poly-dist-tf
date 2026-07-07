@@ -187,6 +187,23 @@ def _keras_clip(clip_norm):
     return {'global_clipnorm': clip_norm} if clip_norm and clip_norm > 0.0 else {}
 
 
+@OPTIMIZERS.register('sgd_legacy')
+def _build_sgd_legacy(opt_cfg, lr_fn, bias_lr_scale, clip_norm=0.0):
+    # Same update math as 'sgd', hosted on the Keras LEGACY optimizer base class —
+    # an A/B probe for framework-version effects in the gradient-apply stack.
+    from optimizers.sgd_legacy import SGDTorchLegacy
+    return SGDTorchLegacy(
+        lr_fn=lr_fn,
+        momentum=opt_cfg.momentum,
+        momentum_start=opt_cfg.momentum_start,
+        nesterov=opt_cfg.nesterov,
+        weight_decay=opt_cfg.weight_decay,
+        warmup_steps=opt_cfg.warmup_steps,
+        bias_lr_scale=bias_lr_scale,
+        **_keras_clip(clip_norm),
+    )
+
+
 @OPTIMIZERS.register('adamw')
 def _build_adamw(opt_cfg, lr_fn, bias_lr_scale, clip_norm=0.0):
     # Decoupled weight decay (the common modern default). LR warmup, if any, is in lr_fn.

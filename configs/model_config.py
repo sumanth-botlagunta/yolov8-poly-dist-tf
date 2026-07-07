@@ -43,6 +43,10 @@ class RuntimeConfig:
     # actual quota. Applied in scripts/run_train.py before any TF op runs.
     inter_op_threads: int = 0
     intra_op_threads: int = 0
+    # Sets TF_ENABLE_ONEDNN_OPTS=0 before TensorFlow is imported (oneDNN CPU-op
+    # rewrites can change float behavior across framework versions; disabling
+    # them isolates that variable in A/B runs). Read pre-import by run_train.
+    disable_onednn: bool = False
 
 
 @dataclasses.dataclass

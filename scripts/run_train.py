@@ -13,6 +13,35 @@ Flags:
 
 import logging as stdlib_logging
 import os
+import sys
+
+
+def _apply_pre_import_runtime_flags() -> None:
+    """Honor runtime flags that TensorFlow reads at IMPORT time.
+
+    ``runtime.disable_onednn: true`` sets TF_ENABLE_ONEDNN_OPTS=0, which only
+    takes effect if set before ``import tensorflow`` — so the raw YAML is
+    peeked here, before the TF import below, without the full config loader.
+    """
+    cfg_path = None
+    for i, arg in enumerate(sys.argv):
+        if arg == '--config' and i + 1 < len(sys.argv):
+            cfg_path = sys.argv[i + 1]
+        elif arg.startswith('--config='):
+            cfg_path = arg.split('=', 1)[1]
+    if not cfg_path or not os.path.exists(cfg_path):
+        return
+    try:
+        import yaml
+        with open(cfg_path) as f:
+            raw = yaml.safe_load(f) or {}
+    except Exception:
+        return
+    if (raw.get('runtime') or {}).get('disable_onednn', False):
+        os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+
+
+_apply_pre_import_runtime_flags()
 
 from absl import app, flags, logging
 import tensorflow as tf
@@ -276,6 +305,12 @@ def _apply_runtime_config(runtime_cfg, debug: bool) -> None:
     if run_eagerly:
         tf.config.run_functions_eagerly(True)
         logging.set_verbosity(logging.DEBUG)
+
+    # disable_onednn itself is honored PRE-IMPORT (_apply_pre_import_runtime_flags —
+    # TF reads TF_ENABLE_ONEDNN_OPTS at import time); this just records the state.
+    if getattr(runtime_cfg, 'disable_onednn', False):
+        logging.info("oneDNN ops disabled (TF_ENABLE_ONEDNN_OPTS=%s).",
+                     os.environ.get('TF_ENABLE_ONEDNN_OPTS', '<unset>'))
 
     # Thread-pool caps — must run before the TF context initializes (i.e. before
     # any op executes). On cgroup-capped machines TF sizes its pools to the
