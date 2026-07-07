@@ -78,7 +78,12 @@ task:
     poly_dist_gain: 0.45
     poly_conf_gain: 0.2
     poly_angle_gain: 0.4
-    poly_gain: 0.5
+    # Halved from 0.5: the polygon head was over-served relative to the product
+    # metric (poly_recall50 ~0.83 vs box recall50 ~0.70 on the same checkpoints)
+    # while ~4/5 of the polygon share is the poly_angle BCE entropy floor —
+    # gradient budget spent where F1 cannot benefit. Frees ~14% of the total
+    # gradient toward box/cls/dfl; expected cost is a small poly_mIoU dip.
+    poly_gain: 0.25
     tal_alpha: 0.5
     tal_beta: 6.0
     topk: 10
@@ -296,7 +301,7 @@ trainer:
         decay_steps: 635400
         alpha: 0.01
     optimizer:
-      type: sgd
+      type: sgd_legacy   # A/B probe: same update math on the legacy Keras optimizer base
       sgd:
         name: SGD
         momentum: 0.937
@@ -314,6 +319,8 @@ trainer:
         # (read by task.py via OptimizerConfig.warmup_steps).
 
 runtime:
+  # A/B probe: disable oneDNN CPU-op rewrites (TF reads this at import time).
+  disable_onednn: true
   # Single H100: one_device avoids MirroredStrategy variable wrapping overhead.
   distribution_strategy: one_device
   num_gpus: 1
