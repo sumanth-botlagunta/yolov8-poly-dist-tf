@@ -503,7 +503,11 @@ class TaskAlignedLossExtended:
         anc_list, stride_list = [], []
 
         for level_str, stride_val in _LEVEL_STRIDES.items():
-            box_lvl = feats["box"][level_str]                # [B, H, W, 64]
+            # Defensive float32: the heads pin their outputs to float32 even under
+            # a mixed-bfloat16 policy, so these casts are no-ops today — they keep
+            # every loss term in full precision if that pinning is ever removed
+            # (a bf16 loss here would silently degrade DFL/BCE numerics).
+            box_lvl = tf.cast(feats["box"][level_str], tf.float32)   # [B, H, W, 64]
             B_val   = tf.shape(box_lvl)[0]
             fH      = tf.shape(box_lvl)[1]
             fW      = tf.shape(box_lvl)[2]
@@ -511,23 +515,28 @@ class TaskAlignedLossExtended:
 
             box_raw_list.append(tf.reshape(box_lvl, [B_val, A_lvl, -1]))
             cls_list.append(
-                tf.reshape(feats["cls"][level_str], [B_val, A_lvl, -1])
+                tf.reshape(tf.cast(feats["cls"][level_str], tf.float32),
+                           [B_val, A_lvl, -1])
             )
 
             if self.with_polygons:
                 poly_a_list.append(
-                    tf.reshape(feats["poly_angle"][level_str], [B_val, A_lvl, -1])
+                    tf.reshape(tf.cast(feats["poly_angle"][level_str], tf.float32),
+                               [B_val, A_lvl, -1])
                 )
                 poly_d_list.append(
-                    tf.reshape(feats["poly_dist"][level_str], [B_val, A_lvl, -1])
+                    tf.reshape(tf.cast(feats["poly_dist"][level_str], tf.float32),
+                               [B_val, A_lvl, -1])
                 )
                 poly_c_list.append(
-                    tf.reshape(feats["poly_conf"][level_str], [B_val, A_lvl, -1])
+                    tf.reshape(tf.cast(feats["poly_conf"][level_str], tf.float32),
+                               [B_val, A_lvl, -1])
                 )
 
             if self.with_distance:
                 dist_list.append(
-                    tf.reshape(feats["dist"][level_str], [B_val, A_lvl, 1])
+                    tf.reshape(tf.cast(feats["dist"][level_str], tf.float32),
+                               [B_val, A_lvl, 1])
                 )
 
             # Anchor grid for this FPN level

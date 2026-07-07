@@ -208,6 +208,13 @@ class V8ParserExtended(Parser):
         # Clip polygons to output bounds (after resize)
         polygons = clip_polygon_coords(polygons)
 
+        # Clip GT boxes to [0, 1] — the same defense the train path gets from
+        # clip_boxes. The letterbox affine cannot push a well-formed box out of
+        # range, so this only fires on marginally-invalid source annotations
+        # (e.g. xmax = 1.0003), which would otherwise reach the AP computation
+        # unclipped while the train stream sees them clipped.
+        boxes = tf.clip_by_value(boxes, 0.0, 1.0)
+
         # Image stays uint8; normalization /255 happens once per batch in
         # train.task.validation_step. Gray border (replacing near-black
         # letterbox-padding pixels with mid-gray) is applied here on uint8:
@@ -391,7 +398,12 @@ class V8ParserExtended(Parser):
         # Empty bins (no vertex) carry offset 0.0; the loss masks them out via conf.
         angle_bins = angle_bins * conf_bins                                  # [N, n_angles]
 
-        # Interleave [dist0, angle0, conf0, dist1, angle1, conf1, ...]
+        # Interleave [dist0, angle0, conf0, dist1, angle1, conf1, ...].
+        # NOTE — channel-order trap: the GT per-bin order here is (dist, angle,
+        # conf), but the PREDICTION tensor from the detection generator stacks
+        # (conf, dist, angle) (models/detection_generator.py, poly_out). The two
+        # conventions are pinned by tests/unit/test_polygon_channel_order.py;
+        # never index one with the other's layout.
         result = tf.stack([max_dists, angle_bins, conf_bins], axis=-1)  # [N, n_angles, 3]
         return tf.reshape(result, [N, n_angles * 3])                     # [N, n_angles*3]
 

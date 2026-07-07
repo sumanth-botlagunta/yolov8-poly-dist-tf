@@ -356,6 +356,11 @@ class YoloV8Layer:
         )
 
         # Stack polygon channels: (conf, dist, angle) — all activated
+        # NOTE — channel-order trap: predictions stack (conf, dist, angle) per
+        # bin, but the GT radial target interleaves (dist, angle, conf)
+        # (data_pipeline/yolo_parser.py, _preprocess_polygons_v2). Both layouts
+        # are pinned by tests/unit/test_polygon_channel_order.py; never index
+        # one with the other's layout.
         poly_out = tf.stack([out_pc, out_pd, out_pa], axis=-1)   # [B, max_boxes, 24, 3]
 
         # Clip final boxes to the image: the DFL decode can place edges beyond
