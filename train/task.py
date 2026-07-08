@@ -122,10 +122,29 @@ class YoloV8Task:
                 if m not in modules and getattr(model, m, None) is not None]
         snapshot = {m: [tf.identity(v) for v in getattr(model, m).variables]
                     for m in keep}
+        # Fingerprint the requested modules BEFORE the restore: if the checkpoint
+        # does not actually cover them (wrong path, wrong format, foreign layout),
+        # expect_partial() inside the loader restores nothing and raises nothing —
+        # and the "warm start" is silently random weights. Fail loudly instead.
+        before = {m: [tf.reduce_sum(tf.abs(v)).numpy() for v in getattr(model, m).variables]
+                  for m in modules}
         kind = restore_eval_weights(model, ckpt_path)
         for m, vals in snapshot.items():
             for var, val in zip(getattr(model, m).variables, vals):
                 var.assign(val)
+        changed = sum(
+            1
+            for m in modules
+            for b, v in zip(before[m], getattr(model, m).variables)
+            if abs(float(tf.reduce_sum(tf.abs(v)).numpy()) - float(b)) > 1e-12
+        )
+        total = sum(len(getattr(model, m).variables) for m in modules)
+        if changed < total // 2:
+            raise ValueError(
+                f"task.init_checkpoint: restore from '{ckpt_path}' changed only "
+                f"{changed}/{total} variables of {modules} — the checkpoint does not "
+                f"cover the requested modules (wrong path or incompatible format). "
+                f"Refusing to train from silently-random weights.")
         n_vars = sum(len(getattr(model, m).variables) for m in modules)
         log.info("Transfer-init: restored %s (%d variables, %s weights) from %s; "
                  "kept fresh init for: %s.",
