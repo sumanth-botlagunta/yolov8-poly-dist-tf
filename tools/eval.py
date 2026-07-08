@@ -118,6 +118,15 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
 
     model = _load_model_from_checkpoint(config, ckpt_path)
 
+    # Compile the forward pass (backbone → head → detection generator) into one
+    # graph. Eagerly, the generator's per-image map_fn + per-class NMS loop runs
+    # as thousands of Python-dispatched ops per batch — the dominant eval cost.
+    # The last val batch is smaller (drop_remainder=False), so TF re-traces once
+    # at the end; harmless.
+    @tf.function
+    def _predict(images):
+        return model(normalize_images(images), training=False)
+
     # Select split. validation_data is the held-out test set here, so both
     # 'val' and 'test' map to it; only 'train' selects the training split.
     task_cfg = config.task
@@ -155,7 +164,7 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
     for step, (images, labels) in enumerate(val_ds):
         # Eval parser emits uint8; the model needs float32 [0, 1] (feeding
         # uint8 raises on the float32 conv kernels).
-        predictions = model(normalize_images(images), training=False)
+        predictions = _predict(images)
         coco_ev.update(predictions, labels)
 
         if failure_collector is not None:
