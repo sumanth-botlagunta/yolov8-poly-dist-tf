@@ -312,11 +312,14 @@ class YoloV8Trainer:
             # that on resume we correctly skip this epoch and start from the next one.
             self._epoch_var.assign(epoch + 1)
 
-            # Epoch-end checkpoint — always save, but skip if the last training step
-            # already wrote one (avoids double-save when ckpt_interval == steps_per_loop).
-            if python_step != last_saved_step:
-                self._save_checkpoint()
-                last_saved_step = python_step
+            # Epoch-end checkpoint — ALWAYS written, even when the in-loop
+            # periodic save already wrote this step: that pre-validation save
+            # recorded the epoch as not-yet-validated (see _sync_completed_epochs),
+            # and this save re-writes the same checkpoint number with validation
+            # completed. Costs one extra checkpoint write per epoch when
+            # ckpt_interval == steps_per_loop; buys exact resume semantics.
+            self._save_checkpoint()
+            last_saved_step = python_step
 
             # Honor a preemption signal that arrived during validation / checkpointing.
             # Validation can take minutes; without this check a SIGTERM during it would
@@ -389,12 +392,17 @@ class YoloV8Trainer:
         resume from one re-ran a full extra epoch (and re-launching a finished
         run trained one epoch past ``decay_steps`` at the cosine floor).
 
-        Training-wise the epoch IS complete at this point; only its validation
-        hasn't run yet. A resume from this checkpoint therefore skips that
-        validation pass (same outcome as a preemption during validation).
+        Training-wise the epoch IS complete at this point, but its validation
+        has not run yet, so the boundary save records the epoch as NOT completed
+        (``completed_epochs`` = trained epochs − 1). If the process dies during
+        validation, a resume then runs zero training steps for that epoch
+        (``_steps_for_epoch`` returns 0) and executes the pending validation —
+        no boundary checkpoint is ever left unevaluated. After validation
+        succeeds, the epoch-end save re-writes the same checkpoint number with
+        the true ``completed_epochs``, so a normal restart does not re-validate.
         """
         if steps_per_loop > 0 and python_step % steps_per_loop == 0:
-            self._epoch_var.assign(python_step // steps_per_loop)
+            self._epoch_var.assign(python_step // steps_per_loop - 1)
 
     @staticmethod
     def _steps_for_epoch(global_step: int, steps_per_loop: int, epoch: int) -> int:
