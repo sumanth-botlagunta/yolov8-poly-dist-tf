@@ -348,6 +348,12 @@ class TrainerConfig:
     # micro-step, so under N>1 they describe a single micro-batch's gradient, not the
     # averaged gradient that was applied on the apply-step.
     grad_accum_steps: int = 1
+    # False (default): a restart resumes only from epoch-boundary checkpoints, so
+    # every epoch is one full uniform pass of the stream (mid-epoch interruption
+    # saves are ignored; up to one epoch of compute is redone). True: resume from
+    # the newest checkpoint even mid-epoch and run only the remainder to the next
+    # epoch boundary.
+    mid_epoch_resume: bool = False
     optimizer_config: OptimizerConfig = dataclasses.field(default_factory=OptimizerConfig)
 
 

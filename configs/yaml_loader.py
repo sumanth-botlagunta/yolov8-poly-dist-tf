@@ -416,7 +416,7 @@ _TRAINER_KEYS = frozenset({
     "train_epochs", "train_total_examples", "validation_total_examples",
     "checkpoint_interval", "best_checkpoint_eval_metric",
     "best_checkpoint_metric_comp", "max_to_keep", "optimizer_config",
-    "grad_accum_steps",
+    "grad_accum_steps", "mid_epoch_resume",
     # steps_per_loop / train_steps / validation_steps are auto-derived but may be
     # present in YAML as documentation; accept silently.
     "steps_per_loop", "train_steps", "validation_steps",
@@ -474,6 +474,7 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
         best_checkpoint_metric_comp=t.get("best_checkpoint_metric_comp", "higher"),
         max_to_keep=t.get("max_to_keep", 300),
         grad_accum_steps=t.get("grad_accum_steps", 1),
+        mid_epoch_resume=t.get("mid_epoch_resume", False),
         optimizer_config=opt_cfg,
     )
 

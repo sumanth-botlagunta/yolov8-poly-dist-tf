@@ -106,7 +106,9 @@ task:
     tfds_for_cnp_split: train_f
     global_batch_size: 128
     is_training: true
-    shuffle_buffer_size: 1500
+    # sized for the full multi-source detection stream (images stay ENCODED
+    # through shuffle via SkipDecoding; ~30k encoded images is a few GB host RAM)
+    shuffle_buffer_size: 30000
     # tf.data worker threads for the training pipeline (0 = all visible cores;
     # set to the real core quota on cgroup-capped machines).
     private_threadpool_size: 13
@@ -273,6 +275,9 @@ task:
 
 trainer:
   train_epochs: 300
+  # restart policy: resume only from epoch-boundary checkpoints so every epoch
+  # is one full uniform pass (set true to resume mid-epoch remainders instead)
+  mid_epoch_resume: false
   # verified against the actual TFDS builders:
   # cleaner_polygon2026 268,384 + field_misrecog2026 416 + station_misrecog 2,366.
   # (Was 305,780 — stale; it inflated steps/epoch to 2388 vs the true 2118.)

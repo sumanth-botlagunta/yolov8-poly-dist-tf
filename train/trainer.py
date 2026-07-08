@@ -165,7 +165,14 @@ class YoloV8Trainer:
                 # Fixed-count epoch. After a mid-epoch resume global_step is not
                 # a multiple of steps_per_loop; run only the remainder so epoch
                 # boundaries stay at exact multiples (epoch k ends at k*spl).
-                steps_this_epoch = self._steps_for_epoch(python_step, spl)
+                # 0 = this epoch trained fully but its validation never
+                # completed (crash during validation) — fall through with no
+                # training steps so the validation below runs for it now.
+                steps_this_epoch = self._steps_for_epoch(python_step, spl, epoch)
+                if steps_this_epoch == 0:
+                    log.info(
+                        "Epoch %d training already complete at global_step=%d — "
+                        "running its pending validation.", epoch + 1, python_step)
 
                 def _epoch_inputs():
                     for _ in range(steps_this_epoch):
@@ -390,15 +397,21 @@ class YoloV8Trainer:
             self._epoch_var.assign(python_step // steps_per_loop)
 
     @staticmethod
-    def _steps_for_epoch(global_step: int, steps_per_loop: int) -> int:
-        """Steps to run in the epoch starting at ``global_step``.
+    def _steps_for_epoch(global_step: int, steps_per_loop: int, epoch: int) -> int:
+        """Steps to run in 0-based ``epoch`` starting at ``global_step``.
 
         A full epoch is ``steps_per_loop`` steps; after a mid-epoch resume only
-        the remainder to the next multiple of ``steps_per_loop`` is run, so
-        epoch k always ends at exactly ``k * steps_per_loop`` global steps and
-        the LR schedule / checkpoint cadence stay aligned with epochs.
+        the remainder to the epoch's end boundary (``(epoch+1) * steps_per_loop``)
+        is run, so epoch k always ends at exactly ``k * steps_per_loop`` global
+        steps and the LR schedule / checkpoint cadence stay aligned with epochs.
+
+        Returns 0 when the epoch's training already completed but the epoch was
+        never marked done — i.e. the previous process died DURING validation.
+        The caller then skips training and runs the pending validation directly,
+        so no epoch-boundary checkpoint is left unevaluated.
         """
-        return steps_per_loop - (global_step % steps_per_loop)
+        target = (epoch + 1) * steps_per_loop
+        return max(0, min(steps_per_loop, target - global_step))
 
     # ------------------------------------------------------------------
     # Setup
@@ -860,10 +873,33 @@ class YoloV8Trainer:
             resume_from: Optional explicit checkpoint path. If given, it wins
                          over both directories.
         """
-        target = resume_from or self._pick_latest_checkpoint([
-            self._ckpt_manager.latest_checkpoint,
-            self._resume_ckpt_manager.latest_checkpoint,
-        ])
+        target = resume_from
+        if not target:
+            candidates = (list(self._ckpt_manager.checkpoints)
+                          + list(self._resume_ckpt_manager.checkpoints))
+            spl = self._config.trainer.steps_per_loop
+            mid_epoch_ok = getattr(self._config.trainer, 'mid_epoch_resume', False)
+            if not mid_epoch_ok and spl > 0:
+                # Boundary-only resume (default): every epoch is one full,
+                # uniform pass of the stream. Mid-epoch interruption saves are
+                # ignored (up to one epoch of compute is redone) unless they
+                # are the ONLY restore points available.
+                boundary = [c for c in candidates
+                            if self._checkpoint_step(c) % spl == 0]
+                dropped = sorted(set(candidates) - set(boundary))
+                if dropped and boundary:
+                    log.info(
+                        "mid_epoch_resume=false: ignoring %d mid-epoch "
+                        "checkpoint(s) %s; resuming from the last epoch "
+                        "boundary.", len(dropped),
+                        [os.path.basename(d) for d in dropped])
+                elif dropped:
+                    log.warning(
+                        "mid_epoch_resume=false but only mid-epoch checkpoints "
+                        "exist — resuming from one anyway rather than "
+                        "restarting from scratch.")
+                candidates = boundary or candidates
+            target = self._pick_latest_checkpoint(candidates)
         if target:
             self._ckpt.restore(target)
             completed  = int(self._epoch_var)
