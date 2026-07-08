@@ -37,12 +37,18 @@ def show_yaml_blocks(path, title):
             print(f"  {i:>4} {line.rstrip()}")
 
 
+RUN_DIR    = '/group-volume/bot.sumanth/new_codebase_tensorflow_experiments/nov_model_8'
+CONFIG     = 'configs/experiments/yolo/yolov8_nov2_model.yaml'
+CHECKPOINT = 'ckpt-51498'
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--run_dir', required=True)
-    ap.add_argument('--config', default=None)
-    ap.add_argument('--checkpoint', default=None)
+    ap.add_argument('--run_dir', default=RUN_DIR)
+    ap.add_argument('--config', default=CONFIG)
+    ap.add_argument('--checkpoint', default=CHECKPOINT)
     a = ap.parse_args()
+    print(f"run_dir={a.run_dir}\nconfig={a.config}\ncheckpoint={a.checkpoint}")
 
     print("=== A. working tree NOW ===")
     print("  branch :", sh("git rev-parse --abbrev-ref HEAD"))
