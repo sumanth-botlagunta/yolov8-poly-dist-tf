@@ -19,6 +19,11 @@ import argparse
 import json
 import os
 
+# Metadata-only tool: never touch the GPU. A second TF process initializing
+# CUDA against a GPU fully owned by a live training job can crash at the
+# driver level (segfault) instead of raising. Must run before TF is imported.
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
 MISMATCHES = []
 
 
