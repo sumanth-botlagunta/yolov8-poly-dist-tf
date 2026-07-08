@@ -158,3 +158,8 @@ def main():
 
 if __name__ == '__main__':
     main()
+    # Skip interpreter teardown: TF's C++ destructors can segfault at exit in
+    # some builds (after all output is already printed). Flush and hard-exit.
+    import sys
+    sys.stdout.flush(); sys.stderr.flush()
+    os._exit(0)
