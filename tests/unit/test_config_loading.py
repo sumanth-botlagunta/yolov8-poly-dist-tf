@@ -6,9 +6,10 @@ derived fields are computed, and that the ``base:`` include + deep-merge works.
 
 import glob
 import os
+import tempfile
 import unittest
 
-from configs.yaml_loader import load_config, _deep_merge
+from configs.yaml_loader import load_config, _build_data_config, _deep_merge
 
 _EXP_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "configs", "experiments", "yolo"
@@ -97,6 +98,68 @@ class TestConfigLoading(unittest.TestCase):
         override = {"a": {"y": 20, "z": 30}, "c": 4}
         merged = _deep_merge(base, override)
         self.assertEqual(merged, {"a": {"x": 1, "y": 20, "z": 30}, "b": 3, "c": 4})
+
+
+class TestDropRemainderDefaults(unittest.TestCase):
+    """Validation must score every image, so its drop_remainder defaults False."""
+
+    def test_train_stream_defaults_true(self):
+        self.assertTrue(_build_data_config({}).drop_remainder)
+
+    def test_validation_stream_defaults_false(self):
+        self.assertFalse(_build_data_config({}, is_validation=True).drop_remainder)
+
+    def test_explicit_value_wins_on_validation(self):
+        # An explicit True still overrides the validation default (loader honours
+        # the YAML); the run_train guard is what forbids it at launch.
+        self.assertTrue(
+            _build_data_config({"drop_remainder": True}, is_validation=True).drop_remainder
+        )
+
+    def test_shipped_tiers_validation_drop_remainder_false(self):
+        for tier in ("bbox", "poly", "poly_dist"):
+            cfg = load_config(os.path.join(_EXP_DIR, f"yolov8_{tier}.yaml"))
+            self.assertFalse(
+                cfg.task.validation_data.drop_remainder,
+                f"{tier}: validation_data.drop_remainder must be False",
+            )
+            self.assertTrue(cfg.task.train_data.drop_remainder)
+
+
+class TestValidateConfigGuards(unittest.TestCase):
+    """_validate_config rejects configs that would train then crash at validation."""
+
+    def _valid_poly_dist(self, tmp):
+        cfg = load_config(os.path.join(_EXP_DIR, "yolov8_poly_dist.yaml"))
+        cfg.task.train_data.tfds_data_dir = tmp
+        cfg.task.validation_data.tfds_data_dir = tmp
+        if cfg.task.train_data.distance_data is not None:
+            cfg.task.train_data.distance_data.tfds_data_dir = tmp
+        cfg.task.init_checkpoint = None  # avoid the checkpoint-existence check
+        return cfg
+
+    def test_baseline_passes(self):
+        from train.run_train import _validate_config
+        with tempfile.TemporaryDirectory() as tmp:
+            _validate_config(self._valid_poly_dist(tmp), os.path.join(tmp, "out"))
+
+    def test_rejects_validation_drop_remainder_true(self):
+        from train.run_train import _validate_config
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._valid_poly_dist(tmp)
+            cfg.task.validation_data.drop_remainder = True
+            with self.assertRaises(ValueError) as ctx:
+                _validate_config(cfg, os.path.join(tmp, "out"))
+            self.assertIn("drop_remainder", str(ctx.exception))
+
+    def test_rejects_non_square_input_size(self):
+        from train.run_train import _validate_config
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._valid_poly_dist(tmp)
+            cfg.task.model.input_size = [672, 640, 3]
+            with self.assertRaises(ValueError) as ctx:
+                _validate_config(cfg, os.path.join(tmp, "out"))
+            self.assertIn("square", str(ctx.exception))
 
 
 if __name__ == "__main__":

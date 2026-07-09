@@ -321,7 +321,7 @@ class OptimizerConfig:
     beta_2: float = 0.999
     # SGD momentum/bias warmup length. NOT the LR warmup — that lives on
     # LrScheduleConfig.warmup_steps.
-    warmup_steps: int = 7164
+    warmup_steps: int = 6354
     ema: EmaConfig = dataclasses.field(default_factory=EmaConfig)
     learning_rate: LrScheduleConfig = dataclasses.field(default_factory=LrScheduleConfig)
 

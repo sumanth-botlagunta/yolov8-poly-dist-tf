@@ -14,8 +14,14 @@ Pinned contracts:
 import logging
 import unittest
 
+import glob
+import os
+import re
+
 from configs.yaml_loader import (
     _build_data_config,
+    _build_model_config,
+    _build_parser_config,
     _build_trainer_config,
     load_config,
 )
@@ -26,6 +32,10 @@ _TIERS = [
     "configs/experiments/yolo/yolov8_poly.yaml",
     "configs/experiments/yolo/yolov8_poly_dist.yaml",
 ]
+
+_EXP_DIR = os.path.join(
+    os.path.dirname(__file__), "..", "..", "configs", "experiments", "yolo"
+)
 
 
 class TestDeadKeysRemovedFromYaml(unittest.TestCase):
@@ -102,6 +112,87 @@ class TestUnknownKeyWarnings(unittest.TestCase):
         joined = " ".join(cm.output)
         for k in ("validation_interval", "summary_interval", "train_tf_function"):
             self.assertIn(k, joined)
+
+
+class TestRemovedDeadKeysGoneFromYaml(unittest.TestCase):
+    """The optimizer/model/detection/parser keys read by nobody are deleted."""
+
+    DEAD = [
+        "clipnorm", "clipvalue", "global_clipnorm", "decay",
+        "weight_keys", "bias_keys",
+        "darknet_based_model", "anchor_boxes",
+        "topN_per_anchor", "path_scales",
+        "random_pad", "best_match_only", "use_tie_breaker", "anchor_thresh",
+    ]
+
+    def test_dead_keys_absent(self):
+        # Match a key only at the start of a line (after indentation) so substrings
+        # of live keys (weight_decay, average_decay, decay_steps) don't false-hit.
+        for path in _TIERS:
+            with open(path) as f:
+                text = f.read()
+            for key in self.DEAD:
+                self.assertIsNone(
+                    re.search(rf"(?m)^\s*{re.escape(key)}\s*:", text),
+                    f"dead key '{key}' still in {path}",
+                )
+
+
+class TestNestedUnknownKeyWarnings(unittest.TestCase):
+    """Unknown keys in nested sections must surface as warnings, not be dropped."""
+
+    def test_parser_and_mosaic_keys_warn(self):
+        with self.assertLogs("configs.yaml_loader", level="WARNING") as cm:
+            _build_parser_config(
+                {"bogus_parser_key": 1, "mosaic": {"bogus_mosaic_key": 2}}
+            )
+        joined = " ".join(cm.output)
+        self.assertIn("bogus_parser_key", joined)
+        self.assertIn("bogus_mosaic_key", joined)
+
+    def test_model_and_detection_generator_keys_warn(self):
+        with self.assertLogs("configs.yaml_loader", level="WARNING") as cm:
+            _build_model_config(
+                {"bogus_model_key": 1,
+                 "detection_generator": {"bogus_detgen_key": 2}},
+                {},
+            )
+        joined = " ".join(cm.output)
+        self.assertIn("bogus_model_key", joined)
+        self.assertIn("bogus_detgen_key", joined)
+
+    def test_optimizer_and_lr_keys_warn(self):
+        with self.assertLogs("configs.yaml_loader", level="WARNING") as cm:
+            _build_trainer_config({"optimizer_config": {
+                "optimizer": {"type": "sgd", "sgd": {"bogus_sgd_key": 1}},
+                "learning_rate": {"type": "cosine", "cosine": {"bogus_lr_key": 2}},
+            }})
+        joined = " ".join(cm.output)
+        self.assertIn("bogus_sgd_key", joined)
+        self.assertIn("bogus_lr_key", joined)
+
+    def test_shipped_tiers_load_without_warnings(self):
+        logger = logging.getLogger("configs.yaml_loader")
+        records = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        handler = _Capture()
+        logger.addHandler(handler)
+        try:
+            for path in sorted(glob.glob(os.path.join(_EXP_DIR, "*.yaml"))):
+                records.clear()
+                load_config(path)
+                warns = [r.getMessage() for r in records
+                         if r.levelno >= logging.WARNING]
+                self.assertEqual(
+                    warns, [],
+                    f"{os.path.basename(path)} loaded with warnings: {warns}",
+                )
+        finally:
+            logger.removeHandler(handler)
 
 
 class TestDataConfigDefaultsMatchEmptyYaml(unittest.TestCase):

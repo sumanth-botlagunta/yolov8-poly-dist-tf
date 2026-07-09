@@ -179,7 +179,7 @@ utils/                 # runnable CLIs
     export_device_savedmodel.py   # on-device SNPE-shaped SavedModel
     inference_saved_model.py      # folder inference: predictions JSON + visuals
   reports/             # validation-history extraction + reporting
-    val_history.py val_report_txt.py export_val_metrics.py
+    val_history.py       # inspect/extract/export val_history.jsonl (txt/json/csv/xlsx/parquet)
   pipeline/            # data-pipeline diagnostics
     benchmark_pipeline.py diagnose_pipeline.py cloud_diagnose.sh
 tests/                 # unit/ integration/ smoke/ + component tests

@@ -140,7 +140,7 @@ def test_polygon_metrics_docstring_not_angle_logits():
 def test_optimizer_config_has_no_warmup_attr():
     oc = OptimizerConfig()
     assert not hasattr(oc, 'warmup'), "dead WarmupConfig field still on OptimizerConfig"
-    assert oc.warmup_steps == 7164  # the sole warmup control
+    assert oc.warmup_steps == 6354  # the sole warmup control (matches shipped YAMLs)
 
 
 def test_stray_trainer_warmup_block_is_ignored_not_crash():

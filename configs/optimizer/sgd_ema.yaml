@@ -1,3 +1,0 @@
-# SGD + cosine LR + linear warmup + EMA optimizer configuration.
-# initial_lr: 0.01, warmup_steps: 7164, decay_steps: 716400, alpha: 0.01
-# EMA average_decay: 0.9999, dynamic_decay: true

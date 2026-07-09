@@ -1,4 +1,0 @@
-# Model architecture config for YOLOv8-Small.
-# depth_scale: 0.33
-# width_scale: 0.50
-# model_id: cspdarknetv8s

@@ -176,6 +176,15 @@ def _validate_config(config, output_dir: str) -> None:
             )
 
     # --- model consistency ---
+    input_size = task.model.input_size
+    if len(input_size) >= 2 and input_size[0] != input_size[1]:
+        # The polygon evaluator assumes a square input (radial vertex decode uses
+        # one scale for both axes); a non-square config trains fine then crashes at
+        # the first validation.
+        errors.append(
+            f"task.model.input_size must be square (H == W), got "
+            f"{input_size[0]}x{input_size[1]}; the polygon evaluator requires it"
+        )
     if task.model.output_poly_size != (360 // task.model.angle_step):
         errors.append(
             f"task.model.output_poly_size ({task.model.output_poly_size}) "
@@ -247,6 +256,13 @@ def _validate_config(config, output_dir: str) -> None:
         errors.append(
             "validation_data.is_training must be false (an infinite training "
             "stream as the val set hangs validation forever)"
+        )
+    if vd is not None and getattr(vd, "drop_remainder", False):
+        # A dropped final partial batch silently omits images from the metrics;
+        # validation must score every image.
+        errors.append(
+            "validation_data.drop_remainder must be false (validation must score "
+            "every image; a dropped final partial batch omits images from the metrics)"
         )
     # --- multi-TFDS sampling weights ---
     td = task.train_data

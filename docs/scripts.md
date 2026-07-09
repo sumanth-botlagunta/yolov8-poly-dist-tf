@@ -118,34 +118,21 @@ python -m utils.pipeline.diagnose_pipeline --config configs/experiments/yolo/yol
 bash utils/pipeline/cloud_diagnose.sh configs/experiments/yolo/yolov8_poly_dist.yaml
 ```
 
-### `python -m utils.reports.val_history` — inspect / extract the validation history
-Reads `<run>/val_history.jsonl` (one report appended per epoch). No SQL, no DB.
-- positional `path` — the run dir or the `val_history.jsonl` file.
+### `python -m utils.reports.val_history` — inspect / extract / export the validation history
+Reads `<run>/val_history.jsonl` (one report appended per epoch), or a single report JSON. No SQL, no DB.
+- positional `path` — the run dir, the `val_history.jsonl` file, or a single report JSON (a `<ckpt>_val.json` from `utils.eval --output_dir`).
 - (no selector) / `--list` — trend table: epoch / step / F1score50 / mAP / mAP50 / AR100.
 - `--epoch N` / `--step N` / `--checkpoint SUBSTR` / `--best` — select one record.
-- `--format txt|json|csv` (default txt, the exact ckpt format) — `--best-only`, `-o OUT`.
-- `--export-csv PATH` — whole history → one flat CSV (pandas if installed).
+- `--format txt|json|csv|xlsx|parquet` (default txt, the exact ckpt format) — `--best-only`, `-o OUT`.
+  `xlsx`/`parquet` export per class×threshold tables (require `-o`; the selected record, else the whole run).
+- `--export-csv PATH` — whole history → one flat headline CSV (pandas if installed).
 ```bash
 python -m utils.reports.val_history /run --list
 python -m utils.reports.val_history /run --best --format txt -o best.txt
 python -m utils.reports.val_history /run --epoch 42 --format json
-```
-
-### `python -m utils.reports.val_report_txt` — render a single report JSON to the ckpt-format txt
-Standalone sibling of `val_history`: renders one validation report JSON (a `<ckpt>_val.json`
-from `utils.eval --output_dir`, or one extracted via `val_history --format json`) into the exact
-ckpt-format `.txt` (best-conf-per-category table + mean + all-conf sweep). `--best-only` keeps just
-the best table.
-```bash
-python -m utils.reports.val_report_txt /run/ckpt-99000_val.json --best-only
-```
-
-### `python -m utils.reports.export_val_metrics` — export validation metrics to xlsx/parquet
-Reads `val_history.jsonl` (or a single report JSON) and writes xlsx/csv/parquet for trend analysis.
-- `--input` (req) — a `val_history.jsonl`, a run dir containing it, or a single report JSON. `--out_dir` (req), `--basename`.
-- `--formats` — comma list (`xlsx,csv,parquet`). `--aggregate` — combine all epochs into one table.
-```bash
-python -m utils.reports.export_val_metrics --input /run/val_history.jsonl --aggregate --formats xlsx,parquet
+python -m utils.reports.val_history /run/ckpt-99000_val.json --best-only         # render a single report JSON
+python -m utils.reports.val_history /run --best --format xlsx -o best.xlsx        # best epoch -> workbook
+python -m utils.reports.val_history /run --format parquet -o /tmp/run.parquet     # whole run -> parquet
 ```
 
 ## Future / recommended additions
@@ -154,5 +141,5 @@ python -m utils.reports.export_val_metrics --input /run/val_history.jsonl --aggr
   (the shipped distance dataset is training-only). A future change would add a distance
   validation stream and wire `eval/distance_metrics.py` into the val loop. This is a
   training-semantics change (needs a held-out distance split), not a pure tooling add.
-- **Metrics dashboard.** `export_val_metrics` already emits parquet; a small notebook over the
+- **Metrics dashboard.** `val_history --format parquet` already emits parquet; a small notebook over the
   aggregated parquet would give per-category F1 trends across runs.

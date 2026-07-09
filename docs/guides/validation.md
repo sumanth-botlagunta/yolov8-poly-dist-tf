@@ -85,7 +85,7 @@ Open the folder for a class that's dragging the macro F1 down and you'll usually
 
 If you have a standalone report JSON (e.g. a `<ckpt>_val.json` from step 3):
 ```bash
-python -m utils.reports.val_report_txt /tmp/eval_out/ckpt-100000_val.json --best-only
+python -m utils.reports.val_history /tmp/eval_out/ckpt-100000_val.json --best-only
 ```
 
 ## Related

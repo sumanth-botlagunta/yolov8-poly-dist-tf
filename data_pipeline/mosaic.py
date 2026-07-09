@@ -172,7 +172,7 @@ def _scale_box_poly_to_canvas(
 
 # How each annotation field is padded up to the group-max instance count before
 # stacking. Per-instance (axis-0 = N) fields only. (key, pad_value)
-#   - boxes pad with zero rows [0,0,0,0]: the parser's clip_boxes min_side=0.005
+#   - boxes pad with zero rows [0,0,0,0]: the parser's clip_boxes min_side
 #     filter provably drops zero boxes (incl. after flip), so they never train.
 #   - polygons pad with -1.0 rows (defense in depth; the -1 sentinel marks invalid
 #     vertices). Width V is identical across the 4 results (same padded_batch group).

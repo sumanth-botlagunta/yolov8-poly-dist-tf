@@ -172,7 +172,7 @@ def _build_task_config(t: Dict[str, Any]) -> TaskConfig:
     model_cfg      = _build_model_config(t.get("model", {}), t)
     loss_cfg       = _build_loss_config(t.get("losses", {}))
     train_data_cfg = _build_data_config(t.get("train_data", {}))
-    val_data_cfg   = _build_data_config(t.get("validation_data", {}))
+    val_data_cfg   = _build_data_config(t.get("validation_data", {}), is_validation=True)
 
     return TaskConfig(
         model=model_cfg,
@@ -203,7 +203,19 @@ def _build_task_config(t: Dict[str, Any]) -> TaskConfig:
     )
 
 
+_MODEL_KEYS = frozenset({
+    "input_size", "angle_step", "deploy",
+    "backbone", "decoder", "head", "detection_generator",
+})
+_DETGEN_KEYS = frozenset({
+    "max_boxes", "nms_thresh", "score_thresh", "nms_class_mode",
+})
+
+
 def _build_model_config(m: Dict[str, Any], task: Dict[str, Any]) -> ModelConfig:
+    _warn_unknown_keys(m, _MODEL_KEYS, "model")
+    _warn_unknown_keys(m.get("detection_generator", {}), _DETGEN_KEYS,
+                       "model.detection_generator")
     backbone_raw  = m.get("backbone", {}).get("darknet", m.get("backbone", {}))
     decoder_outer = m.get("decoder", {})
     decoder_raw   = decoder_outer.get("yolo_decoder", decoder_outer)
@@ -314,7 +326,7 @@ _DATA_KEYS = frozenset({
     "private_threadpool_size", "parser", "distance_data",
 })
 
-def _build_data_config(d: Dict[str, Any]) -> DataConfig:
+def _build_data_config(d: Dict[str, Any], is_validation: bool = False) -> DataConfig:
     _warn_unknown_keys(d, _DATA_KEYS, "data")
     parser_cfg    = _build_parser_config(d.get("parser", {}))
     dist_data_raw = d.get("distance_data")
@@ -322,6 +334,9 @@ def _build_data_config(d: Dict[str, Any]) -> DataConfig:
     if dist_data_raw:
         dist_data_cfg = _build_distance_data_config(dist_data_raw)
 
+    # Validation must score every image, so it defaults drop_remainder to False
+    # (a dropped final partial batch silently omits images from the metrics). The
+    # training stream defaults True (uniform full batches).
     return DataConfig(
         tfds_name=d.get("tfds_name", "cleaner_polygon2026:2.0.0"),
         tfds_split=d.get("tfds_split", "train"),
@@ -329,7 +344,7 @@ def _build_data_config(d: Dict[str, Any]) -> DataConfig:
         global_batch_size=d.get("global_batch_size", 128),
         is_training=d.get("is_training", True),
         shuffle_buffer_size=d.get("shuffle_buffer_size", 1500),
-        drop_remainder=d.get("drop_remainder", True),
+        drop_remainder=d.get("drop_remainder", not is_validation),
         tfds_sampling_weights=d.get("tfds_sampling_weights"),
         prob_copy_n_paste=d.get("prob_copy_n_paste", 0.2),
         tfds_for_cnp=d.get("tfds_for_cnp"),
@@ -360,8 +375,28 @@ def _build_distance_data_config(d: Dict[str, Any]) -> DistanceDataConfig:
     )
 
 
+_MOSAIC_KEYS = frozenset({
+    "mosaic_frequency", "mixup_frequency", "mosaic_center",
+    "aug_scale_min", "aug_scale_max", "tile_crop_min", "tile_crop_max",
+    "mosaic_crop_mode", "area_thresh", "jitter", "group_size",
+    "decodes_per_output", "shear", "perspective", "translate",
+    "close_mosaic_epochs",
+})
+_PARSER_KEYS = frozenset({
+    "angle_step", "max_num_instances", "max_vertices",
+    "aug_rand_hue", "aug_rand_saturation", "aug_rand_brightness",
+    "aug_rand_translate", "aug_scale_min", "aug_scale_max",
+    "random_flip", "rotate", "rotate_degrees", "resize_with_random_method",
+    "skip_crowd_during_training", "dummy_distance", "with_polygons",
+    "albumentations_frequency", "jitter", "area_thresh", "eval_gray_border",
+    "min_meter", "max_meter", "mosaic",
+})
+
+
 def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
+    _warn_unknown_keys(p, _PARSER_KEYS, "parser")
     mosaic_raw = p.get("mosaic", {})
+    _warn_unknown_keys(mosaic_raw, _MOSAIC_KEYS, "parser.mosaic")
     mosaic_cfg = MosaicConfig(
         mosaic_frequency=mosaic_raw.get("mosaic_frequency", 0.5),
         mixup_frequency=mosaic_raw.get("mixup_frequency", 0.0),
@@ -421,6 +456,16 @@ _TRAINER_KEYS = frozenset({
     "steps_per_loop", "train_steps", "validation_steps",
 })
 
+_OPT_PARAM_KEYS = frozenset({
+    "momentum", "momentum_start", "nesterov", "weight_decay",
+    "beta_1", "beta_2", "warmup_steps",
+})
+_LR_SCHED_KEYS = frozenset({
+    "initial_learning_rate", "decay_steps", "alpha", "step_size",
+    "gamma", "power", "warmup_steps", "warmup_init_lr",
+})
+
+
 def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
     _warn_unknown_keys(t, _TRAINER_KEYS, "trainer")
     opt_raw    = t.get("optimizer_config", {})
@@ -435,6 +480,12 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
     sgd_raw    = opt_block.get(opt_type, opt_block)
     # SGD momentum/bias warmup is driven by OptimizerConfig.warmup_steps; LR
     # warmup is LrScheduleConfig.warmup_steps.
+    # `name` is a cosmetic label carried in the YAML (e.g. `name: SGD`); `type`
+    # selects the nested block and is consumed one level up — both are ignored here.
+    _warn_unknown_keys(sgd_raw, _OPT_PARAM_KEYS, f"optimizer.{opt_type}",
+                       ignored=frozenset({"name", "type"}))
+    _warn_unknown_keys(lr_raw, _LR_SCHED_KEYS, f"learning_rate.{lr_type}",
+                       ignored=frozenset({"name", "type"}))
 
     ema_cfg    = EmaConfig(
         average_decay=ema_raw.get("average_decay", 0.9999),
@@ -459,7 +510,7 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
         weight_decay=sgd_raw.get("weight_decay", 0.0005),
         beta_1=sgd_raw.get("beta_1", 0.9),
         beta_2=sgd_raw.get("beta_2", 0.999),
-        warmup_steps=sgd_raw.get("warmup_steps", 7164),
+        warmup_steps=sgd_raw.get("warmup_steps", 6354),
         ema=ema_cfg,
         learning_rate=lr_cfg,
     )

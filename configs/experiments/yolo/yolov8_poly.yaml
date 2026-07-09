@@ -37,7 +37,6 @@ task:
   model:
     input_size: [672, 672, 3]
     angle_step: 15
-    darknet_based_model: false
     deploy: true
     backbone:
       type: darknet
@@ -57,14 +56,9 @@ task:
         use_separable_conv: false
     head:
       smart_bias: true
-    anchor_boxes:
-      anchors_per_scale: 1
-      boxes: [[1, 1]]
-      level_limits: null
     detection_generator:
       max_boxes: 300
       nms_thresh: 0.65
-      topN_per_anchor: 1
 
   losses:
     iou_gain: 7.5
@@ -230,8 +224,6 @@ trainer:
         nesterov: true
         weight_decay: 0.0005
         warmup_steps: 6354   # 3 epochs x 2118
-        weight_keys: [kernel, weight]
-        bias_keys: [bias, beta]
         # warmup_steps above is the sole SGD momentum/bias warmup control
         # (read by task.py via OptimizerConfig.warmup_steps).
 
