@@ -195,25 +195,14 @@ def _validate_config(config, output_dir: str) -> None:
                 f"mosaic.group_size ({g}) must be a multiple of "
                 f"mosaic.decodes_per_output ({r})"
             )
-        rp = getattr(mosaic_cfg, "rotate_prob", 0.10)
-        if not 0.0 <= rp <= 1.0:
-            errors.append(f"mosaic.rotate_prob ({rp}) must be in [0, 1]")
-        ts_min = getattr(mosaic_cfg, "tile_scale_min", 0.0)
-        ts_max = getattr(mosaic_cfg, "tile_scale_max", 0.0)
-        if ts_max > 0.0 and not 0.0 < ts_min <= ts_max:
+        tc_min = getattr(mosaic_cfg, "tile_crop_min", 0.0)
+        tc_max = getattr(mosaic_cfg, "tile_crop_max", 0.0)
+        if tc_max > 0.0 and not 0.0 < tc_min <= tc_max <= 1.0:
+            # A crop window is a fraction of the tile content, so max > 1 is
+            # meaningless and max > 0 requires min > 0 (a well-formed [min, max]).
             errors.append(
-                f"mosaic.tile_scale bounds invalid: need 0 < min <= max "
-                f"(or 0/0 to disable), got [{ts_min}, {ts_max}]"
-            )
-        if ts_max > 2.0:
-            # Center-anchored overflow bound: a tile scaled beyond 2x the output
-            # can map a REAL vertex below canvas-normalized -1.0 (worst case
-            # (1 - s*W)/2W <= -1 at s > 2 + 1/W), where it collides with the
-            # -1.0 polygon sentinel and is silently dropped as padding.
-            errors.append(
-                f"mosaic.tile_scale_max ({ts_max}) must be <= 2.0: beyond 2x, "
-                f"overflowing tiles map real polygon vertices below the -1.0 "
-                f"sentinel and corrupt the radial target"
+                f"mosaic.tile_crop bounds invalid: need 0 < min <= max <= 1 "
+                f"(or 0/0 to disable), got [{tc_min}, {tc_max}]"
             )
         if 1 <= r < 4:
             # Not an error — R<4 is supported. The Sidon-shift source selection
@@ -226,6 +215,27 @@ def _validate_config(config, output_dir: str) -> None:
                 "reused in %d outputs per group (Sidon selection, <=1 shared "
                 "source between any two outputs). R=4 maximizes distinct images "
                 "per epoch at ~%dx the decode cost.", r, 4 // r, 4 // r)
+
+    # --- single-image (non-mosaic) pre-warp rotation ---
+    parser_cfg = getattr(task.train_data, "parser", None)
+    if parser_cfg is not None:
+        rotate = getattr(parser_cfg, "rotate", False)
+        rotate_degrees = getattr(parser_cfg, "rotate_degrees", None)
+        deg_ok = (
+            isinstance(rotate_degrees, (int, float))
+            and not isinstance(rotate_degrees, bool)
+            and rotate_degrees > 0
+        )
+        if rotate and not deg_ok:
+            errors.append(
+                f"parser.rotate is true but parser.rotate_degrees "
+                f"({rotate_degrees!r}) must be a number > 0"
+            )
+        elif not rotate and rotate_degrees is not None and not deg_ok:
+            errors.append(
+                f"parser.rotate_degrees ({rotate_degrees!r}) must be a number "
+                f"> 0 when set"
+            )
 
     # --- validation stream sanity ---
     vd = getattr(task, "validation_data", None)

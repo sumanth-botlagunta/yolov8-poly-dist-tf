@@ -160,14 +160,14 @@ class MosaicConfig:
     # Canvas->output warp scale-gain bounds (stock YOLO [0.5, 1.5]).
     aug_scale_min: float = 0.5
     aug_scale_max: float = 1.5
-    # Per-tile INDEPENDENT placement scale (original-codebase formulation):
-    # when tile_scale_max > 0, each mosaic tile's placement scale is multiplied
-    # by its own uniform draw from [tile_scale_min, tile_scale_max], so the 4
-    # tiles of one mosaic appear at 4 different scales (intra-image scale
-    # diversity). Compounds with the warp gain above. 0/0 = off (consistent
-    # upright placement, the only source of size variety is the warp gain).
-    tile_scale_min: float = 0.0
-    tile_scale_max: float = 0.0
+    # Per-tile RANDOM-WINDOW CROP (legacy-parity formulation): when
+    # tile_crop_max > 0, each mosaic tile crops a random window of side fraction
+    # s ~ U[tile_crop_min, tile_crop_max] of its content at a random position,
+    # then scales the crop to fill its quadrant (zoom/translate scale-invariance).
+    # 0/0 = off (the content region fills its quadrant unchanged). Bounds are
+    # validated 0 < min <= max <= 1 (scripts/run_train.py:_validate_config).
+    tile_crop_min: float = 0.0
+    tile_crop_max: float = 0.0
     mosaic_crop_mode: str = "scale"
     area_thresh: float = 0.5
     jitter: float = 0.0
@@ -186,14 +186,13 @@ class MosaicConfig:
     group_size: int = 32
     decodes_per_output: int = 4
     # Full-affine (random_perspective) params applied after mosaic assembly and to
-    # non-mosaic single images. degrees/shear in degrees; translate as a fraction of
-    # output size; perspective coefficient (0 disables). scale gain uses
-    # aug_scale_min/aug_scale_max (scale ∈ [aug_scale_min, aug_scale_max]).
-    # Rotation is gated by rotate_prob: a fraction (1 - rotate_prob) of outputs stay
-    # upright (angle forced to 0); only rotate_prob of them rotate by ±degrees. shear
-    # defaults to 0 (no shear) so the corrected mosaic shows upright panels.
-    degrees: float = 10.0
-    rotate_prob: float = 0.10
+    # non-mosaic single images. shear in degrees; translate as a fraction of output
+    # size; perspective coefficient (0 disables). scale gain uses aug_scale_min/
+    # aug_scale_max (scale ∈ [aug_scale_min, aug_scale_max]).
+    # Rotation PARITY: the mosaic path never rotates (the legacy pipeline hard-
+    # disabled mosaic rotation because polygon rotation was unimplemented) — it is
+    # hard-wired to 0 in the mosaic warp, not a config knob. Single-image rotation
+    # is the separate parser-level rotate / rotate_degrees.
     shear: float = 0.0
     perspective: float = 0.0
     translate: float = 0.1
@@ -219,6 +218,12 @@ class ParserConfig:
     aug_scale_min: float = 1.0
     aug_scale_max: float = 1.0
     random_flip: bool = True
+    # Optional single-image (non-mosaic) pre-warp rotation. When rotate is True and
+    # rotate_degrees is set, non-mosaic images are rotated by uniform(-rotate_degrees,
+    # +rotate_degrees) before flip/warp. The mosaic path never rotates. Off by default
+    # = byte-identical. (Wired to the Mosaic single path via input_reader.)
+    rotate: bool = False
+    rotate_degrees: Optional[float] = None
     resize_with_random_method: bool = True
     skip_crowd_during_training: bool = True
     dummy_distance: bool = True

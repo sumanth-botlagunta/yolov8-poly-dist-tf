@@ -121,6 +121,10 @@ task:
       aug_scale_min: 1.0
       aug_scale_max: 1.0
       random_flip: true
+      # Single-image (non-mosaic) pre-warp rotation. OFF for parity (the legacy
+      # pipeline did not rotate). The mosaic path never rotates regardless.
+      rotate: false
+      rotate_degrees: null
       resize_with_random_method: true
       skip_crowd_during_training: true
       dummy_distance: true
@@ -135,6 +139,11 @@ task:
         # per-sample size variety. Per-image placement scale is fixed (upright tiles).
         aug_scale_min: 0.5
         aug_scale_max: 1.5
+        # Per-tile random-window crop: OFF (0/0). Enable to crop a random
+        # window (side fraction s ~ U[min, max]) of each tile before scaling
+        # it to the quadrant.
+        tile_crop_min: 0.0
+        tile_crop_max: 0.0
         mosaic_crop_mode: scale
         # legacy parity: the MOSAIC path uses 0.5; the single-image path uses
         # the parser-level area_thresh (0.1) wired via single_area_thresh
@@ -143,12 +152,10 @@ task:
         group_size: 32
         decodes_per_output: 4   # R: 4 = stock-YOLO (no reuse); lower = more reuse, less decode
         # random_perspective (full-affine) strength applied after mosaic assembly
-        # AND to non-mosaic single images. Images are upright by default: rotation
-        # fires only on rotate_prob of outputs (±degrees), shear is off (0). These are
-        # the LIVE affine knobs (forwarded to Mosaic in data_pipeline/input_reader.py);
+        # AND to non-mosaic single images. Rotation PARITY: the mosaic path never
+        # rotates (the mosaic warp is hard-wired to no rotation in code); single-image
+        # rotation is the parser-level rotate / rotate_degrees. shear off (0).
         # aug_rand_translate above is NOT the affine translate.
-        degrees: 10.0
-        rotate_prob: 0.10
         shear: 0.0
         translate: 0.1
 

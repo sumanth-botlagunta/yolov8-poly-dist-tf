@@ -207,49 +207,79 @@ class InputReader:
         if self._decoder is not None:
             ds = ds.map(self._decoder.decode, num_parallel_calls=_AUTOTUNE)
 
-        # Pre-resize to the fixed output shape BEFORE copy-paste so the composite
-        # runs on a 672² image instead of the full-resolution original (the
-        # composite cost scales with background pixels — measured ~18 ms·core per
-        # image at full res). CopyAndPasteModule reads the original dims from the
-        # 'height'/'width' fields (preserved by this map) and scales the pasted
-        # object by (new/orig) per axis, so the object's RELATIVE size and
-        # placement distribution are exactly what compositing at full resolution
-        # then resizing would have produced. The resize is also required before
-        # padded_batch anyway (variable spatial dims cannot be stacked).
+        # Pre-resize to the fixed output shape BEFORE grouping so every image in a
+        # padded_batch group shares one spatial size (variable spatial dims cannot
+        # be stacked). This is an ASPECT-PRESERVING LETTERBOX (gray-114 padding),
+        # not a squash: boxes AND polygons are transformed by the same scale + pad
+        # (the -1.0 polygon sentinel preserved). The original capture dims survive
+        # in the 'height'/'width' fields, so the mosaic stage can slice the content
+        # region back out of the gray margins, and copy-paste can scale the pasted
+        # object by (content/original) per axis for a full-resolution-equivalent
+        # relative size.
         if self._mosaic_module is not None:
             _H, _W = self._mosaic_module._H, self._mosaic_module._W
 
             def _pre_resize_for_mosaic(ex, H=_H, W=_W):
-                # Skip the (expensive, full-image float32) resize when the image
-                # is already exactly the target size — true for every record of
-                # a pre-resized dataset variant and the occasional natively-sized
-                # capture. Runtime tf.cond because decoded shapes are dynamic;
-                # the identity branch is ~free.
+                from data_pipeline.augmentations import letterbox_resize
                 img_in = ex['image']
                 shp = tf.shape(img_in)
+                boxes = ex.get('groundtruth_boxes', tf.zeros([0, 4], tf.float32))
+                polys = ex.get('groundtruth_polygons', tf.zeros([0, 2], tf.float32))
 
-                def _resize():
-                    return tf.cast(
-                        tf.image.resize(tf.cast(img_in, tf.float32), [H, W], method='bilinear'),
-                        tf.uint8,
-                    )
+                # Identity fast-path: an image already exactly [H, W] is square
+                # (H == W in every config), so its letterbox is the identity — skip
+                # the resize/pad and the coordinate transform entirely. True for
+                # pre-resized dataset variants.
+                def _identity():
+                    img_id = img_in
+                    img_id = tf.ensure_shape(img_id, [H, W, 3])
+                    return img_id, boxes, polys
 
-                img = tf.cond(
+                def _letterbox():
+                    return letterbox_resize(img_in, boxes, polys, H, W)
+
+                img, boxes_o, polys_o = tf.cond(
                     tf.logical_and(tf.equal(shp[0], H), tf.equal(shp[1], W)),
-                    lambda: img_in,
-                    _resize,
+                    _identity,
+                    _letterbox,
                 )
                 img.set_shape([H, W, 3])
-                return {**ex, 'image': img}
+                return {
+                    **ex,
+                    'image': img,
+                    'groundtruth_boxes': boxes_o,
+                    'groundtruth_polygons': polys_o,
+                }
 
             ds = ds.map(_pre_resize_for_mosaic, num_parallel_calls=_AUTOTUNE)
 
-        # Copy-Paste: zip with CNP dataset BEFORE mosaic (on pre-resized images).
-        if self._copy_paste_module is not None and self._cnp_tfds_name:
+        # Copy-Paste source: zip with the CNP dataset and RIDE its fields into the
+        # group under 'cnp_*' prefix keys (no paste here). The paste itself now runs
+        # INSIDE the mosaic stage, per tile, on the tile's own cnp candidate — so
+        # only mosaic tiles receive pastes (single/non-mosaic images do not, which
+        # matches the legacy pipeline). The mosaic module owns the copy-paste module.
+        cnp_active = self._copy_paste_module is not None and bool(self._cnp_tfds_name)
+        if cnp_active:
             cnp_ds = self._load_cnp_dataset()
             ds = tf.data.Dataset.zip((ds, cnp_ds))
-            copy_paste_fn = self._copy_paste_module.process_fn(is_training=True)
-            ds = ds.map(copy_paste_fn, num_parallel_calls=_AUTOTUNE)
+
+            def _merge_cnp_fields(bg, obj):
+                # Native cnp dims recorded so the mosaic stage can slice the object
+                # back out after padded_batch pads cnp_image to the group-max size
+                # (the object coords in orig_bbox/points are normalized to these
+                # native dims, so the padded region must not be treated as object).
+                cnp_img = obj['image']
+                return {
+                    **bg,
+                    'cnp_image': cnp_img,
+                    'cnp_orig_bbox': obj['orig_bbox'],
+                    'cnp_label': obj['label'],
+                    'cnp_points': obj['points'],
+                    'cnp_h': tf.shape(cnp_img)[0],
+                    'cnp_w': tf.shape(cnp_img)[1],
+                }
+
+            ds = ds.map(_merge_cnp_fields, num_parallel_calls=_AUTOTUNE)
 
         # Mosaic: padded_batch(group_size) → combine (G in → G//R out) → unbatch.
         if self._mosaic_module is not None:
@@ -276,6 +306,21 @@ class InputReader:
                 'groundtruth_dontcare': tf.constant(0, tf.int64),
                 'groundtruth_dists': tf.constant(0.0, tf.float32),
             }
+            # cnp_* fields ride into the group when copy-paste is active. padded_batch
+            # requires padding_values to match the element structure EXACTLY, so add
+            # these keys only when the merge above attached them. cnp_points pads with
+            # the -1.0 polygon sentinel (0.0 is a valid vertex coordinate); cnp_image
+            # pads with 0 (its native size is recovered from cnp_h/cnp_w in the mosaic
+            # stage, so the padded region is never read as object pixels).
+            if cnp_active:
+                _padding_values.update({
+                    'cnp_image': tf.constant(0, tf.uint8),
+                    'cnp_orig_bbox': tf.constant(0.0, tf.float32),
+                    'cnp_label': tf.constant(0, tf.int64),
+                    'cnp_points': tf.constant(-1.0, tf.float32),
+                    'cnp_h': tf.constant(0, tf.int32),
+                    'cnp_w': tf.constant(0, tf.int32),
+                })
             group_size = self._mosaic_module._group_size
             # Disperse each group's outputs across many training batches: at R<4
             # every source image recurs in 4/R outputs of its group (Sidon-shift
@@ -546,6 +591,16 @@ def build_input_reader_from_config(
             eval_gray_border=parser_cfg.eval_gray_border,
         )
 
+    # Copy-paste (training only, when a source dataset is configured). Built
+    # BEFORE the mosaic so the module can be handed to it: the paste now runs
+    # INSIDE the mosaic stage (per tile), not upstream per image.
+    if copy_paste_module is None and is_training and data_cfg.tfds_for_cnp:
+        from data_pipeline.copy_paste import CopyAndPasteModule
+        from data_pipeline.tfds_decoders import CopyPasteDecoder
+        copy_paste_module = CopyAndPasteModule(prob=data_cfg.prob_copy_n_paste)
+        if cnp_decoder is None:
+            cnp_decoder = CopyPasteDecoder(num_classes=num_classes)
+
     # Mosaic (training only).
     if mosaic_module is None and is_training:
         from data_pipeline.mosaic import Mosaic
@@ -557,16 +612,14 @@ def build_input_reader_from_config(
             mosaic_center=mosaic_cfg.mosaic_center,
             aug_scale_min=mosaic_cfg.aug_scale_min,
             aug_scale_max=mosaic_cfg.aug_scale_max,
-            tile_scale_min=mosaic_cfg.tile_scale_min,
-            tile_scale_max=mosaic_cfg.tile_scale_max,
+            tile_crop_min=mosaic_cfg.tile_crop_min,
+            tile_crop_max=mosaic_cfg.tile_crop_max,
             area_thresh=mosaic_cfg.area_thresh,
             mosaic_crop_mode=mosaic_cfg.mosaic_crop_mode,
             with_polygons=parser_cfg.with_polygons,
-            degrees=mosaic_cfg.degrees,
             shear=mosaic_cfg.shear,
             perspective=mosaic_cfg.perspective,
             translate=mosaic_cfg.translate,
-            rotate_prob=mosaic_cfg.rotate_prob,
             group_size=mosaic_cfg.group_size,
             decodes_per_output=mosaic_cfg.decodes_per_output,
             # Single-image (non-mosaic) path: the parser-level scale bounds
@@ -578,15 +631,14 @@ def build_input_reader_from_config(
             single_translate=parser_cfg.aug_rand_translate,
             single_area_thresh=parser_cfg.area_thresh,
             random_flip=parser_cfg.random_flip,
+            # Rotation parity: the mosaic path never rotates (legacy hard-disabled
+            # mosaic rotation). Optional single-path pre-warp rotation is the only
+            # rotation, gated by the parser-level rotate / rotate_degrees.
+            single_rotate=parser_cfg.rotate,
+            single_rotate_degrees=parser_cfg.rotate_degrees,
+            # Copy-paste runs per tile inside the mosaic; the single path ignores it.
+            copy_paste_module=copy_paste_module,
         )
-
-    # Copy-paste (training only, when a source dataset is configured).
-    if copy_paste_module is None and is_training and data_cfg.tfds_for_cnp:
-        from data_pipeline.copy_paste import CopyAndPasteModule
-        from data_pipeline.tfds_decoders import CopyPasteDecoder
-        copy_paste_module = CopyAndPasteModule(prob=data_cfg.prob_copy_n_paste)
-        if cnp_decoder is None:
-            cnp_decoder = CopyPasteDecoder(num_classes=num_classes)
 
     # Distance reader (training only, when distance_data is configured).
     if distance_reader is None and is_training and getattr(data_cfg, 'distance_data', None) is not None:

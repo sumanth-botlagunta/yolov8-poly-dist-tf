@@ -164,12 +164,13 @@ def test_mosaic_affine_params_present_and_parsed():
         with open(path) as f:
             raw = yaml.safe_load(f)
         mraw = raw['task']['train_data']['parser']['mosaic']
-        for k in ('degrees', 'shear', 'translate'):
+        # Mosaic rotation is hard-off in code (not a config knob), so degrees/
+        # rotate_prob are intentionally absent from the mosaic block.
+        for k in ('shear', 'translate'):
             assert k in mraw, f"{name}: mosaic.{k} missing from YAML (dead/invisible)"
 
         cfg = load_config(path)
         m = cfg.task.train_data.parser.mosaic
-        assert m.degrees == mraw['degrees']
         assert m.shear == mraw['shear']
         assert m.translate == mraw['translate']
 

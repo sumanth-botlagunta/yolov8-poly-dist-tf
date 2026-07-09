@@ -130,15 +130,17 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
   formulations are geometrically identical — the label math never changed.
 - The warp's scale gain is the **canvas→output crop gain**, drawn from the explicit
   `[aug_scale_min, aug_scale_max]` config bounds (`make_perspective_matrix(scale_min=, scale_max=)`),
-  default stock YOLO **`[0.5, 1.5]`**. This is the **only** source of per-sample size variety:
-  per-image placement scale is fixed (each source resized so its long side = output, then placed
-  upright). Per-tile INDEPENDENT scale is config-gated (`mosaic.tile_scale_min/max`, poly_dist
-  enables `[0.4, 1.9]`): each tile's placement scale gets its own uniform draw, so one mosaic
-  carries 4 different object scales (intra-image scale diversity — the strongest scale-invariance
-  signal the detector gets); `0/0` = consistent upright placement. `tile_scale_max <= 2.0` is enforced —
-  beyond 2x an overflowing tile can map a real polygon vertex below the `-1.0` sentinel.
-- **Tiles are upright by default.** Rotation fires only on `rotate_prob` of outputs (default 0.10,
-  ±`degrees`=10); `shear` defaults to 0. The split center shifts H+V (`mosaic_center`), so each
+  default stock YOLO **`[0.5, 1.5]`** (poly_dist widens to `[0.4, 1.9]`). Additional per-tile size
+  variety is config-gated by the **per-tile random-window crop** (`mosaic.tile_crop_min/max`): when
+  `tile_crop_max > 0`, each tile crops a random window of side fraction `s ~ U[tile_crop_min,
+  tile_crop_max]` of its content at a random position, then scales the crop to fill its quadrant
+  (zoom/translate scale-invariance). `0/0` = OFF (the content region fills its quadrant unchanged);
+  poly_dist keeps it off, so size variety comes only from the whole-canvas warp gain. Bounds are
+  validated `0 < min <= max <= 1`.
+- **Mosaic tiles never rotate.** Rotation is **hard-OFF** in the mosaic warp (not a config knob —
+  the legacy pipeline hard-disabled mosaic rotation because polygon rotation was unimplemented);
+  `shear` defaults to 0. Single-image (non-mosaic) rotation is the separate parser-level
+  `rotate`/`rotate_degrees` (default off). The split center shifts H+V (`mosaic_center`), so each
   tile's visible crop varies and boxes/polygons are cut at the moving edges. `close_mosaic_epochs`
   (default 0) disables mosaic + mixup for the final N epochs (Ultralytics close_mosaic).
 

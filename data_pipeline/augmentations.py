@@ -93,6 +93,109 @@ def apply_albumentations(image: tf.Tensor, freq: float = 1.0) -> tf.Tensor:
 
 
 # ---------------------------------------------------------------------------
+# Letterbox resize (aspect-preserving, gray-114 pad) — shared by the eval
+# parser and the mosaic-stage pre-resize so the two cannot diverge
+# ---------------------------------------------------------------------------
+
+def letterbox_geometry(h_in, w_in, out_h: int, out_w: int):
+    """Return the letterbox placement geometry for an (h_in, w_in) image.
+
+    Aspect-preserving fit into (out_h, out_w): the long side is scaled to fit and
+    the content is CENTERED, gray-padded to the output. Returns the scalars every
+    consumer needs to map coordinates in either direction:
+
+        scale = min(out_h/h_in, out_w/w_in)
+        new_h/new_w = round(dim * scale)  (>= 1)
+        pad_top  = (out_h - new_h) // 2
+        pad_left = (out_w - new_w) // 2
+
+    Args:
+        h_in, w_in: source dims (python ints or scalar tensors).
+        out_h, out_w: output dims (python ints).
+
+    Returns:
+        (scale, new_h, new_w, pad_top, pad_left) — scale float32 scalar, the rest
+        int32 scalars.
+    """
+    h_in_f = tf.cast(h_in, tf.float32)
+    w_in_f = tf.cast(w_in, tf.float32)
+    scale = tf.minimum(out_h / h_in_f, out_w / w_in_f)
+    new_h = tf.maximum(tf.cast(tf.round(h_in_f * scale), tf.int32), 1)
+    new_w = tf.maximum(tf.cast(tf.round(w_in_f * scale), tf.int32), 1)
+    pad_top = (out_h - new_h) // 2
+    pad_left = (out_w - new_w) // 2
+    return scale, new_h, new_w, pad_top, pad_left
+
+
+def letterbox_resize(
+    image: tf.Tensor,
+    boxes: tf.Tensor,
+    polygons: tf.Tensor,
+    out_h: int,
+    out_w: int,
+) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    """Letterbox-resize image to (out_h, out_w) with gray-114 padding.
+
+    Boxes AND polygon vertices are remapped through the SAME scale + pad so they
+    stay aligned in the output normalized space. Invalid polygon vertices (the
+    -1.0 sentinel) are preserved. This is the single source of truth for the
+    letterbox math shared by the eval parser (V8ParserExtended._letterbox_resize)
+    and the mosaic-stage pre-resize (input_reader).
+
+    Args:
+        image:    uint8 or float32 [H, W, 3].
+        boxes:    float32 [N, 4] yxyx normalized to the INPUT size.
+        polygons: float32 [N, max_vertices] flat xy pairs (INPUT-normalized), -1 padded.
+        out_h, out_w: output size.
+
+    Returns:
+        (image uint8 [out_h, out_w, 3], boxes [N,4] output-normalized,
+         polygons [N, max_vertices] output-normalized).
+    """
+    _scale, new_h, new_w, pad_top, pad_left = letterbox_geometry(
+        tf.shape(image)[0], tf.shape(image)[1], out_h, out_w
+    )
+
+    image = tf.cast(
+        tf.image.resize(tf.cast(image, tf.float32), [new_h, new_w], method='bilinear'),
+        tf.uint8,
+    )
+    pad_bottom = out_h - new_h - pad_top
+    pad_right = out_w - new_w - pad_left
+    image = tf.pad(
+        image,
+        [[pad_top, pad_bottom], [pad_left, pad_right], [0, 0]],
+        constant_values=114,
+    )
+    image.set_shape([out_h, out_w, 3])
+
+    new_h_f = tf.cast(new_h, tf.float32)
+    new_w_f = tf.cast(new_w, tf.float32)
+    out_h_f = tf.cast(out_h, tf.float32)
+    out_w_f = tf.cast(out_w, tf.float32)
+    pad_top_f = tf.cast(pad_top, tf.float32)
+    pad_lft_f = tf.cast(pad_left, tf.float32)
+
+    ymin = boxes[:, 0] * new_h_f / out_h_f + pad_top_f / out_h_f
+    xmin = boxes[:, 1] * new_w_f / out_w_f + pad_lft_f / out_w_f
+    ymax = boxes[:, 2] * new_h_f / out_h_f + pad_top_f / out_h_f
+    xmax = boxes[:, 3] * new_w_f / out_w_f + pad_lft_f / out_w_f
+    boxes = tf.stack([ymin, xmin, ymax, xmax], axis=1)
+
+    n_inst = tf.shape(polygons)[0]
+    pts = tf.reshape(polygons, [n_inst, -1, 2])       # [N, P, (x, y)]
+    valid = pts[:, :, 0] > -1.0                        # reserved sentinel is exactly -1.0
+    px = pts[:, :, 0] * new_w_f / out_w_f + pad_lft_f / out_w_f
+    py = pts[:, :, 1] * new_h_f / out_h_f + pad_top_f / out_h_f
+    neg1 = tf.fill(tf.shape(px), -1.0)
+    px = tf.where(valid, px, neg1)
+    py = tf.where(valid, py, neg1)
+    polygons = tf.reshape(tf.stack([px, py], axis=-1), tf.shape(polygons))
+
+    return image, boxes, polygons
+
+
+# ---------------------------------------------------------------------------
 # Horizontal flip
 # ---------------------------------------------------------------------------
 

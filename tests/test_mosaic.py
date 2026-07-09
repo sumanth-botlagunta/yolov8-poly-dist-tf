@@ -198,116 +198,107 @@ class TestMosaic(unittest.TestCase):
         self.assertEqual(total, G // 4)  # 16 // 4 = 4 outputs
 
 
-class TestPerTileScale(unittest.TestCase):
-    """Per-tile independent placement scale (tile_scale_min/max).
+class TestTileCrop(unittest.TestCase):
+    """Per-tile random-window crop (tile_crop_min/max).
 
-    The label path is parameterized by the resized dims + pads, so scaled tiles
-    must keep boxes and polygons mutually consistent: every valid polygon vertex
-    stays inside its instance's box (both go through the same canvas mapping and
-    the same final-warp clip), and -1 sentinel padding survives untouched.
+    Replaces the old per-tile scale. The window geometry is a pure function
+    (_apply_window) so the coordinate transform is hand-checkable; the enabled
+    path drops rows fully outside the window with a full aligned mask.
     """
 
     def test_bounds_validation(self):
-        _identity_mosaic(tile_scale_min=0.4, tile_scale_max=1.9)   # ok
-        _identity_mosaic(tile_scale_min=0.0, tile_scale_max=0.0)   # ok (off)
+        _identity_mosaic(tile_crop_min=0.4, tile_crop_max=0.9)   # ok
+        _identity_mosaic(tile_crop_min=0.0, tile_crop_max=0.0)   # ok (off)
         with self.assertRaises(ValueError):
-            _identity_mosaic(tile_scale_min=0.0, tile_scale_max=1.9)
+            _identity_mosaic(tile_crop_min=0.0, tile_crop_max=0.9)   # min must be > 0
         with self.assertRaises(ValueError):
-            _identity_mosaic(tile_scale_min=1.9, tile_scale_max=0.4)
+            _identity_mosaic(tile_crop_min=0.9, tile_crop_max=0.4)   # min > max
+        with self.assertRaises(ValueError):
+            _identity_mosaic(tile_crop_min=0.5, tile_crop_max=1.2)   # max > 1
 
-    def _run_fixed_scale(self, s, out=32, G=4):
-        tf.random.set_seed(11)
-        m = _identity_mosaic(out=out, freq=1.0, group_size=G, center=0.0,
-                             tile_scale_min=s, tile_scale_max=s)
-        return m.mosaic_fn(is_training=True)(_make_group(G, h=out, w=out))
+    def test_off_is_byte_identical(self):
+        """crop OFF (0/0) reproduces the no-crop mosaic byte-for-byte (same seed)."""
+        G = 8
 
-    def test_labels_consistent_at_fixed_scales(self):
-        for s in (0.5, 1.0, 1.9):
-            res = self._run_fixed_scale(s)
-            boxes = res["groundtruth_boxes"].numpy()
-            polys = res["groundtruth_polygons"].numpy()
-            self.assertTrue((boxes >= 0.0).all() and (boxes <= 1.0).all(),
-                            f"s={s}: box out of [0,1]")
-            P, V = polys.shape[0], polys.shape[-1]
-            pts = polys.reshape(P, boxes.shape[1], V // 2, 2)
-            for o in range(P):                      # each output
-                for k in range(boxes.shape[1]):     # each instance
-                    ymin, xmin, ymax, xmax = boxes[o, k]
-                    for (x, y) in pts[o, k]:
-                        if x <= -1.0:               # sentinel padding
-                            self.assertEqual(x, -1.0, f"s={s}: sentinel drifted")
-                            continue
-                        self.assertTrue(
-                            xmin - 1e-5 <= x <= xmax + 1e-5
-                            and ymin - 1e-5 <= y <= ymax + 1e-5,
-                            f"s={s}: vertex ({x:.4f},{y:.4f}) outside box "
-                            f"({ymin:.4f},{xmin:.4f},{ymax:.4f},{xmax:.4f})")
+        def run(**kw):
+            tf.random.set_seed(123)
+            m = _identity_mosaic(out=32, freq=1.0, group_size=G, decodes_per_output=4,
+                                 center=0.0, **kw)
+            return m.mosaic_fn(is_training=True)(_make_group(G))
 
-    def test_exact_box_and_polygon_mapping_at_half_scale(self):
-        """Hand-computed geometry: out=32, center pinned at (32,32) (c=0), tile
-        scale 0.5 -> nh=nw=16, identity warp = center crop of the 64x64 canvas
-        (canvas px v -> output norm (v-16)/32).
+        base = run()
+        off = run(tile_crop_min=0.0, tile_crop_max=0.0)
+        np.testing.assert_array_equal(base["image"].numpy(), off["image"].numpy())
+        np.testing.assert_array_equal(base["groundtruth_boxes"].numpy(),
+                                      off["groundtruth_boxes"].numpy())
 
-        TL tile: pad = 32-16 = 16 -> input coord u -> canvas px 16u+16.
-          box [0.25,0.75] -> canvas [20,28] -> output [0.125, 0.375]
-          poly (0.3,0.3),(0.6,0.6) -> canvas 20.8/25.6 -> output 0.15 / 0.30
-        TR tile: padw = 32 -> x + 0.5: box x [0.625,0.875], poly x 0.65/0.80.
-        BL mirrors TR in y; BR shifts both. Instance order is TL,TR,BL,BR.
-        """
-        res = self._run_fixed_scale(0.5)
-        boxes = res["groundtruth_boxes"].numpy()
-        polys = res["groundtruth_polygons"].numpy()
-        lo, hi = 0.125, 0.375          # TL box edges in output coords
-        sh = 0.5                        # quadrant shift
-        expected_boxes = np.array([
-            [lo,      lo,      hi,      hi],       # TL
-            [lo,      lo + sh, hi,      hi + sh],  # TR
-            [lo + sh, lo,      hi + sh, hi],       # BL
-            [lo + sh, lo + sh, hi + sh, hi + sh],  # BR
-        ], dtype=np.float32)
-        p1, p2 = 0.15, 0.30            # TL polygon vertex coords
-        expected_polys = np.array([
-            [p1,      p1,      p2,      p2,      -1, -1, -1, -1],
-            [p1 + sh, p1,      p2 + sh, p2,      -1, -1, -1, -1],
-            [p1,      p1 + sh, p2,      p2 + sh, -1, -1, -1, -1],
-            [p1 + sh, p1 + sh, p2 + sh, p2 + sh, -1, -1, -1, -1],
-        ], dtype=np.float32)
-        for o in range(boxes.shape[0]):     # every output has the same geometry
-            np.testing.assert_allclose(boxes[o], expected_boxes, atol=2e-2,
-                                       err_msg=f"output {o}: box mapping wrong")
-            np.testing.assert_allclose(polys[o], expected_polys, atol=2e-2,
-                                       err_msg=f"output {o}: polygon mapping wrong")
+    def test_apply_window_exact_transform_no_clip(self):
+        """Hand-computed: content 100x100, window top=20 left=20 win=50x50.
+        box px [30,50] -> (30-20)/50=0.2 .. (50-20)/50=0.6. poly likewise."""
+        boxes = tf.constant([[0.3, 0.3, 0.5, 0.5]], tf.float32)
+        polys = tf.constant([[0.3, 0.3, 0.5, 0.5, -1.0, -1.0]], tf.float32)  # (x,y) pairs
+        bw, pw, keep = Mosaic._apply_window(boxes, polys, 100, 100, 20, 20, 50, 50)
+        self.assertTrue(bool(keep.numpy()[0]))
+        np.testing.assert_allclose(bw.numpy()[0], [0.2, 0.2, 0.6, 0.6], atol=1e-6)
+        np.testing.assert_allclose(pw.numpy()[0], [0.2, 0.2, 0.6, 0.6, -1.0, -1.0], atol=1e-6)
 
-    def test_small_tile_scale_exposes_gray_canvas(self):
-        # Tiles are anchored at the mosaic center and the identity warp
-        # center-crops the 2x canvas, so tiles at scale >= 0.5 still tile the
-        # crop region completely. Below 0.5 (here 0.4 -> tiles span canvas
-        # [~19..32] per quadrant, union [~19..45] inside the [16..48] crop) a
-        # gray-114 frame MUST appear at the output border; at scale 1.0 the
-        # output must be fully covered by tile content (values 0..3).
-        def gray_pixels(s):
-            img = self._run_fixed_scale(s)["image"].numpy()
-            ch = img[..., 0].astype(np.int32)
-            return int(((ch > 100) & (ch < 130)).sum())
-        self.assertEqual(gray_pixels(1.0), 0)
-        self.assertGreater(gray_pixels(0.4), 0)
+    def test_apply_window_clips_and_drops(self):
+        """A box fully outside the window is dropped; a partial box is clipped."""
+        boxes = tf.constant([
+            [0.8, 0.8, 0.9, 0.9],   # outside a [0,0,50,50] window on 100x100 -> drop
+            [0.2, 0.2, 0.8, 0.8],   # straddles -> clipped to [0.4,0.4,1,1]
+        ], tf.float32)
+        polys = tf.fill([2, 6], -1.0)
+        bw, pw, keep = Mosaic._apply_window(boxes, polys, 100, 100, 0, 0, 50, 50)
+        self.assertFalse(bool(keep.numpy()[0]))
+        self.assertTrue(bool(keep.numpy()[1]))
+        np.testing.assert_allclose(bw.numpy()[1], [0.4, 0.4, 1.0, 1.0], atol=1e-6)
+
+    def test_tile_crop_example_bounds_and_alignment(self):
+        """Enabled crop: window dims within bounds and every per-instance field
+        masked to the same kept-row count."""
+        m = _identity_mosaic(tile_crop_min=0.5, tile_crop_max=0.5)
+        cex = {
+            "image": tf.fill([100, 80, 3], tf.constant(7, tf.uint8)),
+            "groundtruth_boxes": tf.constant(
+                [[0.05, 0.05, 0.25, 0.25], [0.6, 0.6, 0.95, 0.95]], tf.float32),
+            "groundtruth_polygons": tf.fill([2, 8], -1.0),
+            "groundtruth_classes": tf.constant([3, 4], tf.int64),
+            "groundtruth_is_crowd": tf.zeros([2], tf.bool),
+            "groundtruth_area": tf.ones([2], tf.float32),
+            "groundtruth_dontcare": tf.zeros([2], tf.int64),
+            "groundtruth_dists": tf.fill([2], -1.0),
+        }
+        for seed in range(8):
+            tf.random.set_seed(seed)
+            out = m._tile_crop_example(cex)
+            ci = out["image"].numpy()
+            # s=0.5 -> win_h = round(100*0.5) = 50, win_w = round(80*0.5) = 40.
+            self.assertEqual(ci.shape[:2], (50, 40))
+            nb = int(out["groundtruth_boxes"].shape[0])
+            for k in ("groundtruth_classes", "groundtruth_polygons", "groundtruth_area",
+                      "groundtruth_is_crowd", "groundtruth_dontcare", "groundtruth_dists"):
+                self.assertEqual(int(out[k].shape[0]), nb, f"{k} misaligned to boxes")
+            b = out["groundtruth_boxes"].numpy()
+            if nb:
+                self.assertTrue((b >= 0.0).all() and (b <= 1.0).all())
 
     def test_config_wiring(self):
         from configs.yaml_loader import load_config_from_dict
         cfg = load_config_from_dict({"task": {"train_data": {"parser": {
-            "mosaic": {"tile_scale_min": 0.4, "tile_scale_max": 1.9}}}}})
+            "mosaic": {"tile_crop_min": 0.4, "tile_crop_max": 0.9}}}}})
         m = cfg.task.train_data.parser.mosaic
-        self.assertEqual((m.tile_scale_min, m.tile_scale_max), (0.4, 1.9))
+        self.assertEqual((m.tile_crop_min, m.tile_crop_max), (0.4, 0.9))
         # default off
         cfg0 = load_config_from_dict({})
         m0 = cfg0.task.train_data.parser.mosaic
-        self.assertEqual((m0.tile_scale_min, m0.tile_scale_max), (0.0, 0.0))
+        self.assertEqual((m0.tile_crop_min, m0.tile_crop_max), (0.0, 0.0))
         # input_reader forwards the knobs to Mosaic
         import inspect
         from data_pipeline import input_reader
         src = inspect.getsource(input_reader)
-        self.assertIn("tile_scale_min=mosaic_cfg.tile_scale_min", src)
-        self.assertIn("tile_scale_max=mosaic_cfg.tile_scale_max", src)
+        self.assertIn("tile_crop_min=mosaic_cfg.tile_crop_min", src)
+        self.assertIn("tile_crop_max=mosaic_cfg.tile_crop_max", src)
 
 
 class TestFlipOwnershipAndSinglePath(unittest.TestCase):
@@ -825,11 +816,12 @@ class TestRotationGating(unittest.TestCase):
         self.assertGreater(frac, 0.20)
         self.assertLess(frac, 0.40)
 
-    def test_default_mosaic_is_mostly_upright(self):
-        # The Mosaic default (rotate_prob=0.10, shear=0) produces upright outputs.
+    def test_default_mosaic_never_rotates(self):
+        # Rotation parity: the mosaic default is upright (rotate_prob default 0,
+        # shear 0) and the mosaic warp forces 0 rotation regardless of the field.
         m = Mosaic(output_size=[32, 32], with_polygons=True)
         self.assertEqual(m._shear, 0.0)
-        self.assertAlmostEqual(m._rotate_prob, 0.10)
+        self.assertEqual(m._rotate_prob, 0.0)
 
 
 class TestFilteredAnnsMissingFields(unittest.TestCase):

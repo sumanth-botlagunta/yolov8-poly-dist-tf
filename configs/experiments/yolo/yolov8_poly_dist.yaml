@@ -138,6 +138,10 @@ task:
       #  applied. Geometric aug is the mosaic-stage random_perspective below, set via
       #  mosaic.degrees / mosaic.shear / mosaic.translate.)
       random_flip: true
+      # Single-image (non-mosaic) pre-warp rotation. OFF for parity (the legacy
+      # pipeline did not rotate). The mosaic path never rotates regardless.
+      rotate: false
+      rotate_degrees: null
       resize_with_random_method: true
       skip_crowd_during_training: true
       dummy_distance: true
@@ -145,7 +149,6 @@ task:
       albumentations_frequency: 1.0
       jitter: 0.0
       random_pad: false
-      random_rotate: false
       best_match_only: false
       use_tie_breaker: true
       anchor_thresh: -0.01
@@ -165,11 +168,12 @@ task:
         # image — the assembled canvas is never mirrored.
         aug_scale_min: 0.4
         aug_scale_max: 1.9
-        # Per-tile independent scale: OFF pending the original's per-tile
-        # jitter magnitude (`random_crop` in its mosaic op — unresolved); the
-        # confirmed original scale variety is the [0.4, 1.9] whole-canvas warp.
-        tile_scale_min: 0.0
-        tile_scale_max: 0.0
+        # Per-tile random-window crop: OFF (0/0). When enabled each tile crops a
+        # random window of side fraction s ~ U[min, max] of its content and scales
+        # it to the quadrant. The confirmed original scale variety is the [0.4, 1.9]
+        # whole-canvas warp.
+        tile_crop_min: 0.0
+        tile_crop_max: 0.0
         mosaic_crop_mode: scale
         # legacy parity: the MOSAIC path uses 0.5; the single-image path uses
         # the parser-level area_thresh (0.1) wired via single_area_thresh
@@ -184,11 +188,9 @@ task:
         # recurrences ~24 batches apart so same-batch reuse is rare.
         decodes_per_output: 1
         # Mosaic-path affine knobs (the single path uses the parser-level
-        # values). Original-codebase parity: rotation fully OFF (rotate_prob
-        # 0 — the original disabled mosaic rotation in code because polygon
-        # rotation was unimplemented), translate 0, shear 0.
-        degrees: 0.0
-        rotate_prob: 0.0
+        # values). Original-codebase parity: rotation fully OFF — the mosaic
+        # path NEVER rotates (wired to 0 in code because polygon rotation was
+        # unimplemented in the original); translate 0, shear 0.
         shear: 0.0
         translate: 0.0
     distance_data:
@@ -257,7 +259,6 @@ task:
       albumentations_frequency: 0.0
       jitter: 0.0
       random_pad: false
-      random_rotate: false
       best_match_only: false
       use_tie_breaker: true
       anchor_thresh: -0.01

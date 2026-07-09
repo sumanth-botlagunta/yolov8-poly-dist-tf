@@ -84,6 +84,7 @@ import tensorflow as tf
 
 from data_pipeline.augmentations import (
     apply_perspective_image,
+    letterbox_geometry,
     make_perspective_matrix,
     random_horizontal_flip,
     random_perspective,
@@ -276,20 +277,23 @@ class Mosaic:
         aug_scale_max: float = 1.5,
         area_thresh: float = 0.5,
         with_polygons: bool = True,
-        degrees: float = 10.0,
+        degrees: float = 0.0,
         shear: float = 0.0,
         perspective: float = 0.0,
         translate: float = 0.1,
-        rotate_prob: float = 0.10,
+        rotate_prob: float = 0.0,
         group_size: int = 32,
         decodes_per_output: int = 4,
-        tile_scale_min: float = 0.0,
-        tile_scale_max: float = 0.0,
+        tile_crop_min: float = 0.0,
+        tile_crop_max: float = 0.0,
         single_scale_min: Optional[float] = None,
         single_scale_max: Optional[float] = None,
         single_translate: Optional[float] = None,
         single_area_thresh: Optional[float] = None,
         random_flip: bool = False,
+        single_rotate: bool = False,
+        single_rotate_degrees: Optional[float] = None,
+        copy_paste_module=None,
     ):
         self._H = output_size[0]
         self._W = output_size[1]
@@ -301,25 +305,40 @@ class Mosaic:
         self._scale_max   = aug_scale_max
         self._area_thresh = area_thresh
         self._with_polys  = with_polygons
+        # Rotation parity: mosaic tiles/canvas NEVER rotate (the legacy pipeline
+        # hard-disabled mosaic rotation because polygon rotation was unimplemented).
+        # `degrees` / `rotate_prob` are accepted for back-compat but wired to 0 in
+        # every warp; the only rotation is the optional single-path pre-warp below.
         self._degrees     = degrees
         self._shear       = shear
         self._perspective = perspective
         self._translate   = translate
         self._rotate_prob = rotate_prob
-        # Per-tile independent scale. When
-        # tile_scale_max > 0, each mosaic tile's placement scale is multiplied by
-        # an INDEPENDENT uniform draw from [tile_scale_min, tile_scale_max], so
-        # the 4 tiles of one mosaic appear at 4 different scales (intra-image
-        # scale diversity — the strongest scale-invariance signal a detector
-        # gets). 0/0 disables it: placement stays at the consistent long-side
-        # scale and this code path adds nothing to the graph.
-        if (tile_scale_max > 0.0) and not (0.0 < tile_scale_min <= tile_scale_max):
+        # Per-tile RANDOM-WINDOW CROP. When tile_crop_max > 0, each mosaic tile
+        # crops a random window of side fraction s ~ U[tile_crop_min, tile_crop_max]
+        # of its content (random position within bounds), then scales the crop to
+        # its quadrant — a zoom/translate scale-invariance signal. 0/0 disables it
+        # (the content region fills its quadrant unchanged).
+        if (tile_crop_max > 0.0) and not (0.0 < tile_crop_min <= tile_crop_max <= 1.0):
             raise ValueError(
-                f"tile_scale bounds invalid: need 0 < min <= max, got "
-                f"[{tile_scale_min}, {tile_scale_max}]"
+                f"tile_crop bounds invalid: need 0 < min <= max <= 1, got "
+                f"[{tile_crop_min}, {tile_crop_max}]"
             )
-        self._tile_scale_min = tile_scale_min
-        self._tile_scale_max = tile_scale_max
+        self._tile_crop_min = tile_crop_min
+        self._tile_crop_max = tile_crop_max
+        # Optional single-path pre-warp rotation (parser-level rotate / rotate_degrees).
+        # Applied to non-mosaic images only, BEFORE flip, via the perspective-matrix
+        # machinery (a pure centered rotation). Off by default = byte-identical.
+        self._single_rotate = bool(single_rotate) and (single_rotate_degrees is not None)
+        self._single_rotate_degrees = (
+            single_rotate_degrees if single_rotate_degrees is not None else 0.0)
+        # Copy-paste module (optional). When set, each mosaic TILE independently
+        # pastes its own cnp candidate with the module's probability; the single
+        # path ignores cnp fields entirely.
+        self._copy_paste_module = copy_paste_module
+        self._copy_paste_fn = (
+            copy_paste_module.process_fn(is_training=True)
+            if copy_paste_module is not None else None)
         # Non-mosaic (single) path warp params. The two paths are augmented
         # DIFFERENTLY: mosaics get the [aug_scale_min/max] warp
         # gain with no translate, singles get NO scale gain (1.0) but a small
@@ -486,17 +505,15 @@ class Mosaic:
     ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """random_perspective with this module's configured params → output size.
 
-        The warp scale gain is drawn from the EXPLICIT [aug_scale_min,
-        aug_scale_max] config bounds (or the per-call override — the single
-        path passes its own bounds/translate). (The earlier
-        symmetric-magnitude form widened the configured [0.4, 1.9] to
-        [0.1, 1.9], occasionally shrinking content to ~1% area — the
-        "mostly-gray frame" bug.)
+        Rotation parity: the warp NEVER rotates (degrees/rotate_prob forced to 0);
+        single-path rotation is the separate optional pre-warp step. The warp scale
+        gain is drawn from the EXPLICIT [aug_scale_min, aug_scale_max] config bounds
+        (or the per-call override — the single path passes its own bounds/translate).
         """
         return random_perspective(
             image, boxes, polygons,
             target_h=self._H, target_w=self._W,
-            degrees=self._degrees,
+            degrees=0.0,
             translate=self._translate if translate is None else translate,
             scale_min=self._scale_min if scale_min is None else scale_min,
             scale_max=self._scale_max if scale_max is None else scale_max,
@@ -504,8 +521,43 @@ class Mosaic:
             perspective=self._perspective,
             area_thresh=(self._area_thresh if area_thresh is None
                          else area_thresh),
-            rotate_prob=self._rotate_prob,
+            rotate_prob=0.0,
         )
+
+    def _rotate_image_boxes_polys(
+        self,
+        image: tf.Tensor,
+        boxes: tf.Tensor,
+        polygons: tf.Tensor,
+    ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+        """Pure centered rotation by uniform(-deg, +deg) via the perspective machinery.
+
+        Rotates image + boxes + polygons about the image center by a single angle
+        drawn from [-single_rotate_degrees, +single_rotate_degrees]. Built with
+        ``make_perspective_matrix`` (rotate_prob=1.0, unit scale, no translate/shear/
+        perspective) so no new geometry code is introduced. Coordinates are only
+        transformed + clipped here (no rows dropped); the subsequent single warp's
+        filter culls anything rotated out of frame.
+        """
+        H, W = self._H, self._W
+        M = make_perspective_matrix(
+            h_in=H, w_in=W,
+            target_h=H, target_w=W,
+            degrees=self._single_rotate_degrees,
+            translate=0.0,
+            scale_min=1.0, scale_max=1.0,
+            shear=0.0,
+            perspective=0.0,
+            rotate_prob=1.0,
+        )
+        image_out = apply_perspective_image(image, M, H, W)
+        boxes_out, _keep, polys_out = transform_boxes_polygons(
+            boxes, polygons, M,
+            h_in=H, w_in=W,
+            target_h=H, target_w=W,
+            area_thresh=0.0, min_side=0.0,
+        )
+        return image_out, boxes_out, polys_out
 
     @staticmethod
     def _filtered_anns(
@@ -543,17 +595,23 @@ class Mosaic:
         }
 
     def _single(self, ex: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
-        """Non-mosaic path: flip + random_perspective with the SINGLE-path params.
+        """Non-mosaic path: (optional rotation) → flip → single-path warp.
 
-        Uses single_scale_min/max + single_translate (no scale gain and a
-        small translate for non-mosaic images) rather than the mosaic warp
-        bounds.
+        The image arrives LETTERBOXED to the output size (aspect-preserved content
+        inset with gray margins), so border objects survive the pre-resize and the
+        subsequent translate can no longer expel them wholesale. Optional pre-warp
+        rotation (single_rotate) is applied first, then flip, then the single warp
+        (single_scale_min/max + single_translate — no scale gain, a small translate).
+        The single path IGNORES all cnp_* fields (copy-paste is mosaic-only).
         """
-        if self._random_flip:
-            ex = self._flip_example(ex)
         img = ex['image']
         boxes = ex.get('groundtruth_boxes', tf.zeros([0, 4]))
         polys = ex.get('groundtruth_polygons', tf.zeros([0, 2]))
+        # Optional pre-warp rotation (top-level, before flip). Off by default.
+        if self._single_rotate:
+            img, boxes, polys = self._rotate_image_boxes_polys(img, boxes, polys)
+        if self._random_flip:
+            img, boxes, polys = random_horizontal_flip(img, boxes, polys)
         img_out, boxes_out, keep, polys_out = self._warp(
             img, boxes, polys,
             scale_min=self._single_scale_min,
@@ -566,6 +624,184 @@ class Mosaic:
         anns['height'] = tf.constant(self._H, tf.int32)
         anns['width']  = tf.constant(self._W, tf.int32)
         return anns
+
+    # ------------------------------------------------------------------
+    # Per-tile content preparation (slice content, copy-paste, tile-crop)
+    # ------------------------------------------------------------------
+
+    def _content_example(self, ex: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+        """Slice the letterbox CONTENT region out of a pre-resized tile.
+
+        The pre-resize letterboxes each image to the output size (aspect-preserved
+        content inset with gray-114 margins). For the mosaic path the gray margins
+        must be removed so a tile is the object content only, scaled to fill its
+        quadrant. Using the ORIGINAL capture dims ('height'/'width') the content box
+        is reconstructed with the SAME letterbox geometry, the content is sliced, and
+        the GT (currently letterbox-normalized) is mapped back to CONTENT-normalized
+        coords (the exact inverse of the pre-resize — i.e. the original decoder
+        coords). When 'height'/'width' are absent (some direct-call tests) the whole
+        image is treated as content (identity), which is exact for square inputs.
+        """
+        H, W = self._H, self._W
+        img_lb = ex['image']
+        boxes = ex.get('groundtruth_boxes', tf.zeros([0, 4], tf.float32))
+        polys = ex.get('groundtruth_polygons', tf.zeros([0, 2], tf.float32))
+
+        if ('height' in ex) and ('width' in ex):
+            _scale, content_h, content_w, pad_top, pad_left = letterbox_geometry(
+                ex['height'], ex['width'], H, W)
+            content = tf.slice(img_lb, [pad_top, pad_left, 0],
+                               [content_h, content_w, -1])
+            ch_f = tf.cast(content_h, tf.float32)
+            cw_f = tf.cast(content_w, tf.float32)
+            pt_f = tf.cast(pad_top, tf.float32)
+            pl_f = tf.cast(pad_left, tf.float32)
+            H_f = tf.cast(H, tf.float32)
+            W_f = tf.cast(W, tf.float32)
+
+            # letterbox-normalized -> content-normalized (inverse of the pre-resize).
+            ymin = (boxes[:, 0] * H_f - pt_f) / ch_f
+            xmin = (boxes[:, 1] * W_f - pl_f) / cw_f
+            ymax = (boxes[:, 2] * H_f - pt_f) / ch_f
+            xmax = (boxes[:, 3] * W_f - pl_f) / cw_f
+            boxes = tf.stack([ymin, xmin, ymax, xmax], axis=1)
+
+            Np = tf.shape(polys)[0]
+            maxv = tf.shape(polys)[1]
+            pts = tf.reshape(polys, [Np, -1, 2])
+            valid = pts[:, :, 0] > -1.0
+            xv = (pts[:, :, 0] * W_f - pl_f) / cw_f
+            yv = (pts[:, :, 1] * H_f - pt_f) / ch_f
+            neg1 = tf.fill(tf.shape(xv), -1.0)
+            xv = tf.where(valid, xv, neg1)
+            yv = tf.where(valid, yv, neg1)
+            polys = tf.reshape(tf.stack([xv, yv], axis=-1), [Np, maxv])
+            h_orig = tf.cast(ex['height'], tf.int32)
+            w_orig = tf.cast(ex['width'], tf.int32)
+        else:
+            content = img_lb
+            h_orig = tf.shape(img_lb)[0]
+            w_orig = tf.shape(img_lb)[1]
+
+        cex = dict(ex)
+        cex['image'] = content
+        cex['groundtruth_boxes'] = boxes
+        cex['groundtruth_polygons'] = polys
+        cex['height'] = h_orig
+        cex['width'] = w_orig
+        return cex
+
+    def _paste_tile(self, cex: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+        """Copy-paste one cnp candidate onto a tile with the module's probability.
+
+        No-op when the module or the cnp fields are absent. The cnp image is sliced
+        back to its native size (padded_batch pads it to the group-max) so the
+        object coords in orig_bbox/points stay valid. The single path never calls
+        this, so pastes are mosaic-only (legacy parity).
+        """
+        if self._copy_paste_fn is None or 'cnp_image' not in cex:
+            return cex
+        obj = {
+            'image': tf.slice(cex['cnp_image'], [0, 0, 0],
+                              [cex['cnp_h'], cex['cnp_w'], -1]),
+            'orig_bbox': cex['cnp_orig_bbox'],
+            'label': cex['cnp_label'],
+            'points': cex['cnp_points'],
+        }
+        return self._copy_paste_fn(cex, obj)
+
+    def _tile_crop_example(self, cex: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+        """Random-window crop of a tile's content (side fraction s ~ U[min, max]).
+
+        Draws a window of side fraction ``s`` of the content dims at a uniform-random
+        position, crops the image and remaps + clips the GT to the window; rows that
+        fall fully outside are dropped (with the full aligned mask across every
+        per-instance field). The cropped window then scales to fill the quadrant.
+        """
+        img = cex['image']
+        ch = tf.shape(img)[0]
+        cw = tf.shape(img)[1]
+        ch_f = tf.cast(ch, tf.float32)
+        cw_f = tf.cast(cw, tf.float32)
+        s = tf.random.uniform([], self._tile_crop_min, self._tile_crop_max)
+        win_h = tf.maximum(tf.cast(tf.round(ch_f * s), tf.int32), 1)
+        win_w = tf.maximum(tf.cast(tf.round(cw_f * s), tf.int32), 1)
+        top = tf.random.uniform([], 0, tf.maximum(ch - win_h, 0) + 1, dtype=tf.int32)
+        left = tf.random.uniform([], 0, tf.maximum(cw - win_w, 0) + 1, dtype=tf.int32)
+        crop = tf.slice(img, [top, left, 0], [win_h, win_w, -1])
+
+        boxes_w, polys_w, keep = self._apply_window(
+            cex['groundtruth_boxes'], cex['groundtruth_polygons'],
+            ch, cw, top, left, win_h, win_w,
+        )
+
+        out = dict(cex)
+        out['image'] = crop
+        out['groundtruth_boxes'] = tf.boolean_mask(boxes_w, keep)
+        out['groundtruth_polygons'] = tf.boolean_mask(polys_w, keep)
+        for key, dtype in (
+            ('groundtruth_classes', tf.int64),
+            ('groundtruth_is_crowd', tf.bool),
+            ('groundtruth_area', tf.float32),
+            ('groundtruth_dontcare', tf.int64),
+            ('groundtruth_dists', tf.float32),
+        ):
+            if key in cex:
+                out[key] = tf.boolean_mask(tf.cast(cex[key], dtype), keep)
+        return out
+
+    @staticmethod
+    def _apply_window(
+        boxes: tf.Tensor,
+        polygons: tf.Tensor,
+        ch: tf.Tensor, cw: tf.Tensor,
+        top: tf.Tensor, left: tf.Tensor,
+        win_h: tf.Tensor, win_w: tf.Tensor,
+    ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+        """Map content-normalized GT into a crop window, clip, and mark keep.
+
+        content pixel = coord * content_dim; window-normalized =
+        (content_px - window_origin) / window_dim, clipped to [0, 1]. A box with
+        zero visible area after clip is dropped (keep=False). Polygon vertices are
+        clipped to the window edge; the -1.0 sentinel is preserved. Pure function
+        of explicit window ints so the geometry is unit-testable.
+        """
+        ch_f = tf.cast(ch, tf.float32)
+        cw_f = tf.cast(cw, tf.float32)
+        top_f = tf.cast(top, tf.float32)
+        left_f = tf.cast(left, tf.float32)
+        wh_f = tf.cast(win_h, tf.float32)
+        ww_f = tf.cast(win_w, tf.float32)
+
+        by0 = tf.clip_by_value((boxes[:, 0] * ch_f - top_f) / wh_f, 0.0, 1.0)
+        bx0 = tf.clip_by_value((boxes[:, 1] * cw_f - left_f) / ww_f, 0.0, 1.0)
+        by1 = tf.clip_by_value((boxes[:, 2] * ch_f - top_f) / wh_f, 0.0, 1.0)
+        bx1 = tf.clip_by_value((boxes[:, 3] * cw_f - left_f) / ww_f, 0.0, 1.0)
+        boxes_w = tf.stack([by0, bx0, by1, bx1], axis=1)
+        keep = tf.logical_and((by1 - by0) > 1e-9, (bx1 - bx0) > 1e-9)
+
+        Np = tf.shape(polygons)[0]
+        maxv = tf.shape(polygons)[1]
+        pts = tf.reshape(polygons, [Np, -1, 2])
+        valid = pts[:, :, 0] > -1.0
+        xv = tf.clip_by_value((pts[:, :, 0] * cw_f - left_f) / ww_f, 0.0, 1.0)
+        yv = tf.clip_by_value((pts[:, :, 1] * ch_f - top_f) / wh_f, 0.0, 1.0)
+        neg1 = tf.fill(tf.shape(xv), -1.0)
+        xv = tf.where(valid, xv, neg1)
+        yv = tf.where(valid, yv, neg1)
+        polys_w = tf.reshape(tf.stack([xv, yv], axis=-1), [Np, maxv])
+        return boxes_w, polys_w, keep
+
+    def _prepare_tile(self, ex: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
+        """Slice content → copy-paste → per-tile flip → tile-crop for one tile."""
+        cex = self._content_example(ex)
+        cex = self._paste_tile(cex)
+        if self._random_flip:
+            # Per-TILE independent flip; the assembled canvas is never mirrored.
+            cex = self._flip_example(cex)
+        if self._tile_crop_max > 0.0:
+            cex = self._tile_crop_example(cex)
+        return cex
 
     # ------------------------------------------------------------------
     # Mosaic implementation
@@ -608,32 +844,32 @@ class Mosaic:
         yc = tf.clip_by_value(yc, 1, 2 * H - 1)
         xc = tf.clip_by_value(xc, 1, 2 * W - 1)
 
-        examples = [one, two, three, four]
-        if self._random_flip:
-            # Per-TILE independent flip (each tile draws its own coin); the
-            # assembled canvas is never mirrored as a whole.
-            examples = [self._flip_example(ex) for ex in examples]
+        # Per-tile preparation: slice the letterbox content, copy-paste (mosaic-only,
+        # per tile), flip (per tile), tile-crop. Each returns a content example whose
+        # GT is CONTENT-normalized (matching nh/nw below).
+        examples = [self._prepare_tile(ex) for ex in (one, two, three, four)]
         boxes_list, polys_list = [], []
 
         # Draw the global canvas→output matrix ONCE (same params as self._warp;
         # scale gain from the explicit [aug_scale_min, aug_scale_max] bounds).
+        # Rotation parity: the mosaic canvas NEVER rotates (degrees/rotate_prob = 0).
         M = make_perspective_matrix(
             h_in=H2, w_in=W2,
             target_h=H, target_w=W,
-            degrees=self._degrees,
+            degrees=0.0,
             translate=self._translate,
             scale_min=self._scale_min,
             scale_max=self._scale_max,
             shear=self._shear,
             perspective=self._perspective,
-            rotate_prob=self._rotate_prob,
+            rotate_prob=0.0,
         )
 
-        # Per quadrant: draw the per-image scale, resize, and place into its
-        # cell (crop overflow / pad voids with gray 114) — then assemble the 2×
-        # canvas and apply ONE warp canvas→output. tf.image.resize is far
-        # cheaper per pixel than the warp op, so total resample cost is
-        # 4 small resizes + 1 output-sized warp per emitted mosaic.
+        # Per quadrant: resize the (prepared) content to fill its cell, place into
+        # the cell (crop overflow / pad voids with gray 114) — then assemble the 2×
+        # canvas and apply ONE warp canvas→output. tf.image.resize is far cheaper
+        # per pixel than the warp op, so total resample cost is 4 small resizes +
+        # 1 output-sized warp per emitted mosaic.
         cells = []
         for i, ex in enumerate(examples):
             img = ex['image']
@@ -641,22 +877,14 @@ class Mosaic:
             w_in = tf.shape(img)[1]
             h_in_f = tf.cast(h_in, tf.float32)
             w_in_f = tf.cast(w_in, tf.float32)
-            # Placement scale: long side = output size (consistent upright tiles),
-            # optionally multiplied by an INDEPENDENT per-tile draw from
-            # [tile_scale_min, tile_scale_max] (each tile lands
-            # at its own scale, giving intra-image scale
-            # diversity on top of the single canvas->output warp gain). Tiles
-            # are anchored at the moving center corner, so an overscaled tile
-            # only ever overflows AWAY from the other cells and is cropped at
-            # the canvas edge by _place_in_cell; its labels map through the
-            # same nh/nw/pad values and are clipped/dropped by the final warp's
-            # transform_boxes_polygons + area_thresh — no cross-cell label
-            # corruption is possible. tile_scale 0/0 = consistent scale only.
+            # Placement scale: long side = output size. The content (or tile-crop
+            # window) is scaled to fill its quadrant; tiles anchor at the moving
+            # center corner so overflow only ever falls AWAY from the other cells
+            # and is cropped at the canvas edge by _place_in_cell — no cross-cell
+            # label corruption. Labels map through the same nh/nw/pad and are
+            # clipped/dropped by the final warp's transform_boxes_polygons.
             long_side = tf.maximum(h_in_f, w_in_f)
             place_scale = tf.cast(H, tf.float32) / long_side
-            if self._tile_scale_max > 0.0:
-                place_scale *= tf.random.uniform(
-                    [], self._tile_scale_min, self._tile_scale_max)
             nh = tf.maximum(tf.cast(tf.round(h_in_f * place_scale), tf.int32), 1)
             nw = tf.maximum(tf.cast(tf.round(w_in_f * place_scale), tf.int32), 1)
             # Skip the resize when the source is already the placement size (the common

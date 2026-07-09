@@ -43,6 +43,7 @@ import tensorflow as tf
 from data_pipeline.augmentations import (
     clip_boxes,
     clip_polygon_coords,
+    letterbox_resize,
     random_horizontal_flip,
 )
 from data_pipeline.parser import Parser
@@ -425,62 +426,13 @@ class V8ParserExtended(Parser):
     ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         """Letterbox-resize image to self._output_size with gray padding.
 
-        Boxes AND polygon vertices are remapped through the same scale + pad so
-        they stay aligned in the output normalized space. Invalid polygon
-        vertices (-1 sentinel) are preserved.
+        Delegates to the shared ``augmentations.letterbox_resize`` so the eval
+        parser and the mosaic-stage pre-resize (input_reader) use byte-identical
+        letterbox math. Boxes AND polygon vertices are remapped through the same
+        scale + pad; the -1.0 polygon sentinel is preserved.
         """
         h_out, w_out = self._output_size[0], self._output_size[1]
-        h_in = tf.cast(tf.shape(image)[0], tf.float32)
-        w_in = tf.cast(tf.shape(image)[1], tf.float32)
-
-        scale = tf.minimum(h_out / h_in, w_out / w_in)
-        new_h = tf.maximum(tf.cast(tf.round(h_in * scale), tf.int32), 1)
-        new_w = tf.maximum(tf.cast(tf.round(w_in * scale), tf.int32), 1)
-
-        image = tf.cast(
-            tf.image.resize(tf.cast(image, tf.float32), [new_h, new_w], method='bilinear'),
-            tf.uint8,
-        )
-
-        pad_top    = (h_out - new_h) // 2
-        pad_left   = (w_out - new_w) // 2
-        pad_bottom = h_out - new_h - pad_top
-        pad_right  = w_out - new_w - pad_left
-
-        image = tf.pad(
-            image,
-            [[pad_top, pad_bottom], [pad_left, pad_right], [0, 0]],
-            constant_values=114,
-        )
-        image.set_shape([h_out, w_out, 3])
-
-        # Adjust boxes for padding and scale
-        new_h_f   = tf.cast(new_h,   tf.float32)
-        new_w_f   = tf.cast(new_w,   tf.float32)
-        h_out_f   = tf.cast(h_out,   tf.float32)
-        w_out_f   = tf.cast(w_out,   tf.float32)
-        pad_top_f = tf.cast(pad_top,  tf.float32)
-        pad_lft_f = tf.cast(pad_left, tf.float32)
-
-        ymin = boxes[:, 0] * new_h_f / h_out_f + pad_top_f / h_out_f
-        xmin = boxes[:, 1] * new_w_f / w_out_f + pad_lft_f / w_out_f
-        ymax = boxes[:, 2] * new_h_f / h_out_f + pad_top_f / h_out_f
-        xmax = boxes[:, 3] * new_w_f / w_out_f + pad_lft_f / w_out_f
-        boxes = tf.stack([ymin, xmin, ymax, xmax], axis=1)
-
-        # Adjust polygon vertices with the same scale + pad. polygons is
-        # [N, max_vertices+2] flat (x, y) pairs, -1 padded for invalid vertices.
-        n_inst = tf.shape(polygons)[0]
-        pts    = tf.reshape(polygons, [n_inst, -1, 2])        # [N, P, 2] (x, y)
-        valid  = pts[:, :, 0] > -1.0                           # [N, P] — reserved sentinel is exactly -1.0
-        px = pts[:, :, 0] * new_w_f / w_out_f + pad_lft_f / w_out_f
-        py = pts[:, :, 1] * new_h_f / h_out_f + pad_top_f / h_out_f
-        neg1 = tf.fill(tf.shape(px), -1.0)
-        px = tf.where(valid, px, neg1)
-        py = tf.where(valid, py, neg1)
-        polygons = tf.reshape(tf.stack([px, py], axis=-1), tf.shape(polygons))
-
-        return image, boxes, polygons
+        return letterbox_resize(image, boxes, polygons, h_out, w_out)
 
     # ------------------------------------------------------------------
     # Private helpers
