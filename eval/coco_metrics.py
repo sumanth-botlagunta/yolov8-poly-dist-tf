@@ -368,8 +368,53 @@ class COCOEvaluator:
         return ev.per_category_best_f1(
             iouThr=0.5, areaRng='all', maxDets=self._f1_max_dets)
 
-    def per_category_conf_sweep(self, conf_grid) -> List[Dict[str, float]]:
+    def per_category_conf_sweep(self, conf_grid, envelope=False) -> List[Dict[str, float]]:
         """Per-category F1/precision/recall at each confidence threshold. After evaluate().
+
+        Default (``envelope=False``): reads the RAW confidence sweep grid stored by
+        ``COCOevalCustom.accumulate`` (sweep_f1 / sweep_precision / sweep_recall at
+        IoU=0.5, area='all', maxDets=``f1_max_dets``) — the exact operating-point
+        counts the headline F1score50 / per-category best-F1 are selected from, so the
+        all-conf table agrees with the best-conf table for the same (class, threshold).
+        Each requested ``conf_grid`` value maps to the stored threshold grid (identical
+        by default); a threshold not in the grid snaps to the nearest stored one and the
+        reported ``thresh`` is that stored value. Cells with no detection above the
+        threshold (stored -1) report f1/precision/recall = 0.0.
+
+        ``envelope=True`` keeps the legacy behavior: reads COCO's interpolated
+        (monotone-envelope) precision array with a ``score >= t`` selection. Kept for
+        back-compat / diagnostics; it can disagree with the best-conf table.
+        """
+        if envelope:
+            return self._per_category_conf_sweep_envelope(conf_grid)
+
+        ev = getattr(self, '_ev', None)
+        if ev is None or not getattr(ev, 'eval', None) or 'sweep_f1' not in ev.eval:
+            return []
+        t = int(np.where(0.5 == ev.params.iouThrs)[0][0])
+        aind = [i for i, a in enumerate(ev.params.areaRngLbl) if a == 'all'][0]
+        md = [i for i, m in enumerate(ev.params.maxDets) if m == self._f1_max_dets][0]
+        grid = np.asarray(ev.eval['sweep_thresholds'], dtype=float)
+        sf1 = ev.eval['sweep_f1'][t, :, aind, md, :]          # [K, S]
+        spr = ev.eval['sweep_precision'][t, :, aind, md, :]   # [K, S]
+        srr = ev.eval['sweep_recall'][t, :, aind, md, :]      # [K, S]
+
+        out = []
+        for k, cat in enumerate(ev.params.catIds):
+            for t_req in conf_grid:
+                # Same grid by default; otherwise snap to the nearest stored threshold
+                # and report that stored value.
+                si = int(np.argmin(np.abs(grid - float(t_req))))
+                thr = float(grid[si])
+                f1, pp, rr = float(sf1[k, si]), float(spr[k, si]), float(srr[k, si])
+                if f1 < 0 or pp < 0 or rr < 0:   # no detection above threshold
+                    f1, pp, rr = 0.0, 0.0, 0.0
+                out.append({'category': int(cat), 'thresh': round(thr, 4),
+                            'f1': f1, 'precision': pp, 'recall': rr})
+        return out
+
+    def _per_category_conf_sweep_envelope(self, conf_grid) -> List[Dict[str, float]]:
+        """Legacy all-conf sweep from COCO's interpolated envelope precision.
 
         For threshold t, includes all detections with score >= t: that is the
         highest-recall PR point whose score is still >= t (scores decrease as recall
@@ -395,17 +440,23 @@ class COCOEvaluator:
                             'f1': f1, 'precision': pp, 'recall': rr})
         return out
 
-    def metrics_tables(self, conf_grid=None) -> Dict:
+    def metrics_tables(self, conf_grid=None, envelope_sweep=False) -> Dict:
         """Full per-category F1 report: averaged means + best-conf table + all-conf
         sweep + per-category AP / GT counts. Numbers are full-precision floats; a
         machine-readable structure callers serialize to JSON / csv / xlsx / txt.
+
+        ``envelope_sweep=False`` (default) builds the all-conf table from the RAW
+        operating-point sweep so it agrees with the headline F1score50 / best-conf
+        table; ``envelope_sweep=True`` uses COCO's interpolated envelope precision (the
+        legacy behavior). The chosen source is reported as ``sweep_source`` = 'raw' or
+        'coco_envelope'.
         """
         if conf_grid is None:
             # Floor 0.10 to match the best-F1 sweep grid (COCOevalCustom._scoreTreshCand);
             # below that is too low-confidence to be a useful operating point.
             conf_grid = [round(float(x), 2) for x in np.arange(0.1, 1.0, 0.05)]
         best  = self.per_category_best_f1()
-        sweep = self.per_category_conf_sweep(conf_grid)
+        sweep = self.per_category_conf_sweep(conf_grid, envelope=envelope_sweep)
         ap    = self.per_category_full_metrics()
         gtc   = self._gt_counts()
         per_cat_ap = [{
@@ -431,6 +482,7 @@ class COCOEvaluator:
             'conf_grid':  list(conf_grid),
             'mean':       {'f1': _mean('f1'), 'precision': _mean('precision'),
                            'recall': _mean('recall')},
+            'sweep_source': 'coco_envelope' if envelope_sweep else 'raw',
             'best_conf':  best,
             'all_conf':   sweep,
             'per_category_ap': per_cat_ap,

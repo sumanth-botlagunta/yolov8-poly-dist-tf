@@ -50,9 +50,14 @@ def _name(cat: int) -> str:
 # ---------------------------------------------------------------------------
 
 def build_report(coco_ev, conf_grid=None, epoch=None, step=None,
-                 extra: Optional[dict] = None) -> dict:
-    """Assemble the report dict from a COCOEvaluator (after ``evaluate()``)."""
-    tables = coco_ev.metrics_tables(conf_grid=conf_grid)
+                 extra: Optional[dict] = None, envelope_sweep: bool = False) -> dict:
+    """Assemble the report dict from a COCOEvaluator (after ``evaluate()``).
+
+    ``envelope_sweep=False`` (default) builds the all-conf table from the raw
+    operating-point sweep so it matches the headline F1score50 / best-conf table;
+    ``envelope_sweep=True`` uses COCO's interpolated envelope precision instead.
+    """
+    tables = coco_ev.metrics_tables(conf_grid=conf_grid, envelope_sweep=envelope_sweep)
     report = {
         'epoch': epoch,
         'step':  step,
@@ -114,6 +119,10 @@ def write_txt(report: dict, path: str) -> str:
                      f"{r['conf_threshold']:>8.3f}")
 
     lines.append("\n=== all confidence thresholds per category ===")
+    if report.get('sweep_source') == 'coco_envelope':
+        lines.append(" NOTE: values below are COCO-interpolated (monotone-envelope) "
+                     "precision, NOT raw operating-point values — they can disagree "
+                     "with the best-conf table above.")
     lines.append(f"{'cat':>4} {'name':<18}{'thresh':>8}{'f1':>9}{'precision':>11}{'recall':>9}")
     lines.append("-" * 60)
     cur = None

@@ -44,6 +44,21 @@ def test_save_canonical_writes_json_and_txt(tmp_path):
     assert 'all confidence thresholds' in txt
 
 
+def test_txt_envelope_header_gated_on_sweep_source(tmp_path):
+    """write_txt prints the COCO-interpolated caveat above the all-conf table only when
+    sweep_source == 'coco_envelope' (dependency-free writer check)."""
+    rep = _synthetic_report()
+    rep['sweep_source'] = 'raw'
+    raw_txt = (tmp_path / 'raw.txt')
+    mr.write_txt(rep, str(raw_txt))
+    assert 'COCO-interpolated' not in raw_txt.read_text()
+
+    rep['sweep_source'] = 'coco_envelope'
+    env_txt = (tmp_path / 'env.txt')
+    mr.write_txt(rep, str(env_txt))
+    assert 'COCO-interpolated' in env_txt.read_text()
+
+
 def test_csv_two_files(tmp_path):
     out = mr.write_csv(_synthetic_report(), str(tmp_path), 'm')
     assert (tmp_path / 'm_best_conf.csv').exists()

@@ -368,5 +368,122 @@ class TestCustomEvalRouting(unittest.TestCase):
         self.assertAlmostEqual(m['F1score50'], 0.0, places=6)
 
 
+class TestRawSweepConsistency(unittest.TestCase):
+    """The report's all-conf table now reads the RAW confidence-sweep grid stored by
+    COCOevalCustom.accumulate (sweep_f1/precision/recall), so it agrees byte-for-byte
+    with the best-conf table / F1score50 (previously it read COCO's interpolated
+    envelope precision and could disagree at the same class+threshold)."""
+
+    @staticmethod
+    def _evaluator(num_classes=3, seed=0, n=6):
+        """Synthetic multi-image run with real detections: each image carries M jittered
+        TP detections plus a couple of random FPs, so every class has a non-trivial
+        confidence sweep (best F1 lands at an interior threshold, not a flat 1.0)."""
+        ev = COCOEvaluator(num_classes=num_classes, image_size=(100, 100))
+        rng = np.random.RandomState(seed)
+        for _ in range(n):
+            M = 4
+            gt_b = np.clip(rng.uniform(0, 0.6, [1, M, 4]), 0, 1).astype('float32')
+            gt_b[..., 2:] = gt_b[..., :2] + 0.3
+            gt_c = rng.randint(0, num_classes, [1, M]).astype('int64')
+            pb = gt_b + rng.uniform(-0.02, 0.02, [1, M, 4]).astype('float32')
+            ps = rng.uniform(0.3, 0.95, [1, M]).astype('float32')
+            fp_b = np.clip(rng.uniform(0.6, 0.9, [1, 2, 4]), 0, 1).astype('float32')
+            fp_b[..., 2:] = fp_b[..., :2] + 0.05
+            fp_c = rng.randint(0, num_classes, [1, 2]).astype('int64')
+            fp_s = rng.uniform(0.15, 0.6, [1, 2]).astype('float32')
+            allb = np.concatenate([pb, fp_b], axis=1)
+            allc = np.concatenate([gt_c, fp_c], axis=1)
+            alls = np.concatenate([ps, fp_s], axis=1)
+            ev.update({'bbox': allb, 'classes': allc, 'confidence': alls,
+                       'num_detections': np.array([allb.shape[1]], 'int32')},
+                      {'bbox': gt_b, 'classes': gt_c, 'n_gt': np.array([M], 'int32')})
+        return ev
+
+    def test_best_conf_equals_argmax_over_all_conf(self):
+        """(a) For EVERY (valid) class the best-conf row equals the argmax-by-f1 over
+        that class's all-conf rows — same f1/precision/recall/threshold.
+        (b) The mean of valid best-conf F1 equals F1score50."""
+        from collections import defaultdict
+        ev = self._evaluator()
+        m = ev.evaluate()
+        tables = ev.metrics_tables()   # raw sweep by default
+        self.assertEqual(tables['sweep_source'], 'raw')
+
+        best = {b['category']: b for b in tables['best_conf']}
+        bycat = defaultdict(list)
+        for r in tables['all_conf']:
+            bycat[r['category']].append(r)
+
+        valid_f1s = []
+        checked = 0
+        for cat, brow in best.items():
+            if not brow['valid']:
+                continue
+            rows = bycat[cat]
+            self.assertTrue(rows, f"class {cat} missing from all_conf")
+            arg = max(rows, key=lambda r: r['f1'])   # first max (ascending threshold)
+            self.assertAlmostEqual(arg['f1'],        brow['f1'],             places=6)
+            self.assertAlmostEqual(arg['precision'], brow['precision'],      places=6)
+            self.assertAlmostEqual(arg['recall'],    brow['recall'],         places=6)
+            self.assertAlmostEqual(arg['thresh'],    brow['conf_threshold'], places=4)
+            valid_f1s.append(brow['f1'])
+            checked += 1
+
+        self.assertGreater(checked, 0, "no valid class to check")
+        # (b) existing invariant, asserted explicitly against the headline scalar.
+        self.assertAlmostEqual(float(np.mean(valid_f1s)), m['F1score50'], places=6)
+
+    def test_stored_sweep_grid_shape_and_thresholds(self):
+        """(d) The stored sweep arrays have shape [T, K, A, M, S], the threshold grid is
+        arange(0.1, 1.0, step), and every non-sentinel value is a valid probability."""
+        ev = self._evaluator()
+        ev.evaluate()
+        e = ev._ev.eval
+        for key in ('sweep_f1', 'sweep_precision', 'sweep_recall', 'sweep_thresholds'):
+            self.assertIn(key, e)
+        p = ev._ev.params
+        T = len(p.iouThrs)
+        K = len(p.catIds)
+        A = len(p.areaRng)
+        Mn = len(p.maxDets)
+        S = len(ev._ev._scoreTreshCand)
+        self.assertEqual(e['sweep_f1'].shape,        (T, K, A, Mn, S))
+        self.assertEqual(e['sweep_precision'].shape, (T, K, A, Mn, S))
+        self.assertEqual(e['sweep_recall'].shape,    (T, K, A, Mn, S))
+        self.assertEqual(e['sweep_thresholds'].shape, (S,))
+        np.testing.assert_allclose(e['sweep_thresholds'], np.arange(0.1, 1.0, 0.05))
+        for arr in (e['sweep_f1'], e['sweep_precision'], e['sweep_recall']):
+            valid = arr[arr >= 0]
+            self.assertTrue(np.all(valid <= 1.0 + 1e-9))
+
+    def test_envelope_path_sets_source_and_txt_header(self):
+        """(c) envelope=True keeps the legacy interpolated-envelope values, tags
+        sweep_source='coco_envelope', and the txt writer prints a one-line header
+        distinguishing it from the raw operating-point table."""
+        import os
+        import tempfile
+        from eval import metrics_report as mr
+
+        ev = self._evaluator()
+        ev.evaluate()
+        t_raw = ev.metrics_tables(envelope_sweep=False)
+        t_env = ev.metrics_tables(envelope_sweep=True)
+        self.assertEqual(t_raw['sweep_source'], 'raw')
+        self.assertEqual(t_env['sweep_source'], 'coco_envelope')
+        # same number of (class, threshold) rows either way
+        self.assertEqual(len(t_env['all_conf']), len(t_raw['all_conf']))
+
+        with tempfile.TemporaryDirectory() as d:
+            pe = mr.write_txt(mr.build_report(ev, envelope_sweep=True),
+                              os.path.join(d, 'env.txt'))
+            pr = mr.write_txt(mr.build_report(ev, envelope_sweep=False),
+                              os.path.join(d, 'raw.txt'))
+            te = open(pe).read()
+            tr = open(pr).read()
+        self.assertIn('COCO-interpolated', te)
+        self.assertNotIn('COCO-interpolated', tr)
+
+
 if __name__ == '__main__':
     unittest.main()

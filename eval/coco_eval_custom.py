@@ -272,7 +272,12 @@ class COCOevalCustom(COCOeval):
 
         Alongside the precision/recall/scores arrays this also fills:
           best_fiscore / best_fiscoreTresh / best_fiscorePrecision /
-          best_fiscoreRecall  — each [T, K, A, M] — from the confidence sweep.
+          best_fiscoreRecall  — each [T, K, A, M] — from the confidence sweep, plus
+          the FULL sweep grid it was selected from: sweep_f1 / sweep_precision /
+          sweep_recall — each [T, K, A, M, S] (S = len(_scoreTreshCand)) — and
+          sweep_thresholds [S]. -1 marks a (cell, threshold) with no detection above
+          that threshold. The report's all-conf table reads this raw grid so it agrees
+          byte-for-byte with the best-F1 operating point.
         """
         if not self.evalImgs:
             raise Exception('Please run evaluate() first')
@@ -293,6 +298,15 @@ class COCOevalCustom(COCOeval):
             bestF1ScoreTresh = -np.ones((T, K, A, M))
             bestPrecision = -np.ones((T, K, A, M))
             bestRecall = -np.ones((T, K, A, M))
+            # Full confidence sweep grid stored alongside the best-F1 readout so the
+            # report's all-conf table reads the SAME raw operating-point p/r/F1 the
+            # best-F1 selection sees (not COCO's interpolated envelope precision).
+            # Shape [T, K, A, M, S]; -1 marks a (cell, threshold) with no detection
+            # above that threshold. Filled inside the sweep loop below — no extra pass.
+            S = len(self._scoreTreshCand)
+            sweepF1 = -np.ones((T, K, A, M, S))
+            sweepPrecision = -np.ones((T, K, A, M, S))
+            sweepRecall = -np.ones((T, K, A, M, S))
 
         _pe = self._paramsEval
         catIds = _pe.catIds if _pe.useCats else [-1]
@@ -381,7 +395,7 @@ class COCOevalCustom(COCOeval):
                             bestRc = -1.0
 
                             if nd:
-                                for scoreTresh in self._scoreTreshCand:
+                                for si, scoreTresh in enumerate(self._scoreTreshCand):
                                     mask = dtScoresSorted > scoreTresh
                                     if np.count_nonzero(mask) > 0:
                                         lastInd = np.where(mask)[0][-1]
@@ -390,6 +404,11 @@ class COCOevalCustom(COCOeval):
                                         f1Score = (
                                             2 * (pr_val * rc_val)
                                             / (pr_val + rc_val + np.spacing(1)))
+                                        # Store this operating point in the full grid
+                                        # (cells with no det above thresh stay -1).
+                                        sweepF1[t, k, a, m, si] = f1Score
+                                        sweepPrecision[t, k, a, m, si] = pr_val
+                                        sweepRecall[t, k, a, m, si] = rc_val
                                         if f1Score > maxF1Score:
                                             maxF1Score = f1Score
                                             maxF1ScoreTresh = scoreTresh
@@ -441,6 +460,10 @@ class COCOevalCustom(COCOeval):
             self.eval['best_fiscoreTresh'] = bestF1ScoreTresh
             self.eval['best_fiscorePrecision'] = bestPrecision
             self.eval['best_fiscoreRecall'] = bestRecall
+            self.eval['sweep_f1'] = sweepF1
+            self.eval['sweep_precision'] = sweepPrecision
+            self.eval['sweep_recall'] = sweepRecall
+            self.eval['sweep_thresholds'] = np.asarray(self._scoreTreshCand)
 
     # ------------------------------------------------------------------
     # bestF1 readout — macro-average over valid categories

@@ -76,6 +76,10 @@ try:
     flags.DEFINE_integer('limit_batches', 0, 'Stop after this many batches (0 = full split). '
                          'Makes a train-split probe affordable: ~250 batches gives a '
                          'val-sized sample instead of an hours-long full pass.')
+    flags.DEFINE_bool('coco_envelope_sweep', False,
+                      'Build the report all-conf table from COCO-interpolated envelope '
+                      'precision instead of the raw operating-point sweep (default: raw, '
+                      'which agrees with the best-conf table / F1score50).')
 except flags.DuplicateFlagError:
     pass
 
@@ -320,7 +324,8 @@ def _run_single(config, task):
         # full sweep -> <base>.json + <base>.txt.
         from eval import metrics_report
         base = os.path.basename(FLAGS.checkpoint.rstrip('/')) + '_val'
-        report = metrics_report.build_report(coco_ev)
+        report = metrics_report.build_report(
+            coco_ev, envelope_sweep=FLAGS.coco_envelope_sweep)
         paths = metrics_report.save_canonical(report, FLAGS.output_dir, base)
         log.info("Validation report written to %s and %s", paths['json'], paths['txt'])
 
