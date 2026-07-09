@@ -15,10 +15,6 @@ Runs the project test suite with pytest. Pass optional arguments after the comma
 
 ## What to run
 
-```bash
-cd /Users/sumanth/Documents/Developer/yolov8-poly-dist-tf\ 
-```
-
 For `$ARGUMENTS`:
 - empty → `pytest tests/unit/ -v`
 - `unit` → `pytest tests/unit/ -v`

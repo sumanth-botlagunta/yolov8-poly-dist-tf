@@ -16,7 +16,7 @@ baked into the forward pass (`deploy=True`).
 python -m utils.export.export_saved_model \
   --config configs/experiments/yolo/yolov8_poly_dist.yaml \
   --checkpoint $CKPT_PATH \
-  --output exported_model/ \
+  --output_dir exported_model/ \
   [--tflite]
 ```
 

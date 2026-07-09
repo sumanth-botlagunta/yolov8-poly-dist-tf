@@ -8,7 +8,7 @@ Starts training using `train/run_train.py`. Always reads the config from a YAML 
 /train bbox                    # train yolov8_bbox tier
 /train poly                    # train yolov8_poly tier
 /train poly_dist               # train yolov8_poly_dist (full)
-/train poly_dist --resume      # auto-resume from latest checkpoint in output_dir
+/train poly_dist               # auto-resumes when output_dir has checkpoints
 /train poly_dist --resume_from runs/run1/ckpt-2388   # resume from specific checkpoint
 ```
 
@@ -25,8 +25,11 @@ Default output dir: `runs/{experiment_name}_{timestamp}/`
 python -m train.run_train \
   --config configs/experiments/yolo/yolov8_{tier}.yaml \
   --output_dir runs/{tier}_{timestamp} \
-  [--resume] \
   [--resume_from /path/to/specific/ckpt]
+```
+
+Resume is automatic: when `output_dir` already holds checkpoints, training
+continues from the latest one.
 ```
 
 Logs are written to both the console and `{output_dir}/train.log` automatically.

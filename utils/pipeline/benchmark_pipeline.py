@@ -133,7 +133,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    sys.path.insert(0, str(Path(__file__).parent.parent))
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
     from configs.yaml_loader import load_config
 
     log.info("Loading config: %s", args.config)

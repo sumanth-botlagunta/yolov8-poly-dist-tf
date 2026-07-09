@@ -56,9 +56,9 @@ try:
                         'pixels (IMAGE_NROM_FLAG=False). Set False only if the device '
                         'is changed to feed [0,1].')
     flags.DEFINE_bool  ('debug_taps', False,
-                        'Also emit intermediate tensors as top-level nodes (tap_input, '
-                        'tap_feat3/4/5 = /255 output + backbone P3/P4/P5) so the conversion '
-                        'can be bisected SavedModel-vs-DLC to find the first diverging layer. '
+                        'Also emit intermediate tensors as top-level nodes (tap_norm, '
+                        'tap_backbone_3/4/5, tap_neck_3/4/5) so the conversion can be '
+                        'bisected SavedModel-vs-DLC to find the first diverging layer. '
                         'Add the matching --out_node tap_* to snpe-tensorflow-to-dlc.')
     flags.DEFINE_bool  ('legacy_box_order', True,
                         'Emit the box head as [top,left,bottom,right] (y-first) to match the '
@@ -111,8 +111,8 @@ def _force_float32_policy() -> None:
     The SNPE export must be a pure float32 graph. A leaked mixed_bfloat16 policy is
     silent: the heads are pinned float32 (models/head.py) so head outputs still
     report float32 dtype, but their conv stems would compute in bf16 and carry bf16
-    precision, surfacing only later as a ``--verify`` tolerance failure. Asserting
-    here fails at the source.
+    precision, surfacing only later as a numerical mismatch against reference
+    outputs. Asserting here fails at the source.
     """
     tf.keras.mixed_precision.set_global_policy('float32')
     compute = tf.keras.mixed_precision.global_policy().compute_dtype

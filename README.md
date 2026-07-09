@@ -162,7 +162,7 @@ python -m utils.export.export_device_savedmodel \
     --config configs/experiments/yolo/yolov8_poly_dist.yaml \
     --checkpoint /path/to/run_dir/ckpt-<step> \
     --output_dir /path/to/export \
-    --input_size 672,416 --verify
+    --input_size 672,416
 ```
 
 Then convert with the unchanged `snpe-tensorflow-to-dlc → snpe-dlc-quantize → snpe-net-run`

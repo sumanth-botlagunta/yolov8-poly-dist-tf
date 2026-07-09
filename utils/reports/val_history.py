@@ -236,7 +236,8 @@ def main():
     ap.add_argument('--format', choices=['txt', 'json', 'csv', 'xlsx', 'parquet'],
                     default='txt', help='output format for the selected record(s)')
     ap.add_argument('--best-only', action='store_true',
-                    help='restrict xlsx/parquet export to the best-confidence rows')
+                    help='txt: print only the best-conf table + mean; '
+                         'xlsx/parquet: export only the best-conf rows')
     ap.add_argument('-o', '--out', help='output file path (default: derived from input)')
     ap.add_argument('--export-csv', help='also write the selected record as CSV here')
     ap.add_argument('--raw', action='store_true',

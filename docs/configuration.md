@@ -31,8 +31,8 @@ ExperimentConfig
     ├── model          ModelConfig            architecture, heads, detection generator
     ├── losses         LossConfig             TAL gains + ACSL
     ├── train_data     DataConfig             training stream (+ parser, + distance_data)
-    ├── validation_data DataConfig            eval stream
-    └── trainer        TrainerConfig          epochs, checkpoints, optimizer
+    └── validation_data DataConfig            eval stream
+├── trainer            TrainerConfig          epochs, checkpoints, optimizer
 ```
 
 ## `runtime` — `RuntimeConfig`
@@ -88,6 +88,7 @@ normalization conventions.
 | `prob_copy_n_paste` | `0.2` | Copy-paste probability; `tfds_for_cnp` sets the RGBA source dataset. |
 | `seed` | `None` | Base seed; the three shuffle stages use `seed`, `seed+1`, `seed+2`. |
 | `private_threadpool_size` | `0` | tf.data threadpool (0 = all visible cores). Cap on cgroup-limited hosts. |
+| `drop_remainder` | train `true` / val `false` | Validation must keep the final partial batch so every image is scored; `run_train` rejects `true` on the val stream. |
 | `parser` | `ParserConfig` | Augmentation + polygon settings (below). |
 | `distance_data` | `None` | The merged distance stream (training only). |
 
@@ -97,6 +98,7 @@ normalization conventions.
 |-------|---------|-------|
 | `aug_rand_hue` / `_saturation` / `_brightness` | 0.015 / 0.7 / 0.4 | HSV jitter (brightness is **additive**, not multiplicative). |
 | `random_flip` | `true` | Horizontal flip. |
+| `rotate` / `rotate_degrees` | `false` / `null` | Pre-warp rotation for non-mosaic singles only; the mosaic warp never rotates. |
 | `skip_crowd_during_training` | `true` | Drop `is_crowd` GT at parse time. |
 | `albumentations_frequency` | `1.0` | Albumentations applied to detection rows only. |
 | `mosaic` | `MosaicConfig` | Mosaic + the post-mosaic `random_perspective` affine (below). |
@@ -111,13 +113,12 @@ for both mosaic and single images (the parser no longer applies a separate affin
 | `mosaic_frequency` | `0.5` | Per-output probability of building a mosaic (vs a single-image warp). |
 | `mosaic_center` | `0.25` | Half-range of the 2× canvas split point. |
 | `aug_scale_min` / `aug_scale_max` | 0.5 / 1.5 | Canvas→output warp scale-gain bounds (stock YOLO). The ONLY source of per-sample size variety — per-image placement scale is fixed (upright tiles). |
-| `degrees` / `rotate_prob` | 10 / 0.10 | Rotation ± magnitude (degrees), applied only on `rotate_prob` of outputs; the rest stay upright. |
 | `shear` / `translate` / `perspective` | 0 / 0.1 / 0 | `random_perspective` strength (degrees; translate as a fraction; perspective 0 disables). |
 | `close_mosaic_epochs` | `0` | Disable mosaic + mixup for the final N epochs (Ultralytics close_mosaic; 0 = off). |
 | `group_size` | `32` | Mosaic source pool per group. **Invariant:** multiple of `decodes_per_output`, ≥ 4. |
-| `decodes_per_output` | `4` | **R** — decodes per emitted sample = diversity/throughput knob. **4 = stock-YOLO** (4 distinct images per mosaic, no reuse, ~4× decode). **R<4 is a sliding-window reuse** (R=1: consecutive outputs share 3/4 images → ~82 near-duplicate pairs per 128-batch, measured) and measurably hurts accuracy; `run_train` warns. Prefer R=4 + pre-resized `_672` datasets for throughput. See [data_pipeline.md](data_pipeline.md). |
+| `decodes_per_output` | `4` | **R** — decodes per emitted sample. 4 = stock YOLO: each mosaic draws 4 distinct images with no cross-output reuse (~4× decode work). R<4 trades diversity for throughput (each image recurs in 4/R outputs) and hurts accuracy; `run_train` warns. See [data_pipeline.md](data_pipeline.md). |
 
-## `task.trainer` — `TrainerConfig`
+## `trainer` — `TrainerConfig`
 
 | Field | Default | Notes |
 |-------|---------|-------|
@@ -128,7 +129,7 @@ for both mosaic and single images (the parser no longer applies a separate affin
 | `grad_accum_steps` | `1` | Gradient accumulation: apply the optimizer once every N micro-batches (**effective batch = `global_batch_size × N`**). `1` = off (byte-identical). With `N>1` the LR schedule advances per *optimizer update* (every N steps), so set `decay_steps` in **effective** steps; epoch accounting (data passes) is unaffected. |
 | `optimizer_config` | `OptimizerConfig` | SGD + warmup + cosine + EMA (below). |
 
-### `task.trainer.optimizer_config` — `OptimizerConfig`
+### `trainer.optimizer_config` — `OptimizerConfig`
 
 The optimizer and LR schedule are config-selectable via `type` keys (registry in
 `optimizers/factory.py`); the `type` selects which nested parameter block is read
