@@ -11,7 +11,7 @@ import unittest
 import numpy as np
 import tensorflow as tf
 
-from tools.benchmark_pipeline import _run_benchmark, _images_of
+from utils.pipeline.benchmark_pipeline import _run_benchmark, _images_of
 
 
 def _ds(dtype):

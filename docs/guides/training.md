@@ -34,7 +34,7 @@ epochs, LR, augmentation, optimizer/loss variants).
 checkpoint, stops cleanly on a `STOP` file):
 
 ```bash
-nohup bash tools/train_supervisor.sh \
+nohup bash train/train_supervisor.sh \
     --config configs/experiments/yolo/yolov8_poly_dist.yaml \
     --output_dir /path/to/run_dir \
     >> /path/to/run_dir/supervisor.log 2>&1 &
@@ -43,12 +43,12 @@ nohup bash tools/train_supervisor.sh \
 **Foreground** (short tests / debugging — `--debug` runs eager + verbose):
 
 ```bash
-python -m scripts.run_train \
+python -m train.run_train \
     --config configs/experiments/yolo/yolov8_poly_dist.yaml \
     --output_dir /path/to/run_dir [--debug]
 ```
 
-`scripts/run_train.py:_validate_config` checks invariants before training starts (e.g.
+`train/run_train.py:_validate_config` checks invariants before training starts (e.g.
 `output_poly_size == 360 // angle_step`, mosaic `group_size % decodes_per_output == 0`,
 `rotate_prob ∈ [0,1]`) and **warns** if `learning_rate.decay_steps != train_steps`.
 
@@ -71,7 +71,7 @@ all true by construction. See [training.md](../training.md#epoch-semantics).
 - **Validation history** — each validation appends one line to `<run>/val_history.jsonl`. Inspect
   the trend without TensorBoard:
   ```bash
-  python -m tools.val_history /path/to/run_dir --list
+  python -m utils.reports.val_history /path/to/run_dir --list
   ```
   See the [validation guide](validation.md).
 

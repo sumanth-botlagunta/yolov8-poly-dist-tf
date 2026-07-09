@@ -22,7 +22,7 @@ import numpy as np
 import tensorflow as tf
 import yaml
 
-from tools.shared.progress import Progress
+from common.progress import Progress
 
 log = logging.getLogger(__name__)
 
@@ -562,7 +562,7 @@ class YoloV8Trainer:
         # invocation + environment, so the run dir alone answers "what produced this".
         try:
             from datetime import datetime
-            from train.run_metadata import write_run_metadata
+            from common.run_metadata import write_run_metadata
             write_run_metadata(self._output_dir, self._config,
                                resume_from=self._resume_from,
                                started_at=datetime.now().astimezone().isoformat())
@@ -723,7 +723,7 @@ class YoloV8Trainer:
         # scalars) as ONE line to <run>/val_history.jsonl. Replaces the previous
         # per-epoch json+txt pair (hundreds of files); append is O(line) and off the
         # train step → no training-throughput impact. Extract any epoch back to the
-        # ckpt-format txt/csv with tools/val_history.py. Never fatal.
+        # ckpt-format txt/csv with utils/reports/val_history.py. Never fatal.
         report = getattr(self._task, '_last_val_report', None)
         if report is not None:
             try:
@@ -753,7 +753,7 @@ class YoloV8Trainer:
         direct prediction-vs-GT comparison: ``val/predictions`` and
         ``val/ground_truth``. Boxes are labelled with the class taxonomy names.
         """
-        from train.viz_utils import render_summary_images, render_gt_images
+        from common.viz_utils import render_summary_images, render_gt_images
         from configs.class_map import DETECTION_CLASSES
         task_cfg  = self._config.task
         draw_box  = getattr(task_cfg, 'summary_image_draw_box',  True)
@@ -799,7 +799,7 @@ class YoloV8Trainer:
         [0, 1] for the renderers (which expect [0, 1]).
         """
         try:
-            from train.viz_utils import render_gt_images
+            from common.viz_utils import render_gt_images
             from configs.class_map import DETECTION_CLASSES
             task_cfg = self._config.task
             n_cfg    = getattr(task_cfg, 'summary_image_num', 10)
@@ -950,7 +950,7 @@ class YoloV8Trainer:
         # Why no swap_in: the EMA shadow weights are tf.Variables tracked inside
         # the EMA wrapper (`optimizer=self._optimizer`), so they are already
         # serialized to disk by this checkpoint and recovered on resume via
-        # `ema.swap_in(model)` (eval/export use tools/shared/ckpt_loading.py for exactly
+        # `ema.swap_in(model)` (eval/export use common/ckpt_loading.py for exactly
         # this). If we instead swapped EMA into `model/`, a *training* resume from
         # this checkpoint would load EMA weights into the model while the SGD
         # velocity slots restored from `optimizer/` were computed against the RAW
@@ -1002,7 +1002,7 @@ class YoloV8Trainer:
         ``key`` is the short metric key for the description lookup; defaults to the
         last path segment of ``tag`` (e.g. 'train/lr' → 'lr').
         """
-        from train.metric_meta import describe
+        from eval.metric_meta import describe
         lookup = key if key is not None else tag.split('/')[-1]
         tf.summary.scalar(tag, value, step=step, description=describe(lookup))
 
@@ -1066,7 +1066,7 @@ class YoloV8Trainer:
             except Exception:
                 pass
 
-        # Console output is the live progress bar (tools/shared/progress.py); this
+        # Console output is the live progress bar (common/progress.py); this
         # method now only writes the per-step TensorBoard scalars. The full
         # compute-vs-data-wait breakdown lives in TB (train/step_time_ms,
         # train/data_wait_ms, train/throughput_img_per_s); the bar shows img/s + losses.

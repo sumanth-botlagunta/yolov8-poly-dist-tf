@@ -62,7 +62,7 @@ checkpoint, and survives an SSH disconnect:
 
 ```bash
 # Start (full model, all 6 heads). Swap the config for the yolov8_poly / yolov8_bbox tiers.
-nohup bash tools/train_supervisor.sh \
+nohup bash train/train_supervisor.sh \
     --config configs/experiments/yolo/yolov8_poly_dist.yaml \
     --output_dir /path/to/run_dir \
     >> /path/to/run_dir/supervisor.log 2>&1 &
@@ -75,13 +75,13 @@ tail -f /path/to/run_dir/supervisor.log
   attempt instead of restarting (or send SIGTERM/Ctrl-C to write a resume checkpoint first).
 - **Crash-loop guard:** 5 consecutive exits within 120s abort the supervisor (a real bug, not
   an OOM blip — check `train.log`).
-- On a fresh host, run `bash tools/cloud_diagnose.sh <config.yaml>` first to measure pipeline
+- On a fresh host, run `bash utils/pipeline/cloud_diagnose.sh <config.yaml>` first to measure pipeline
   throughput / CPU throttling before committing to a full run.
 
 To run training in the foreground (short tests / debugging) call the entry point directly:
 
 ```bash
-python -m scripts.run_train \
+python -m train.run_train \
     --config configs/experiments/yolo/yolov8_poly_dist.yaml \
     --output_dir /path/to/output \
     [--debug]      # eager mode + verbose logging
@@ -107,7 +107,7 @@ The `yolov8_bbox` / `yolov8_poly` tiers run in `float32`; `yolov8_poly_dist` run
 `bfloat16` + XLA variant:
 
 ```bash
-nohup bash tools/train_supervisor.sh \
+nohup bash train/train_supervisor.sh \
     --config configs/experiments/yolo/yolov8_poly_dist_bf16.yaml \
     --output_dir /path/to/run_dir >> /path/to/run_dir/supervisor.log 2>&1 &
 ```
@@ -115,7 +115,7 @@ nohup bash tools/train_supervisor.sh \
 That config is a thin override — it inherits everything from `yolov8_poly_dist.yaml` (already
 `bfloat16`) via a top-level `base:` key and only flips `runtime.enable_xla: true`. `bfloat16`
 needs no loss scaling (unlike `float16`). Validate on a few hundred steps (loss finite) before a
-full run, and use `python -m tools.benchmark_pipeline` to record the throughput delta. Any config
+full run, and use `python -m utils.pipeline.benchmark_pipeline` to record the throughput delta. Any config
 can inherit from another with `base: <relative-path.yaml>` — see
 [docs/configuration.md](docs/configuration.md).
 
@@ -124,7 +124,7 @@ can inherit from another with `base: <relative-path.yaml>` — see
 ## Evaluation
 
 ```bash
-python -m tools.eval \
+python -m utils.eval \
     --config configs/experiments/yolo/yolov8_poly_dist.yaml \
     --checkpoint /path/to/run_dir/ckpt-<step> \
     --split val --per_category
@@ -133,7 +133,7 @@ python -m tools.eval \
 Reports mAP / mAP50 / AR100 / F1score50, polygon and distance metrics, and (with
 `--per_category`) a per-class table. During training, each validation appends one full report
 to `<run_dir>/val_history.jsonl`; pull any epoch (or the best) back into the ckpt-format
-txt/json/csv with `python -m tools.val_history <run_dir> --epoch N` (or `--best`). See
+txt/json/csv with `python -m utils.reports.val_history <run_dir> --epoch N` (or `--best`). See
 [docs/metrics.md](docs/metrics.md) for what each metric means.
 
 ---
@@ -145,7 +145,7 @@ is a drop-in replacement for the deployed device DLC (raw head outputs, `[0,255]
 DFL-decoded boxes):
 
 ```bash
-python -m tools.device.export_device_dlc \
+python -m utils.export.export_device_savedmodel \
     --config configs/experiments/yolo/yolov8_poly_dist.yaml \
     --checkpoint /path/to/run_dir/ckpt-<step> \
     --output_dir /path/to/export \
@@ -159,7 +159,7 @@ pipeline. The full workflow and the box channel-order contract are in
 For host/server serving instead, export a TF SavedModel with NMS baked in (optionally TFLite):
 
 ```bash
-python -m tools.export_saved_model \
+python -m utils.export.export_saved_model \
     --config configs/experiments/yolo/yolov8_poly_dist.yaml \
     --checkpoint /path/to/run_dir/ckpt-<step> \
     --output_dir /path/to/saved_model \
@@ -176,10 +176,10 @@ data_pipeline/  multi-TFDS sampling, copy-paste, mosaic, parsers, distance-strea
 models/         CSPDarkNetV8 backbone, FPN-PAN decoder, 6-head, detection generator
 losses/         TAL assigner + box / cls / dfl / polygon / distance losses
 optimizers/     SGDTorch (momentum warmup) + EMA
-eval/           COCO / polygon / distance evaluators + per-category report
-train/          task, custom trainer loop, viz
-scripts/        run_train.py (training entry point)
-tools/          eval, export, infer, benchmark, compare_nms_modes; + device/ shared/ pipeline/
+eval/           COCO / polygon / distance evaluators + per-category report + metric metadata
+train/          task, custom trainer loop, run_train entry point + supervisor
+common/         shared library: viz, ckpt loading, runtime setup, progress, run metadata
+utils/          CLIs: eval; export/ (savedmodel, device, inference); reports/; pipeline/
 tests/          unit / integration / smoke
 ```
 

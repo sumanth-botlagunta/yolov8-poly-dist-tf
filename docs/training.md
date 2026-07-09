@@ -1,12 +1,12 @@
 # Training
 
-Entry point: `scripts/run_train.py` (for long runs, prefer `tools/train_supervisor.sh` — see
+Entry point: `train/run_train.py` (for long runs, prefer `train/train_supervisor.sh` — see
 [scripts.md](scripts.md)). Configs are dataclasses (`configs/model_config.py`) loaded from YAML
 by the hand-rolled mapper in `configs/yaml_loader.py` (not dacite); see
 [configuration.md](configuration.md). Run:
 
 ```bash
-python -m scripts.run_train \
+python -m train.run_train \
     --config  configs/experiments/yolo/yolov8_poly_dist.yaml \
     --output_dir /path/to/output
 ```
@@ -65,7 +65,7 @@ See [configuration.md](configuration.md) for the fields.
   SIGTERM for preemption, and auto-resume from the newest checkpoint across both `output_dir/`
   (epoch-boundary saves) and `output_dir/resume/` (mid-epoch interruption saves, rotated, max 2);
   whichever has the higher global step wins. It also drives a live progress bar
-  (`tools/shared/progress.py`), appends each validation to `<run>/val_history.jsonl`, and — when
+  (`common/progress.py`), appends each validation to `<run>/val_history.jsonl`, and — when
   `mosaic.close_mosaic_epochs > 0` — rebuilds a mosaic-free training stream for the final N epochs
   (`_maybe_close_mosaic`, Ultralytics close_mosaic).
 - `viz_utils.py` — renders box/polygon overlays for TensorBoard image summaries.
@@ -142,7 +142,7 @@ whichever has the higher global step wins. To start from a specific step instead
 manually selecting the best non-final checkpoint):
 
 ```bash
-python -m scripts.run_train \
+python -m train.run_train \
     --config  configs/experiments/yolo/yolov8_poly_dist.yaml \
     --output_dir /path/to/output \
     --resume_from /path/to/output/ckpt-STEP
@@ -151,7 +151,7 @@ python -m scripts.run_train \
 ## Augmentation TensorBoard samples
 Augmented training images are logged every epoch under the tag `train/augmentations` in
 TensorBoard. Each panel shows a mosaic of the first batch with ground-truth boxes and polygon
-overlays rendered by `train/viz_utils.py`. Images are captured **before** the GPU colour
+overlays rendered by `common/viz_utils.py`. Images are captured **before** the GPU colour
 augmentation pass (`batch_color_aug.py`), so they show the geometric/mosaic result in uint8
 without HSV jitter or Albumentations applied.
 
@@ -165,7 +165,7 @@ These are useful for diagnosing which polygon component is not converging.
 
 ## TensorBoard structure & tag names
 Every scalar is written with a markdown `description` (full name + formula) shown in the
-TensorBoard tooltip — the registry lives in `train/metric_meta.py`. Scalars are grouped into
+TensorBoard tooltip — the registry lives in `eval/metric_meta.py`. Scalars are grouped into
 clearly-separated top-level sections so the headline metrics aren't buried under the per-class flood:
 
 | Group | Contents |
@@ -195,12 +195,12 @@ batch size (144). Together these allow diagnosing whether the bottleneck is in t
 the GPU.
 
 ## Continuous evaluation
-`tools/eval.py --watch` polls an `output_dir` for new checkpoints and evaluates each one,
+`utils/eval.py --watch` polls an `output_dir` for new checkpoints and evaluates each one,
 appending results to `eval_log.jsonl`. Useful for monitoring a long training run without manual
 intervention:
 
 ```bash
-python -m tools.eval --watch \
+python -m utils.eval --watch \
     --config  configs/experiments/yolo/yolov8_poly_dist.yaml \
     --watch_dir /path/to/output \
     --interval 300

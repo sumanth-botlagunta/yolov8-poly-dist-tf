@@ -5,7 +5,7 @@ batches are produced.  Run this before a long training run to detect
 data-starvation bottlenecks.
 
 Usage:
-    python tools/benchmark_pipeline.py \
+    python utils/pipeline/benchmark_pipeline.py \
         --config configs/experiments/yolo/yolov8_poly_dist.yaml \
         --steps 100 \
         [--profile]   # saves TF profiler trace to /tmp/pipeline_profile/
@@ -85,7 +85,7 @@ def _run_benchmark(ds, n_steps: int) -> dict:
     start_total = time.perf_counter()
     prev = time.perf_counter()
 
-    from tools.shared.progress import Progress
+    from common.progress import Progress
     pbar = Progress(total=n_steps, desc='Benchmark', unit='batch')
     for i, batch in enumerate(ds.take(n_steps)):
         imgs = _images_of(batch)
@@ -177,7 +177,7 @@ def main() -> None:
         print(f"\n  WARNING: Throughput {actual:.0f} imgs/sec is below target "
               f"{target} imgs/sec.")
         print("  The training loop will be data-starved.")
-        print("  Run tools/pipeline/diagnose_pipeline.py for stage-by-stage attribution.")
+        print("  Run utils/pipeline/diagnose_pipeline.py for stage-by-stage attribution.")
     else:
         print(f"\n  OK: Throughput {actual:.0f} imgs/sec exceeds target {target} imgs/sec.")
 

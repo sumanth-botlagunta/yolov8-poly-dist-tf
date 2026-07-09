@@ -12,16 +12,16 @@ JSON) and turns one or many reports into:
                    (pandas + pyarrow.)
   * ``.csv``     — plain (two files: ``*_best_conf.csv`` / ``*_all_conf.csv``).
 
-For a quick txt/json/csv of a single epoch (no pandas), use ``tools/val_history.py``;
+For a quick txt/json/csv of a single epoch (no pandas), use ``utils/reports/val_history.py``;
 this tool is the xlsx/parquet trend exporter.
 
 Whole run (recommended for trend analysis — adds an ``epoch`` column):
-    python tools/pipeline/export_val_metrics.py --input <run>/val_history.jsonl --aggregate \
+    python utils/reports/export_val_metrics.py --input <run>/val_history.jsonl --aggregate \
         --out_dir /tmp/metrics --formats parquet,xlsx
 
 Single epoch (a report JSON, e.g. a <ckpt>_val.json or one extracted with
-``tools/val_history.py --epoch N --format json``):
-    python tools/pipeline/export_val_metrics.py --input epoch42.json \
+``utils/reports/val_history.py --epoch N --format json``):
+    python utils/reports/export_val_metrics.py --input epoch42.json \
         --out_dir /tmp/metrics --formats xlsx,csv
 
 Requires: pandas, openpyxl (xlsx), pyarrow (parquet). Install: pip install pandas openpyxl pyarrow
@@ -116,7 +116,7 @@ def main():
     #   * a run directory containing val_history.jsonl
     #   * a directory of older per-epoch epoch_*.json / step_*.json reports
     #   * a single report JSON (e.g. <ckpt>_val.json, or one extracted with
-    #     `tools/val_history.py --format json`)
+    #     `utils/reports/val_history.py --format json`)
     from eval import val_history
     if os.path.isdir(a.input):
         jsonl = os.path.join(a.input, 'val_history.jsonl')

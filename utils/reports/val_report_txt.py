@@ -5,17 +5,17 @@ This is the exact format produced by ``eval/metrics_report.py:write_txt``: a "be
 confidence per category" table — each category's best F1 / precision / recall over the
 ``arange(0.1, 1.0, 0.05)`` confidence grid — plus the mean line and the full
 all-confidence sweep. Input is a single report JSON carrying the ``mean`` / ``best_conf``
-/ ``all_conf`` keys — the ``<ckpt>_val.json`` written by ``tools/eval.py --output_dir``,
-or one extracted with ``tools/val_history.py --epoch N --format json``.
+/ ``all_conf`` keys — the ``<ckpt>_val.json`` written by ``utils/eval.py --output_dir``,
+or one extracted with ``utils/reports/val_history.py --epoch N --format json``.
 
-For the per-run history store (``val_history.jsonl``), use ``tools/val_history.py``
+For the per-run history store (``val_history.jsonl``), use ``utils/reports/val_history.py``
 directly (it renders the same txt for any epoch/checkpoint, plus ``--best`` / ``--list``);
 this tool is the standalone single-JSON renderer.
 
 Usage:
-    python -m tools.val_report_txt <report.json> [-o out.txt] [--best-only]
-    python -m tools.val_report_txt /run/ckpt-99000_val.json
-    python -m tools.val_report_txt /run/eval_dir            # every report *.json in the dir
+    python -m utils.reports.val_report_txt <report.json> [-o out.txt] [--best-only]
+    python -m utils.reports.val_report_txt /run/ckpt-99000_val.json
+    python -m utils.reports.val_report_txt /run/eval_dir            # every report *.json in the dir
 """
 import argparse
 import glob
@@ -77,8 +77,8 @@ def main():
             if len(files) == 1:
                 sys.exit(
                     f"{fp} is not a validation report: missing {_REQUIRED}.\n"
-                    f"Point this at a report JSON (<ckpt>_val.json from `tools/eval.py "
-                    f"--output_dir`, or `tools/val_history.py --epoch N --format json`), "
+                    f"Point this at a report JSON (<ckpt>_val.json from `utils/eval.py "
+                    f"--output_dir`, or `utils/reports/val_history.py --epoch N --format json`), "
                     f"NOT metrics.json / per_category_metrics.json (those carry only "
                     f"headline AP numbers).")
             continue

@@ -53,14 +53,14 @@ def test_polygon_evaluator_accepts_num_vertices():
 # ---------------------------------------------------------------------------
 
 def test_draw_polygon_has_conf_thresh_param():
-    from train.viz_utils import _draw_polygon
+    from common.viz_utils import _draw_polygon
     sig = inspect.signature(_draw_polygon)
     assert "conf_thresh" in sig.parameters
 
 
 def test_viz_default_matches_evaluator_default():
     from eval.polygon_metrics import DEFAULT_POLY_CONF_THRESH, PolygonEvaluator
-    from train.viz_utils import _draw_polygon, render_summary_images
+    from common.viz_utils import _draw_polygon, render_summary_images
 
     assert PolygonEvaluator().__init__.__defaults__  # has defaults
     assert PolygonEvaluator()._conf_thresh == DEFAULT_POLY_CONF_THRESH
@@ -75,7 +75,7 @@ def test_viz_default_matches_evaluator_default():
 
 
 def test_no_hardcoded_0_4_in_draw_polygon_body():
-    from train.viz_utils import _draw_polygon
+    from common.viz_utils import _draw_polygon
     src = inspect.getsource(_draw_polygon)
     assert "< 0.4" not in src, "conf gate must use the conf_thresh param, not 0.4"
     assert "conf < conf_thresh" in src
@@ -100,7 +100,7 @@ def test_readme_checkpoint_interval_is_formula_not_baked():
 # ---------------------------------------------------------------------------
 
 def test_export_docstring_documents_output_schema():
-    import tools.export_saved_model as ex
+    import utils.export.export_saved_model as ex
     doc = ex.__doc__ or ""
     assert "Output Schema" in doc
     for key in ("bbox", "classes", "confidence", "num_detections", "polygons", "distance"):

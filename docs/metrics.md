@@ -1,6 +1,6 @@
 # Metrics Glossary
 
-What each metric printed by `python -m tools.eval` (and logged to TensorBoard `val/...` during
+What each metric printed by `python -m utils.eval` (and logged to TensorBoard `val/...` during
 training) means. Computed by `eval/coco_metrics.py` + `eval/coco_eval_custom.py` (the custom
 COCOeval that adds the F1 confidence sweep and don't-care handling), `eval/polygon_metrics.py`, and
 `eval/distance_metrics.py`.
@@ -17,7 +17,7 @@ COCOeval that adds the F1 confidence sweep and don't-care handling), `eval/polyg
 | `recall50` | Mean recall at each class's peak-F1 operating point. |
 
 **Per-category** metrics (`--per_category`, and each epoch's entry in `val_history.jsonl`,
-extractable with `tools/val_history.py`) give the peak F1 / precision / recall **per class**,
+extractable with `utils/reports/val_history.py`) give the peak F1 / precision / recall **per class**,
 plus the confidence threshold at that peak — useful for spotting a few weak classes dragging
 down the macro average.
 

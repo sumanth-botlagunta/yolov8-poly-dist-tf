@@ -1,4 +1,4 @@
-"""Tests for the self-contained progress bar (tools/shared/progress.py).
+"""Tests for the self-contained progress bar (common/progress.py).
 
 The behaviour that matters most: non-TTY (cloud log file) output must be clean — no
 carriage returns, header once, and exactly one final line.
@@ -6,7 +6,7 @@ carriage returns, header once, and exactly one final line.
 
 import io
 
-from tools.shared.progress import Progress, progress, _fmt_time
+from common.progress import Progress, progress, _fmt_time
 
 
 def _run(total, n_updates, **kw):

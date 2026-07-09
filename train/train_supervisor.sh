@@ -2,7 +2,7 @@
 # Training supervisor: keeps run_train.py alive across crashes/OOM-kills and
 # resumes automatically — no manual babysitting.
 #
-#   nohup bash tools/train_supervisor.sh \
+#   nohup bash train/train_supervisor.sh \
 #       --config configs/experiments/yolo/yolov8_poly_dist.yaml \
 #       --output_dir /path/to/run_dir \
 #       >> /path/to/run_dir/supervisor.log 2>&1 &
@@ -53,7 +53,7 @@ while true; do
   attempt=$((attempt + 1))
   start_ts=$(date +%s)
   echo "[supervisor] attempt $attempt starting at $(date '+%F %T')"
-  python scripts/run_train.py --config "$CONFIG" --output_dir "$OUTPUT_DIR" &
+  python -m train.run_train --config "$CONFIG" --output_dir "$OUTPUT_DIR" &
   CHILD_PID=$!
   wait "$CHILD_PID"; code=$?
   dur=$(( $(date +%s) - start_ts ))

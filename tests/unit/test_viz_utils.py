@@ -1,10 +1,10 @@
-"""Tests for train/viz_utils.render_summary_images (TensorBoard overlays)."""
+"""Tests for common/viz_utils.render_summary_images (TensorBoard overlays)."""
 
 import unittest
 
 import numpy as np
 
-from train import viz_utils
+from common import viz_utils
 
 
 def _one_pred():

@@ -13,7 +13,7 @@ baked into the forward pass (`deploy=True`).
 ## What to run
 
 ```bash
-python tools/export_saved_model.py \
+python -m utils.export.export_saved_model \
   --config configs/experiments/yolo/yolov8_poly_dist.yaml \
   --checkpoint $CKPT_PATH \
   --output exported_model/ \

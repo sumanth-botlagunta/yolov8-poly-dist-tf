@@ -14,14 +14,14 @@ export, infer) for a consistent look.
 
 Typical use::
 
-    from tools.shared.progress import Progress
+    from common.progress import Progress
     with Progress(total=len(items), desc='Encoding', unit='img') as p:
         for it in items:
             ...
             p.update(1, status=f'loss={loss:.3f}')
 
     # or wrap an iterable:
-    from tools.shared.progress import progress
+    from common.progress import progress
     for it in progress(items, desc='Encoding', unit='img'):
         ...
 """

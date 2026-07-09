@@ -43,7 +43,7 @@ log = logging.getLogger(__name__)
 _NUM_VERTICES = 24
 
 # Per-bin confidence gate for PREDICTED polygon vertices. The evaluator and the
-# TensorBoard polygon overlay (train/viz_utils.py) MUST share this threshold so
+# TensorBoard polygon overlay (common/viz_utils.py) MUST share this threshold so
 # the visualised contour matches the one scored — viz_utils imports this value
 # as its default rather than re-hardcoding 0.4.
 DEFAULT_POLY_CONF_THRESH = 0.4

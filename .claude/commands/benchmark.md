@@ -1,6 +1,6 @@
 # /benchmark — Profile the data pipeline throughput
 
-Runs `tools/benchmark_pipeline.py` to measure how fast the tf.data pipeline
+Runs `utils/pipeline/benchmark_pipeline.py` to measure how fast the tf.data pipeline
 feeds batches to the model. Use this to detect data starvation before a long run.
 
 ## Usage
@@ -14,7 +14,7 @@ feeds batches to the model. Use this to detect data starvation before a long run
 ## What to run
 
 ```bash
-python tools/benchmark_pipeline.py \
+python -m utils.pipeline.benchmark_pipeline \
   --config configs/experiments/yolo/yolov8_{tier}.yaml \
   --steps 100
 ```

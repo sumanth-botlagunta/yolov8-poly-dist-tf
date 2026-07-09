@@ -1,6 +1,6 @@
 """Shared runtime setup for offline tools (eval / export).
 
-The trainer (`scripts/run_train.py:_apply_runtime_config`) activates the global
+The trainer (`train/run_train.py:_apply_runtime_config`) activates the global
 Keras mixed-precision policy from the experiment config before building the model.
 The offline tools build the *same* model from the *same* config but historically
 skipped this step, so a bfloat16-trained checkpoint was loaded into a float32
@@ -24,7 +24,7 @@ def apply_eval_precision_policy(config) -> str:
     """Set the global Keras mixed-precision policy from ``config.runtime``.
 
     Mirrors the bfloat16/float32 branch of
-    ``scripts/run_train.py:_apply_runtime_config`` so offline model construction
+    ``train/run_train.py:_apply_runtime_config`` so offline model construction
     matches the trained checkpoint's compute dtype. Returns the normalized
     precision string actually applied (for logging/tests). float16 is rejected for
     the same reason the trainer rejects it (no loss scaling), but since these tools

@@ -2,19 +2,19 @@
 
 Run a trained model on a folder of arbitrary images and get **predictions (JSON)** and/or
 **annotated images**, at the model size or mapped back to the original image. Tool:
-`tools/infer.py`.
+`utils/export/inference_saved_model.py`.
 
 ## Source: checkpoint or SavedModel
 
 ```bash
 # from a training checkpoint (+ its config; EMA weights are preferred):
-python -m tools.infer \
+python -m utils.export.inference_saved_model \
     --config configs/experiments/yolo/yolov8_poly_dist.yaml \
     --checkpoint /path/to/run_dir/ckpt-100000 \
     --images /path/to/images_dir --output_dir /tmp/infer_out
 
 # from an exported SavedModel (input size auto-read from the signature):
-python -m tools.infer \
+python -m utils.export.inference_saved_model \
     --saved_model /path/to/export/saved_model \
     --images /path/to/images_dir --output_dir /tmp/infer_out
 ```
@@ -50,7 +50,7 @@ original full-resolution image.
 ## Example: deployable predictions on original-size images
 
 ```bash
-python -m tools.infer --saved_model /path/to/export/saved_model \
+python -m utils.export.inference_saved_model --saved_model /path/to/export/saved_model \
     --images /path/to/photos --output_dir /tmp/out \
     --emit both --draw_on original --score 0.3
 # -> /tmp/out/<name>_pred.png (annotated) + /tmp/out/predictions.json (original-pixel boxes)
@@ -59,4 +59,4 @@ python -m tools.infer --saved_model /path/to/export/saved_model \
 ## Related
 - For the on-device equivalent (run the exported model the way the device does, score vs host),
   see the [deployment guide](deployment.md).
-- Reference: [scripts.md](../scripts.md) (the `tools.infer` entry).
+- Reference: [scripts.md](../scripts.md) (the `utils.export.inference_saved_model` entry).

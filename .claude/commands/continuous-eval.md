@@ -10,7 +10,7 @@ Continuous evaluation has been folded into `/eval`. Use the `--watch` (or `--all
 ## What to run
 
 ```bash
-python -m tools.eval \
+python -m utils.eval \
   --config configs/experiments/yolo/yolov8_poly_dist.yaml \
   --watch --watch_dir runs/{run_name}/ \
   --interval 300

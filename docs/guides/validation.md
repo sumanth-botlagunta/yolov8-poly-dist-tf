@@ -13,7 +13,7 @@ read the history.
 ## 1. Read the validation trend
 
 ```bash
-python -m tools.val_history /path/to/run_dir --list
+python -m utils.reports.val_history /path/to/run_dir --list
 ```
 Prints a table of every epoch: `epoch · step · F1score50 · mAP · mAP50 · AR100`. (Re-validated
 epochs collapse to the latest; `--raw` shows the full append log.)
@@ -22,14 +22,14 @@ epochs collapse to the latest; `--raw` shows the full append log.)
 
 ```bash
 # the best epoch by F1score50, as the ckpt-format txt (best-conf-per-category table)
-python -m tools.val_history /path/to/run_dir --best --format txt -o best.txt
+python -m utils.reports.val_history /path/to/run_dir --best --format txt -o best.txt
 
 # a specific epoch as JSON or CSV
-python -m tools.val_history /path/to/run_dir --epoch 42 --format json
-python -m tools.val_history /path/to/run_dir --epoch 42 --format csv -o e42.csv
+python -m utils.reports.val_history /path/to/run_dir --epoch 42 --format json
+python -m utils.reports.val_history /path/to/run_dir --epoch 42 --format csv -o e42.csv
 
 # whole history to one flat CSV (pandas if installed)
-python -m tools.val_history /path/to/run_dir --export-csv history.csv
+python -m utils.reports.val_history /path/to/run_dir --export-csv history.csv
 ```
 `--best` already gives you the answer to "which checkpoint is best" — it's the epoch with the
 highest `F1score50`, and the corresponding checkpoint is in `output_dir/best_ckpt/`.
@@ -39,7 +39,7 @@ highest `F1score50`, and the corresponding checkpoint is in `output_dir/best_ckp
 To (re)evaluate a specific checkpoint on the val split:
 
 ```bash
-python -m tools.eval \
+python -m utils.eval \
     --config configs/experiments/yolo/yolov8_poly_dist.yaml \
     --checkpoint /path/to/run_dir/ckpt-100000 \
     --split val --per_category --output_dir /tmp/eval_out
@@ -51,8 +51,8 @@ and a **`<ckpt>_val.json` + `.txt`** — the same ckpt-format report the trainer
 Evaluate **every** checkpoint in a run (and append each to a log), or watch a live run:
 
 ```bash
-python -m tools.eval --config <cfg> --all   --watch_dir /path/to/run_dir
-python -m tools.eval --config <cfg> --watch --watch_dir /path/to/run_dir --interval 300
+python -m utils.eval --config <cfg> --all   --watch_dir /path/to/run_dir
+python -m utils.eval --config <cfg> --watch --watch_dir /path/to/run_dir --interval 300
 ```
 
 ## 4. Understand the headline metric
@@ -68,7 +68,7 @@ The `per_class/` TensorBoard metrics tell you *which* class is weak; `--dump_fai
 *why*. It writes the worst predictions per class as annotated images:
 
 ```bash
-python -m tools.eval --config <cfg> --checkpoint /run/ckpt-100000 \
+python -m utils.eval --config <cfg> --checkpoint /run/ckpt-100000 \
     --output_dir /tmp/eval_out --dump_failures
 ```
 For each class it keeps the worst few of each kind and writes them to
@@ -85,7 +85,7 @@ Open the folder for a class that's dragging the macro F1 down and you'll usually
 
 If you have a standalone report JSON (e.g. a `<ckpt>_val.json` from step 3):
 ```bash
-python -m tools.val_report_txt /tmp/eval_out/ckpt-100000_val.json --best-only
+python -m utils.reports.val_report_txt /tmp/eval_out/ckpt-100000_val.json --best-only
 ```
 
 ## Related

@@ -16,10 +16,10 @@ Typical use:
   * During training the trainer calls :func:`build_report` and appends the result
     (one line per validation) to ``<run>/val_history.jsonl`` via
     ``eval/val_history.py``; extract any epoch back to txt/json/csv with
-    ``tools/val_history.py``. ``tools/eval.py --output_dir`` still uses
+    ``utils/reports/val_history.py``. ``utils/eval.py --output_dir`` still uses
     :func:`save_canonical` to drop a ``<ckpt>_val.json`` + ``.txt`` pair for a
     single offline evaluation.
-  * Offline, ``tools/pipeline/export_val_metrics.py`` reads one report JSON and
+  * Offline, ``utils/reports/export_val_metrics.py`` reads one report JSON and
     calls :func:`write_csv` / :func:`write_xlsx` / :func:`write_txt`.
 """
 

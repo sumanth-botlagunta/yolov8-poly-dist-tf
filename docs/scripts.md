@@ -10,7 +10,7 @@ for the config fields and [guides/finetuning.md](guides/finetuning.md) for warm-
 
 ## Core workflow
 
-### `python -m scripts.run_train` — launch training
+### `python -m train.run_train` — launch training
 Runs the training loop. For long runs prefer the supervisor (next entry).
 - `--config` (req) — experiment YAML.
 - `--output_dir` (req) — where checkpoints, `tb_events/`, and `val_history.jsonl` are written.
@@ -20,20 +20,20 @@ Runs the training loop. For long runs prefer the supervisor (next entry).
   a fresh optimizer/LR (overrides `task.finetune_from`). Distinct from `--resume_from` (same run,
   continues). See [guides/finetuning.md](guides/finetuning.md).
 ```bash
-python -m scripts.run_train --config configs/experiments/yolo/yolov8_poly_dist.yaml --output_dir /run
+python -m train.run_train --config configs/experiments/yolo/yolov8_poly_dist.yaml --output_dir /run
 # fine-tune:
-python -m scripts.run_train --config <finetune.yaml> --output_dir /finetune_run --finetune_from /src_run/ckpt-100000
+python -m train.run_train --config <finetune.yaml> --output_dir /finetune_run --finetune_from /src_run/ckpt-100000
 ```
 
-### `bash tools/train_supervisor.sh` — supervised training (recommended for long runs)
+### `bash train/train_supervisor.sh` — supervised training (recommended for long runs)
 Keeps training alive across crashes/OOM, auto-resumes, detaches from SSH.
 - `--config` (req) — experiment YAML.
 - `--output_dir` (req) — run directory. `touch <output_dir>/STOP` to stop without restart.
 ```bash
-nohup bash tools/train_supervisor.sh --config configs/experiments/yolo/yolov8_poly_dist.yaml --output_dir /run >> /run/supervisor.log 2>&1 &
+nohup bash train/train_supervisor.sh --config configs/experiments/yolo/yolov8_poly_dist.yaml --output_dir /run >> /run/supervisor.log 2>&1 &
 ```
 
-### `python -m tools.eval` — evaluate one or many checkpoints
+### `python -m utils.eval` — evaluate one or many checkpoints
 COCO mAP/F1, polygon, and distance metrics on val/test (EMA weights preferred). One eval code
 path with three modes:
 - **single** (default, `--checkpoint <ckpt>`): evaluate one checkpoint and print the metric table.
@@ -54,24 +54,12 @@ path with three modes:
 - `--limit_batches N` (any mode) — stop after N eval batches (0 = full split): a fast **sampled
   probe**, not a substitute for the full-split numbers.
 ```bash
-python -m tools.eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000 --split val --per_category
-python -m tools.eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --all   --watch_dir /run
-python -m tools.eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --watch --watch_dir /run --interval 300
+python -m utils.eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000 --split val --per_category
+python -m utils.eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --all   --watch_dir /run
+python -m utils.eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --watch --watch_dir /run --interval 300
 ```
 
-### `python -m tools.compare_nms_modes` — per-class vs class-agnostic NMS, side by side
-Runs the network once per batch and scores the same raw outputs through two detection generators
-that differ only in `nms_class_mode` (`per_class` vs `agnostic`), so both modes see byte-identical
-predictions. Prints a headline-metric comparison plus the per-class best-F1 movers, and writes
-both full ckpt-format reports. NMS is pure post-processing — valid for any existing checkpoint,
-no retraining.
-- `--config` (req), `--checkpoint` (req). `--split` — `val` (default) / `test`.
-- `--output_dir` — where the two reports go (default `<ckpt_dir>/nms_compare`).
-```bash
-python -m tools.compare_nms_modes --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000
-```
-
-### `python -m tools.infer` — folder inference: predictions JSON + visuals
+### `python -m utils.export.inference_saved_model` — folder inference: predictions JSON + visuals
 Loads a checkpoint **or** a SavedModel and runs over a folder of images, emitting a COCO-style
 predictions JSON and/or annotated images, in the model-input or original-image coordinate space.
 - `--config` + `--checkpoint`, **or** `--saved_model` (one source required).
@@ -82,56 +70,55 @@ predictions JSON and/or annotated images, in the model-input or original-image c
 - `--score` — min confidence to keep/draw (default 0.25). `--no_poly` — boxes only.
 - `--input_size` — override the square input size (0 = read from config/SavedModel).
 ```bash
-python -m tools.infer --saved_model /export/saved_model --images /imgs \
+python -m utils.export.inference_saved_model --saved_model /export/saved_model --images /imgs \
     --output_dir /tmp/out --emit both --draw_on original
 ```
 
 ## Export
 
-### `python -m tools.device.export_device_dlc` — on-device SNPE/DLC export (most common)
+### `python -m utils.export.export_device_savedmodel` — on-device SNPE/DLC export (most common)
 SavedModel that drop-in-replaces the deployed device DLC. See [device_export.md](device_export.md).
 - `--config` (req), `--checkpoint` (req), `--output_dir` (req).
 - `--input_size` — `H,W` for the device (e.g. `672,416`).
-- `--verify` — run all contract checks (op names, baked `/255`, decode parity).
 - `--normalize` (default on) — bake `/255` so the graph accepts raw `[0,255]` input.
 - `--legacy_box_order` (default on) — reorder box channels `[l,t,r,b]→[t,l,b,r]` to match the
-  on-device decoder (y-first); set `False` only if you decode with this repo / `gen_pred_json`.
+  on-device decoder (y-first); set `False` only if you decode with this repo.
 - `--debug_taps` — emit intermediate tap nodes for SavedModel-vs-DLC bisection.
 ```bash
-python -m tools.device.export_device_dlc --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000 --output_dir /export --input_size 672,416 --verify
+python -m utils.export.export_device_savedmodel --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000 --output_dir /export --input_size 672,416
 ```
 
-### `python -m tools.export_saved_model` — host/server SavedModel
+### `python -m utils.export.export_saved_model` — host/server SavedModel
 Deploy SavedModel with NMS baked in; expects `[0,1]` input.
 - `--config` (req), `--checkpoint` (req), `--output_dir` (req).
 - `--tflite` — also run the TFLite converter and write `model.tflite`.
 ```bash
-python -m tools.export_saved_model --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000 --output_dir /export
+python -m utils.export.export_saved_model --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000 --output_dir /export
 ```
 
 ## Pipeline
 
-### `python -m tools.benchmark_pipeline` — throughput benchmark
+### `python -m utils.pipeline.benchmark_pipeline` — throughput benchmark
 - `--config` (req). `--steps` — steps to time (default 100). `--profile` — save a TF profiler trace.
 ```bash
-python -m tools.benchmark_pipeline --config configs/experiments/yolo/yolov8_poly_dist.yaml --steps 100
+python -m utils.pipeline.benchmark_pipeline --config configs/experiments/yolo/yolov8_poly_dist.yaml --steps 100
 ```
 
-### `python -m tools.pipeline.diagnose_pipeline` — stage-by-stage attribution
+### `python -m utils.pipeline.diagnose_pipeline` — stage-by-stage attribution
 - `--config` (req). `--samples`, `--batches` — workload size. `--threadpool-sweep` — sweep
   `private_threadpool_size` values (comma list).
 ```bash
-python -m tools.pipeline.diagnose_pipeline --config configs/experiments/yolo/yolov8_poly_dist.yaml --samples 768 --batches 10
+python -m utils.pipeline.diagnose_pipeline --config configs/experiments/yolo/yolov8_poly_dist.yaml --samples 768 --batches 10
 ```
 
-### `bash tools/cloud_diagnose.sh` — one-shot cloud bring-up check
+### `bash utils/pipeline/cloud_diagnose.sh` — one-shot cloud bring-up check
 - Takes the experiment YAML as a **positional** argument (defaults to the poly_dist tier if
   omitted). Runs the diagnose + benchmark (cold & warm) and measures CPU throttle.
 ```bash
-bash tools/cloud_diagnose.sh configs/experiments/yolo/yolov8_poly_dist.yaml
+bash utils/pipeline/cloud_diagnose.sh configs/experiments/yolo/yolov8_poly_dist.yaml
 ```
 
-### `python -m tools.val_history` — inspect / extract the validation history
+### `python -m utils.reports.val_history` — inspect / extract the validation history
 Reads `<run>/val_history.jsonl` (one report appended per epoch). No SQL, no DB.
 - positional `path` — the run dir or the `val_history.jsonl` file.
 - (no selector) / `--list` — trend table: epoch / step / F1score50 / mAP / mAP50 / AR100.
@@ -139,38 +126,27 @@ Reads `<run>/val_history.jsonl` (one report appended per epoch). No SQL, no DB.
 - `--format txt|json|csv` (default txt, the exact ckpt format) — `--best-only`, `-o OUT`.
 - `--export-csv PATH` — whole history → one flat CSV (pandas if installed).
 ```bash
-python -m tools.val_history /run --list
-python -m tools.val_history /run --best --format txt -o best.txt
-python -m tools.val_history /run --epoch 42 --format json
+python -m utils.reports.val_history /run --list
+python -m utils.reports.val_history /run --best --format txt -o best.txt
+python -m utils.reports.val_history /run --epoch 42 --format json
 ```
 
-### `python -m tools.val_report_txt` — render a single report JSON to the ckpt-format txt
+### `python -m utils.reports.val_report_txt` — render a single report JSON to the ckpt-format txt
 Standalone sibling of `val_history`: renders one validation report JSON (a `<ckpt>_val.json`
-from `tools.eval --output_dir`, or one extracted via `val_history --format json`) into the exact
+from `utils.eval --output_dir`, or one extracted via `val_history --format json`) into the exact
 ckpt-format `.txt` (best-conf-per-category table + mean + all-conf sweep). `--best-only` keeps just
 the best table.
 ```bash
-python -m tools.val_report_txt /run/ckpt-99000_val.json --best-only
+python -m utils.reports.val_report_txt /run/ckpt-99000_val.json --best-only
 ```
 
-### `python -m tools.pipeline.export_val_metrics` — export validation metrics to xlsx/parquet
+### `python -m utils.reports.export_val_metrics` — export validation metrics to xlsx/parquet
 Reads `val_history.jsonl` (or a single report JSON) and writes xlsx/csv/parquet for trend analysis.
 - `--input` (req) — a `val_history.jsonl`, a run dir containing it, or a single report JSON. `--out_dir` (req), `--basename`.
 - `--formats` — comma list (`xlsx,csv,parquet`). `--aggregate` — combine all epochs into one table.
 ```bash
-python -m tools.pipeline.export_val_metrics --input /run/val_history.jsonl --aggregate --formats xlsx,parquet
+python -m utils.reports.export_val_metrics --input /run/val_history.jsonl --aggregate --formats xlsx,parquet
 ```
-
-## Device diagnostics
-
-These localize an on-device accuracy gap (DLC vs host). See [device_export.md](device_export.md).
-
-| Command | What it does |
-|---------|--------------|
-| `python -m tools.device.gen_pred_json_from_dlc` | Build a COCO prediction JSON from DLC/SavedModel raw outputs (edit the `SPLITS` list in-file; `--splits` overrides). `--raw_root --transform_pkl --output_json`. |
-| `python -m tools.device.validate_device_export` | Compare the in-repo model vs the device SavedModel on val images. `--config --checkpoint --saved_model`. |
-| `python -m tools.device.check_snpe_ready` | Scan an exported SavedModel for SNPE-incompatible ops. `<saved_model_dir>`. |
-| `python -m tools.device.make_calibration_raws` | Build a calibration `.raw` set + input list for `snpe-dlc-quantize`. |
 
 ## Future / recommended additions
 

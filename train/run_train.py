@@ -1,7 +1,7 @@
 """Training entry point for YOLOv8 polygon + distance model.
 
 Usage:
-    python scripts/run_train.py \
+    python -m train.run_train \
         --config configs/experiments/yolo/yolov8_poly_dist.yaml \
         --output_dir /tmp/yolo_run
 
@@ -248,14 +248,6 @@ def _validate_config(config, output_dir: str) -> None:
             "validation_data.is_training must be false (an infinite training "
             "stream as the val set hangs validation forever)"
         )
-    tp = getattr(getattr(task.train_data, "parser", None), "resample_points", 0)
-    vp = getattr(getattr(vd, "parser", None), "resample_points", 0) if vd else 0
-    if tp != vp:
-        logging.warning(
-            "parser.resample_points differs between train (%s) and validation "
-            "(%s): eval polygon GT will be binned from a different vertex "
-            "distribution than training, distorting poly metrics.", tp, vp)
-
     # --- multi-TFDS sampling weights ---
     td = task.train_data
     weights = getattr(td, "tfds_sampling_weights", None)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-shot cloud diagnostics for the data-pipeline bottleneck.
 #
-#   bash tools/cloud_diagnose.sh [config]          (default: yolov8_poly_dist.yaml)
+#   bash utils/pipeline/cloud_diagnose.sh [config]          (default: yolov8_poly_dist.yaml)
 #
 # Writes everything to diagnose_<timestamp>.log — send that file back.
 # Runtime: roughly 10-15 minutes, CPU only (no training, no GPU memory used),
@@ -29,14 +29,14 @@ section "CPU THROTTLE COUNTERS (baseline)"
 cat /sys/fs/cgroup/cpu.stat 2>/dev/null || cat /sys/fs/cgroup/cpu/cpu.stat 2>/dev/null || echo n/a
 
 section "STAGE ATTRIBUTION (datasets, encodings, per-stage rates, threadpool sweep)"
-python tools/pipeline/diagnose_pipeline.py --config "$CONFIG" --samples 768 --batches 10 \
+python utils/pipeline/diagnose_pipeline.py --config "$CONFIG" --samples 768 --batches 10 \
     --threadpool-sweep 0,13,26
 
 section "END-TO-END PIPELINE BENCHMARK run 1 (cold cache)"
-python tools/benchmark_pipeline.py --config "$CONFIG" --steps 150
+python utils/pipeline/benchmark_pipeline.py --config "$CONFIG" --steps 150
 
 section "END-TO-END PIPELINE BENCHMARK run 2 (warm cache)"
-python tools/benchmark_pipeline.py --config "$CONFIG" --steps 150
+python utils/pipeline/benchmark_pipeline.py --config "$CONFIG" --steps 150
 
 section "CPU THROTTLE COUNTERS (after)"
 cat /sys/fs/cgroup/cpu.stat 2>/dev/null || cat /sys/fs/cgroup/cpu/cpu.stat 2>/dev/null || echo n/a

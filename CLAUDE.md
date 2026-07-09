@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Implemented and actively trained.** This is a working TensorFlow 2.16 codebase, not a
 plan. Source lives under `data_pipeline/`, `models/`, `losses/`, `optimizers/`, `eval/`,
-`train/`, `configs/`, `scripts/`, and `tools/`, with a `tests/` suite and notebooks.
+`train/`, `configs/`, `common/`, and `utils/`, with a `tests/` suite.
 
 The authoritative hyperparameter reference is the experiment YAML you train with, e.g.
 `configs/experiments/yolo/yolov8_poly_dist.yaml`. Developer docs live in `docs/`
@@ -155,35 +155,33 @@ eval/
   distance_metrics.py  # distance error metrics
   metrics_report.py    # ckpt-format report writer (best-conf + all-conf tables)
   val_history.py       # val_history.jsonl store (append/load/select/best)
+  metric_meta.py       # TensorBoard scalar names + formula descriptions
   failure_mining.py    # FailureCollector (worst-K fp/fn/lowiou per class)
 train/
   task.py              # YoloV8Task (build, loss, metrics, train/val steps)
   trainer.py           # YoloV8Trainer (custom loop, EMA swap, checkpoints, signals)
+  run_train.py         # entry point (config load, validation, strategy, runtime flags)
+  train_supervisor.sh  # supervised launcher (nohup + auto-restart)
+common/                # shared library imported by core code and CLIs
   viz_utils.py         # box/polygon overlay rendering for TensorBoard image summaries
-  metric_meta.py       # TensorBoard scalar names + formula descriptions
   run_metadata.py      # run provenance (git/env/datasets) -> run_metadata.json
+  ckpt_loading.py runtime_setup.py progress.py
 configs/
   model_config.py      # config dataclasses
   yaml_loader.py       # YAML → dataclasses (hand-rolled mapping; no dacite)
   registry.py
   class_map.py         # DETECTION_CLASSES list (39 class names, index = category_id)
   data/ model/ optimizer/ experiments/yolo/   # composable YAML fragments
-scripts/
-  run_train.py         # entry point (config load, validation, strategy, runtime flags)
-tools/                 # core workflow tools (top level)
-  eval.py export_saved_model.py benchmark_pipeline.py infer.py
-
-  compare_nms_modes.py  # per-class vs class-agnostic NMS, side by side on one checkpoint
-  val_history.py        # extract <run>/val_history.jsonl -> txt/json/csv (--epoch/--best/--list)
-  val_report_txt.py     # render a single report JSON -> ckpt-format txt
-  cloud_diagnose.sh train_supervisor.sh
-  device/              # SNPE/DLC export — core on-device workflow
-    export_device_dlc.py validate_device_export.py gen_pred_json_from_dlc.py
-    check_snpe_ready.py make_calibration_raws.py
-  shared/              # utility modules imported by the tools
-    runtime_setup.py ckpt_loading.py progress.py
-  pipeline/            # data-pipeline diagnostics + dataset re-encoding
-    diagnose_pipeline.py export_val_metrics.py
+utils/                 # runnable CLIs
+  eval.py              # standalone evaluation over one or many checkpoints
+  export/              # model export + inference
+    export_saved_model.py         # host/server SavedModel (NMS baked in)
+    export_device_savedmodel.py   # on-device SNPE-shaped SavedModel
+    inference_saved_model.py      # folder inference: predictions JSON + visuals
+  reports/             # validation-history extraction + reporting
+    val_history.py val_report_txt.py export_val_metrics.py
+  pipeline/            # data-pipeline diagnostics
+    benchmark_pipeline.py diagnose_pipeline.py cloud_diagnose.sh
 tests/                 # unit/ integration/ smoke/ + component tests
 ```
 
@@ -192,12 +190,12 @@ tests/                 # unit/ integration/ smoke/ + component tests
 - Configs are plain dataclasses (`configs/model_config.py`) loaded from composable YAML by a
   hand-rolled mapper (`configs/yaml_loader.py` — NOT dacite, despite the dependency in
   `requirements.txt`; unknown keys outside the `runtime`/`losses` sections are silently
-  ignored). `scripts/run_train.py:_validate_config` checks invariants
+  ignored). `train/run_train.py:_validate_config` checks invariants
   (e.g. `output_poly_size == 360 // angle_step`) before training.
 - Common workflows are documented as copy-paste commands in `docs/scripts.md`
   (training/eval/export/benchmark/infer).
 - Runtime flags (XLA via `tf.config.optimizer.set_jit`, mixed precision via the global Keras
-  policy, distribution strategy) are applied in `scripts/run_train.py:_apply_runtime_config`
+  policy, distribution strategy) are applied in `train/run_train.py:_apply_runtime_config`
   from `RuntimeConfig`. Default precision is `float32`.
 
 ## Testing
@@ -218,7 +216,7 @@ Run with `/test` or `pytest tests/unit tests/smoke -v`.
 - **Crowd handling**: `skip_crowd_during_training=True` filters at parse time; `ignore_bg` flag masks class loss at loss time
 - **NMS suppression scope is config-selectable** (`detection_generator.nms_class_mode`): `per_class`
   (default) vs `agnostic` (one NMS over all boxes regardless of class). Eval-time only. Measured
-  head-to-head (`tools/compare_nms_modes.py`): agnostic loses recall on region classes that
+  head-to-head: agnostic loses recall on region classes that
   legitimately contain other objects (bathroom/entrance/doorway) — more than its precision gain —
   so `per_class` stays the default.
 - **Smart bias init**: class bias = `log(5 / num_classes / (input_size/stride)^2)`; box bias = 1.0
@@ -238,12 +236,12 @@ Run with `/test` or `pytest tests/unit tests/smoke -v`.
 - **Copy-paste runs on the letterbox content region of a mosaic tile**: `CopyAndPasteModule` scales the object by `(current/original)` per axis (original dims from the `height`/`width` fields), so the relative-size distribution is exactly the full-resolution one. Without those fields the correction is 1 (backward compatible).
 - **Per-tile random-window crop is config-gated** (`mosaic.tile_crop_min/max`): when enabled, each mosaic tile crops a random WINDOW of its content — side fraction `s ~ U[tile_crop_min, tile_crop_max]` at a random position within bounds — then scales the crop to fill its quadrant (a zoom/translate scale-invariance signal). Default `0/0` = OFF (the content region fills its quadrant unchanged); the poly_dist YAML keeps it off, so size variety comes only from the whole-canvas warp gain `aug_scale_min/max` = `[0.4, 1.9]`. Bounds are validated `0 < min <= max <= 1` by `_validate_config`. Rotation is **hard-OFF** in the mosaic warp (not a config knob); single-image rotation is the separate parser-level `rotate`/`rotate_degrees` (default off). **Pre-resized-dataset caveat**: the tile content region is derived from the letterbox geometry, so any stored-resized dataset variant MUST be **letterbox-encoded** — a squash-encoded variant carrying `orig_height`/`width` fields would be mis-sliced by the content-region derivation.
 - **Warp scale gain uses explicit bounds**: `make_perspective_matrix(scale_min=, scale_max=)` draws from the configured `[aug_scale_min, aug_scale_max]` (poly_dist: [0.5, 1.5]). The symmetric-magnitude form is kept for back-compat but widened the configured bounds — the mostly-gray-frame bug (since fixed).
-- **Polygon vertex resampling is OFF** (`parser.resample_points: 0` in the tier YAMLs; measured metric impact was nil). ACCEPTED TRADE-OFF: with it off, polygons flow through the pipeline at their raw stored width (up to `[N, 10940]`) instead of the `[N, 128]` cap the resample provided — watch padded-batch memory and `train/data_wait_ms` on full runs. When enabled (N>0), `resample_polygons` samples uniformly along the closed contour, filling every radial bin the boundary crosses. The function itself stays: copy-paste uses it to fit pasted polygons into the column budget. Train-semantics — changing it needs a fresh run.
+- **Polygon vertex resampling**: `resample_polygons` (`data_pipeline/augmentations.py`) samples uniformly along the closed contour, filling every radial bin the boundary crosses. It exists only for copy-paste, which uses it to fit a pasted object's polygon into the background's column budget. Polygons otherwise flow through the pipeline at their raw stored width (up to `[N, 10940]`).
 - **Copy-paste polygon fit = even resample, not truncation**: the cnp source decoder does NOT resample, so a pasted object can carry far more polygon columns than the (resampled) background. When `cur_cols >= n_poly_cols`, copy-paste **evenly resamples** the valid vertices to the column budget (`resample_polygons`) instead of slicing the first N — slicing kept only a leading contour arc (~3% of the loop) and corrupted the radial target. `resample_polygons` itself stable-argsorts valid-first to **compact scattered sentinels** before sampling, because copy-paste invalidates out-of-bounds vertices in place (interleaved `-1`s); on decode-time prefix input the sort is a no-op (byte-identical). Both are **train-semantics** changes: they alter the polygon GT for copy-pasted objects, so do not merge into a live run mid-flight.
 - **Polygon binning is a segment formulation**: `_preprocess_polygons_v2` uses `unsorted_segment_max` + first-winner `unsorted_segment_min` instead of a `[N, P, 24]` one-hot — exactly output-equivalent including argmax-first tie behavior (tests assert equality).
 - **Runtime defaults (poly_dist YAML)**: `one_device` on 1 GPU, `mixed_bfloat16` (heads pinned float32 in `models/head.py`, no loss scaling needed), thread-pool caps for cgroup-capped hosts (`runtime.inter_op_threads`/`intra_op_threads`, `train_data.private_threadpool_size`). The training stream sets `tf.data` `deterministic=False` (sample order is not seed-reproducible; augmentation randomness unaffected).
 - **Polygon sub-losses are logged separately**: TensorBoard tags `train/poly_angle_loss`, `train/poly_dist_loss`, and `train/poly_conf_loss` allow diagnosing which polygon component is not converging.
-- **TensorBoard scalars carry names + formulae**: every scalar is written with a markdown `description` (`train/metric_meta.py`). Scalars are grouped into separate top-level sections so the headline metrics aren't buried: `train/` (losses, `lr`, `grad_norm` pre-clip global gradient norm, throughput/data-wait), `val/` (headline detection + polygon + distance metrics only), **`per_class/<metric>/<NN_name>`** (per-category, grouped BY metric so all classes of one metric sit together — out of `val/`), `epoch/`, `system/`. The per-class index is zero-padded + class-named (from `configs/class_map.py`), not a bare index.
+- **TensorBoard scalars carry names + formulae**: every scalar is written with a markdown `description` (`eval/metric_meta.py`). Scalars are grouped into separate top-level sections so the headline metrics aren't buried: `train/` (losses, `lr`, `grad_norm` pre-clip global gradient norm, throughput/data-wait), `val/` (headline detection + polygon + distance metrics only), **`per_class/<metric>/<NN_name>`** (per-category, grouped BY metric so all classes of one metric sit together — out of `val/`), `epoch/`, `system/`. The per-class index is zero-padded + class-named (from `configs/class_map.py`), not a bare index.
 
 ## Dependencies
 

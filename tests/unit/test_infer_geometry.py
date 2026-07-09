@@ -1,9 +1,9 @@
-"""Geometry tests for tools/infer.py — the letterbox inverse and polygon decode that
+"""Geometry tests for utils/export/inference_saved_model.py — the letterbox inverse and polygon decode that
 map model-space detections back to original-image pixels."""
 
 import numpy as np
 
-from tools import infer
+from utils.export import inference_saved_model as infer
 
 
 def test_letterbox_inverse_round_trips_nonsquare():

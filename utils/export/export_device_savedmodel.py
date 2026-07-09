@@ -1,7 +1,7 @@
 """Export a trained checkpoint to a SavedModel laid out as a DROP-IN replacement
 for the deployed on-device Qualcomm SNPE DLC.
 
-Unlike ``tools/export_saved_model.py`` (which bakes NMS into the graph and emits
+Unlike ``utils/export/export_saved_model.py`` (which bakes NMS into the graph and emits
 the post-processed deploy dict for [0, 1]-normalized input), this tool reproduces
 the *deployed device contract* so the existing SNPE conversion / quantization /
 net-run / result-extraction pipeline keeps working **unchanged** — the new ``.dlc``
@@ -40,17 +40,14 @@ Two device-specific transforms vs. the [0,1] export contract:
 
 The per-head concatenation here mirrors ``models/detection_generator.py`` exactly
 (reshape each level [B,H,W,C]→[B,H*W,C] row-major, concat levels 3→4→5 on the anchor
-axis). ``--verify`` proves this is lossless by reconstructing the per-level dict from
-the concatenated nodes and re-running the in-repo decoder (the faithful port of the
-on-device ``YoloV8LayerModified``) — its detections must match the deploy path.
+axis).
 
 Usage:
-    python tools/device/export_device_dlc.py \
+    python utils/export/export_device_savedmodel.py \
         --config     configs/experiments/yolo/yolov8_poly_dist.yaml \
         --checkpoint /path/to/ckpt-or-epoch \
         --output_dir /path/to/saved_model \
-        --input_size 672,416 \
-        --verify
+        --input_size 672,416
 
 Then, exactly as before (drop-in — only the SavedModel path changes):
     ./snpe-tensorflow-to-dlc --input_network /path/to/saved_model \
@@ -78,9 +75,6 @@ try:
                         'Bake /255 into the graph so the device can feed raw [0,255] '
                         'pixels (IMAGE_NROM_FLAG=False). Set False only if the device '
                         'is changed to feed [0,1].')
-    flags.DEFINE_bool  ('verify', False,
-                        'After export, load the SavedModel back and assert node names, '
-                        'shapes, /255 equivalence, and decode equivalence vs the deploy path.')
     flags.DEFINE_bool  ('debug_taps', False,
                         'Also emit intermediate tensors as top-level nodes (tap_input, '
                         'tap_feat3/4/5 = /255 output + backbone P3/P4/P5) so the conversion '
@@ -94,7 +88,7 @@ try:
                         "model/repo-native order is [left,top,right,bottom] (x-first); without "
                         'this swap the on-device decode applies x-offsets on the y-axis and every '
                         'box is transposed (the host=0.68 / device=0.19 gap). Set False to keep '
-                        'the x-first order (decode with this repo or tools/device/gen_pred_json_from_dlc.py).')
+                        'the x-first order (decode with this repo).')
 except flags.DuplicateFlagError:
     pass
 
@@ -148,53 +142,16 @@ def _force_float32_policy() -> None:
         raise RuntimeError(
             f"Global Keras compute policy is '{compute}', not 'float32', even after "
             "set_global_policy('float32'). The SNPE export must be float32. Something "
-            "re-enabled mixed precision (e.g. tools.shared.runtime_setup.apply_eval_precision_policy "
+            "re-enabled mixed precision (e.g. common.runtime_setup.apply_eval_precision_policy "
             "or an earlier import). Run this exporter in a clean process / before any "
             "bfloat16 policy is set."
         )
 
 
-def _assert_close(name, got, ref, rel_tol=2e-2, atol=2e-2):
-    """Assert the device SavedModel reproduces the reference model, judged by
-    RELATIVE magnitude rather than an element count at an unrealistic tolerance.
-
-    The SavedModel is a ~280-layer float32 graph. It legitimately differs from the
-    eager Keras model by benign accumulation — fused (FusedBatchNormV3 / fused conv)
-    vs unfused ops compute in a different order — which is ~1e-3 relative or smaller
-    and which SNPE's int8/int16 quantization swamps entirely. A per-element
-    ``np.allclose(rtol=1e-5)`` flags most of those tiny differences as "mismatched"
-    (the misleading ~77%-of-elements failure that motivated this), even though the
-    graph is correct.
-
-    A REAL fault — a wrong concat/wiring layout, dropped weights, or a precision
-    asymmetry (bf16 stems vs a float32 graph) — instead produces an O(1) relative
-    error. So gate on the global relative error ``max|got-ref| / max|ref|``: benign
-    accumulation passes, a real corruption (rel ~ 1) fails loudly with diagnostics.
-    """
-    import numpy as np
-    g = got.astype(np.float64); r = ref.astype(np.float64)
-    maxd = float(np.abs(g - r).max())
-    maxv = float(np.abs(r).max())
-    tol  = atol + rel_tol * maxv
-    if maxd <= tol:
-        return
-    rel  = maxd / (maxv + 1e-12)
-    mism = float(np.mean(~np.isclose(g, r, rtol=1e-5, atol=1e-4)) * 100.0)
-    raise AssertionError(
-        f"[{name}] device SavedModel != reference model: max|diff|={maxd:.3e} "
-        f"exceeds tol={tol:.3e} (relative error {rel:.2e}; {mism:.1f}% of elements "
-        f"outside the strict rtol=1e-5 band). got.dtype={got.dtype}, ref.dtype={ref.dtype}.\n"
-        f"  rel ~ 1e-3 or below is benign float32 graph accumulation; this is far larger,\n"
-        f"  so it indicates a REAL fault: a wrong concat/wiring layout, dropped weights in\n"
-        f"  the freeze step, or a precision asymmetry (bf16 stems under a leaked\n"
-        f"  mixed_bfloat16 policy vs the float32 graph). Run tools/device/debug/diagnose_device_export.py\n"
-        f"  to localize which export stage diverges.")
-
-
 def main(_):
     from configs.yaml_loader import load_config
     from models.yolo_v8 import build_yolov8
-    from tools.shared.ckpt_loading import restore_eval_weights
+    from common.ckpt_loading import restore_eval_weights
 
     h_str, w_str = FLAGS.input_size.split(',')
     H, W = int(h_str), int(w_str)
@@ -203,7 +160,7 @@ def main(_):
     # mixed_bfloat16 policy (heads pinned float32) is for throughput only; float32
     # is numerically a superset, restores from the same checkpoint, and avoids
     # bf16 ops the SNPE TF converter would choke on. (Do NOT call
-    # tools.shared.runtime_setup.apply_eval_precision_policy here — that re-enables bf16.)
+    # common.runtime_setup.apply_eval_precision_policy here — that re-enables bf16.)
     tf.keras.mixed_precision.set_global_policy('float32')
 
     config    = load_config(FLAGS.config)
@@ -291,10 +248,6 @@ def main(_):
         kind = "DFL-decoded LTRB" if name == 'box' else "raw"
         log.info("  out_node %-11s [%d, %d]  (%d floats, %s)", name, n_anchors, oc,
                  n_anchors * oc, kind)
-
-    if FLAGS.verify:
-        _verify(FLAGS.output_dir, model, H, W, n_anchors, head_chan, do_norm,
-                legacy_box_order=FLAGS.legacy_box_order)
 
 
 def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16, debug_taps=False,
@@ -519,82 +472,6 @@ def _save_named_savedmodel(serving_fn, head_names, output_dir):
             outs = {n: g.get_tensor_by_name(n + ':0') for n in head_names}
             tf.compat.v1.saved_model.simple_save(
                 sess, output_dir, inputs={'input_image': inp}, outputs=outs)
-
-
-def _verify(saved_model_dir, model, H, W, n_anchors, head_chan, do_norm,
-            legacy_box_order=True):
-    """Assert the exported graph matches the deployed device contract."""
-    import numpy as np
-    from tensorflow.python.saved_model import loader_impl
-
-    log.info("---- verification ----")
-    head_names = [n for n, _ in head_chan]
-
-    # 0) SNPE-critical: the GraphDef must contain TOP-LEVEL ops literally named
-    #    input_image + each head, so `--out_node box` resolves to `box:0` and the
-    #    extractor finds `box:0.raw`.
-    sm = loader_impl.parse_saved_model(saved_model_dir)
-    op_names = {n.name for n in sm.meta_graphs[0].graph_def.node}
-    missing = [t for t in (['input_image'] + head_names) if t not in op_names]
-    assert not missing, f"top-level op(s) absent from GraphDef (SNPE --out_node would fail): {missing}"
-    log.info("[ok] top-level graph ops present for SNPE: %s", ['input_image'] + head_names)
-
-    # 0b) No standalone BatchNorm may survive — folded into conv by _fold_batch_norms.
-    #     A surviving FusedBatchNorm* is the "merge 1 encoding ... found 0" converter warning
-    #     and quantizes badly (per-channel scale forced into one per-tensor int8 encoding).
-    bn = [n.name for n in sm.meta_graphs[0].graph_def.node if n.op in _BN_OPS]
-    assert not bn, f"un-folded BatchNorm in exported graph (will quantize poorly): {bn[:5]}"
-    log.info("[ok] no standalone FusedBatchNorm* — BN folded into conv (quantizes per-channel)")
-
-    loaded = tf.saved_model.load(saved_model_dir)
-    fn = loaded.signatures['serving_default']
-
-    # Deterministic synthetic image in [0,255].
-    rng = np.random.RandomState(0)
-    img255 = rng.uniform(0, 255, size=[1, H, W, 3]).astype(np.float32)
-    out = fn(input_image=tf.constant(img255))
-
-    # 1) signature node names present
-    got = set(out.keys())
-    assert set(head_names) <= got, f"missing output nodes: {set(head_names) - got} (got {got})"
-    log.info("[ok] signature output nodes present: %s", sorted(got))
-
-    # 2) shapes / element counts. box is DFL-decoded to [N, 4]; the rest are raw
-    #    [N, C]; all have the batch dim dropped (deployed-DLC node layout).
-    for name, c in head_chan:
-        oc  = 4 if name == 'box' else c
-        shp = tuple(out[name].shape)
-        assert shp == (n_anchors, oc), f"{name}: expected ({n_anchors},{oc}), got {shp}"
-    log.info("[ok] node shapes match the deployed layout (box [N,4], others [N,C], no batch dim)")
-
-    # 3) /255 equivalence for the RAW heads: device([0,255]) == concat(raw-model(img/255)),
-    #    batch dropped. Covers cls/poly_*/dist (box is decoded, checked in 4).
-    raw = model(tf.constant(img255) / 255.0 if do_norm else tf.constant(img255),
-                training=False)
-    for name, c in head_chan:
-        if name == 'box':
-            continue
-        ref = _concat_levels(raw[name], c)[0].numpy()   # [N, c]
-        _assert_close(name, out[name].numpy(), ref)
-    log.info("[ok] raw heads reproduce /255 + concat (within float32 graph accumulation)")
-
-    # 4) box DFL decode equivalence: the baked reshape→softmax→Σ·bins must match the
-    #    in-repo DFL decode (detection_generator._decode_dfl), per level then concat
-    #    3→4→5. This also confirms the box concat layout. Pre-stride LTRB distances.
-    dg = model.detection_generator
-    if dg is not None:
-        parts = []
-        for lvl in _LEVELS:
-            ltrb = dg._decode_dfl(tf.cast(raw['box'][lvl], tf.float32))   # [1,Hl,Wl,4]
-            parts.append(tf.reshape(ltrb, [1, -1, 4]))
-        box_ref = tf.concat(parts, axis=1)[0].numpy()                     # [N, 4] [l,t,r,b]
-        if legacy_box_order:
-            box_ref = box_ref[:, [1, 0, 3, 2]]                            # -> [t,l,b,r]
-        _assert_close('box (DFL)', out['box'].numpy(), box_ref)
-        log.info("[ok] box reproduces the in-repo DFL decode (softmax + Σ·bins, pre-stride%s)",
-                 ", reordered [t,l,b,r] for the on-device decode" if legacy_box_order else "")
-
-    log.info("---- verification PASSED ----")
 
 
 if __name__ == '__main__':

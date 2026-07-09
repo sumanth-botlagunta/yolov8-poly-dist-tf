@@ -115,7 +115,7 @@ class TestDistanceEvaluator(unittest.TestCase):
         """Contract guard: the evaluator expects LOG-space inputs and exps once.
 
         The detection generator emits distance in METRES (already exp'd). Callers
-        (train/task.py, tools/eval.py) must np.log() it before update(); passing
+        (train/task.py, utils/eval.py) must np.log() it before update(); passing
         metres directly double-exponentiates and yields a wildly wrong error.
         """
         pred_metres = np.array([2.0])           # 2 m predicted

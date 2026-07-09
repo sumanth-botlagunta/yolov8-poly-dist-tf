@@ -7,7 +7,7 @@ end-to-end number. Also prints TFDS dataset sizes and stored image encodings
 (PNG decode is several times more expensive than JPEG — this matters).
 
 Usage:
-    python tools/pipeline/diagnose_pipeline.py \
+    python utils/pipeline/diagnose_pipeline.py \
         --config configs/experiments/yolo/yolov8_poly_dist.yaml \
         [--samples 768] [--batches 10] [--threadpool-sweep 0,13,26]
 

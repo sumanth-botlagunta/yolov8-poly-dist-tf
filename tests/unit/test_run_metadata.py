@@ -1,9 +1,9 @@
-"""Tests for run provenance (train/run_metadata.py)."""
+"""Tests for run provenance (common/run_metadata.py)."""
 
 import json
 import types
 
-from train import run_metadata
+from common import run_metadata
 
 
 def _cfg(train_tfds="a:1.0.0,b:2.3.0", val_tfds="a:1.0.0", cnp="c:1.1.0",

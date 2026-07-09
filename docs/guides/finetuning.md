@@ -31,7 +31,7 @@ Make a fine-tune config first: **copy your tier YAML** (e.g. `yolov8_poly_dist.y
 new data. Then:
 
 ```bash
-python -m scripts.run_train \
+python -m train.run_train \
     --config configs/experiments/yolo/yolov8_poly_dist_finetune.yaml \
     --output_dir /path/to/finetune_run \
     --finetune_from /path/to/source_run/ckpt-<step>

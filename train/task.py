@@ -33,7 +33,7 @@ def normalize_images(images: tf.Tensor) -> tf.Tensor:
 
     The parsers emit uint8 (colour aug + /255 moved to the batch level), so
     EVERY consumer that calls ``model(images)`` directly — ``validation_step``
-    and ``tools/eval.py`` — must normalize through
+    and ``utils/eval.py`` — must normalize through
     this one helper. Feeding raw uint8 to the model raises (float32 conv
     kernels); feeding 0–255 floats would silently produce garbage.
     """
@@ -93,7 +93,7 @@ class YoloV8Task:
         """
         finetune_from = getattr(self._config.task, 'finetune_from', None)
         if finetune_from:
-            from tools.shared.ckpt_loading import restore_eval_weights
+            from common.ckpt_loading import restore_eval_weights
             kind = restore_eval_weights(model, finetune_from)
             log.info("Fine-tune: restored full model (%s weights) from %s — fresh "
                      "optimizer/EMA/step will be built (new LR schedule applies).",
@@ -116,7 +116,7 @@ class YoloV8Task:
         # plain tf.train.Checkpoint restore of a module subtree can silently
         # under-load). Non-selected modules are snapshotted first and restored
         # after, so e.g. the head keeps its fresh random initialization.
-        from tools.shared.ckpt_loading import restore_eval_weights
+        from common.ckpt_loading import restore_eval_weights
         all_modules = ('backbone', 'decoder', 'head')
         keep = [m for m in all_modules
                 if m not in modules and getattr(model, m, None) is not None]

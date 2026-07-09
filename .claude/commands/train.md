@@ -1,6 +1,6 @@
 # /train — Launch a training run
 
-Starts training using `scripts/run_train.py`. Always reads the config from a YAML file.
+Starts training using `train/run_train.py`. Always reads the config from a YAML file.
 
 ## Usage
 
@@ -22,7 +22,7 @@ Map the shorthand to the config path:
 Default output dir: `runs/{experiment_name}_{timestamp}/`
 
 ```bash
-python scripts/run_train.py \
+python -m train.run_train \
   --config configs/experiments/yolo/yolov8_{tier}.yaml \
   --output_dir runs/{tier}_{timestamp} \
   [--resume] \

@@ -24,7 +24,7 @@ One eval code path with three modes:
 
 ```bash
 # single checkpoint
-python -m tools.eval \
+python -m utils.eval \
   --config configs/experiments/yolo/yolov8_poly_dist.yaml \
   --checkpoint $CKPT_PATH \
   --split val \
@@ -32,12 +32,12 @@ python -m tools.eval \
   [--per_category]
 
 # every existing checkpoint in a run directory, once
-python -m tools.eval \
+python -m utils.eval \
   --config configs/experiments/yolo/yolov8_poly_dist.yaml \
   --all --watch_dir runs/{run_name}/
 
 # keep polling for new checkpoints (Ctrl-C to stop; safe to restart)
-python -m tools.eval \
+python -m utils.eval \
   --config configs/experiments/yolo/yolov8_poly_dist.yaml \
   --watch --watch_dir runs/{run_name}/ \
   --interval 300

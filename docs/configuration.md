@@ -37,7 +37,7 @@ ExperimentConfig
 
 ## `runtime` — `RuntimeConfig`
 
-Applied in `scripts/run_train.py:_apply_runtime_config` before any TF op runs.
+Applied in `train/run_train.py:_apply_runtime_config` before any TF op runs.
 
 | Field | Default | Notes |
 |-------|---------|-------|
@@ -58,7 +58,7 @@ Applied in `scripts/run_train.py:_apply_runtime_config` before any TF op runs.
 | `deploy` | `true` | `true` bakes NMS into the forward pass (eval/export); the trainer sets it `false` for raw head outputs. |
 | `backbone` | `cspdarknetv8s` | **model_id takes precedence** over `depth_scale`/`width_scale` (both 1.0 in YAML but the model is `-S`). |
 | `detection_generator` | — | `max_boxes=300`, `nms_thresh=0.65`, `score_thresh=0.05`, distance range `[0.5, 10.0]`. |
-| `detection_generator.nms_class_mode` | `per_class` | NMS suppression scope: `per_class` runs NMS independently per class; `agnostic` runs ONE NMS over all boxes (suppresses cross-class duplicates at the same location). Eval-time post-processing only — compare both modes on a checkpoint with `python -m tools.compare_nms_modes`. |
+| `detection_generator.nms_class_mode` | `per_class` | NMS suppression scope: `per_class` runs NMS independently per class; `agnostic` runs ONE NMS over all boxes (suppresses cross-class duplicates at the same location). Eval-time post-processing only. |
 
 ## `task.losses` — `LossConfig`
 
@@ -95,7 +95,6 @@ normalization conventions.
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| `resample_points` | `0` | Arc-length resample polygons to this many vertices at decode (poly_dist sets 64). Makes the 24-bin radial target track shapes. |
 | `aug_rand_hue` / `_saturation` / `_brightness` | 0.015 / 0.7 / 0.4 | HSV jitter (brightness is **additive**, not multiplicative). |
 | `random_flip` | `true` | Horizontal flip. |
 | `skip_crowd_during_training` | `true` | Drop `is_crowd` GT at parse time. |
@@ -159,10 +158,10 @@ keras optimizers (adam/adamw) set `global_clipnorm`. Activation is `task.model.n
 | `finetune_from` | `None` | **Fine-tuning** (same task, new data): load the FULL model from a trained `ckpt-N`, preferring its EMA/deployed weights, into a **fresh optimizer/EMA/step** (new LR schedule). Overrides via `--finetune_from`. Mutually exclusive with `init_checkpoint`. Fresh-start-only (resume ignores it). See [guides/finetuning](guides/finetuning.md). |
 | `freeze_modules` | `[]` | Freeze whole modules (`trainable=False`; BN in inference mode) — subset of `{backbone, decoder, head}`. Excluded from grads/optimizer/EMA. At least one module must stay trainable. |
 | `freeze_backbone_layers` | `0` | Partial freezing: freeze the **first N** top-level backbone layers (`stem_conv1 … sppf`, 10 total) — the "freeze early layers, fine-tune the rest" recipe. `0` = off. The startup log lists what was frozen. |
-| `init_checkpoint` | `None` | **Transfer-init** (new task/head): warm-start source for the selected modules, from a checkpoint **produced by this codebase**. Loaded via the EMA-aware full-model loader (`tools/shared/ckpt_loading.py:restore_eval_weights` — EMA shadows preferred); non-selected modules keep their fresh init. Fresh-start-only (resume ignores it). |
+| `init_checkpoint` | `None` | **Transfer-init** (new task/head): warm-start source for the selected modules, from a checkpoint **produced by this codebase**. Loaded via the EMA-aware full-model loader (`common/ckpt_loading.py:restore_eval_weights` — EMA shadows preferred); non-selected modules keep their fresh init. Fresh-start-only (resume ignores it). |
 | `init_checkpoint_modules` | `[backbone, decoder]` | Which modules `init_checkpoint` warm-starts (head randomly initialized otherwise). For same-task continuation use `finetune_from` instead. |
 
-## Validated invariants (`scripts/run_train.py:_validate_config`)
+## Validated invariants (`train/run_train.py:_validate_config`)
 
 Training refuses to start if any of these fail:
 

@@ -3,13 +3,13 @@
 Sets model.deploy=True before export so NMS is baked into the forward pass.
 
 Usage:
-    python tools/export_saved_model.py \
+    python utils/export/export_saved_model.py \
         --config     configs/experiments/yolo/yolov8_poly_dist.yaml \
         --checkpoint /path/to/ckpt-step \
         --output_dir /tmp/saved_model
 
     # Also convert to TFLite:
-    python tools/export_saved_model.py ... --tflite
+    python utils/export/export_saved_model.py ... --tflite
 
 Flags:
     --config      Path to experiment YAML.
@@ -85,11 +85,11 @@ def main(_):
     # Activate the trainer's precision policy before building the model so the
     # exported SavedModel computes on the same dtype path the checkpoint was
     # trained/served on (bfloat16 backbone/decoder, float32 heads).
-    from tools.shared.runtime_setup import apply_eval_precision_policy
+    from common.runtime_setup import apply_eval_precision_policy
     apply_eval_precision_policy(config)
 
     # ---- Build and restore ----
-    from tools.shared.ckpt_loading import restore_eval_weights
+    from common.ckpt_loading import restore_eval_weights
 
     model = build_yolov8(model_cfg)
     model.deploy = True

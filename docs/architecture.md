@@ -49,8 +49,7 @@ Post-processing for inference (`deploy=True`): DFL decode → xyxy boxes, **gree
 outputs. The NMS suppression scope is config-selectable (`detection_generator.nms_class_mode`):
 `per_class` (default) filters each class independently — no cross-class suppression — while
 `agnostic` runs one NMS over all boxes, suppressing cross-class duplicates at the same location.
-It is eval-time post-processing only (no effect on training); `python -m tools.compare_nms_modes`
-scores both modes side-by-side on one checkpoint. Distance is
+It is eval-time post-processing only (no effect on training). Distance is
 `exp`'d from log-scale and clipped to `[min_distance, max_distance]` (`[0.5, 10.0]` m).
 Polygon outputs `(conf, dist, angle)` are all sigmoid/softmax-activated; `conf` values are not
 raw logits.

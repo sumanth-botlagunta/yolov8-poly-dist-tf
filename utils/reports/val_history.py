@@ -8,17 +8,17 @@ single epoch/checkpoint (or the best) back into the exact ckpt-format **txt**, r
 
 Usage:
     # trend table of every epoch (epoch / step / F1score50 / mAP / mAP50 / AR100)
-    python -m tools.val_history <run_dir_or_jsonl>
-    python -m tools.val_history <run> --list --sort F1score50
+    python -m utils.reports.val_history <run_dir_or_jsonl>
+    python -m utils.reports.val_history <run> --list --sort F1score50
 
     # one epoch (or checkpoint, or the best) -> ckpt-format txt (default)
-    python -m tools.val_history <run> --epoch 42
-    python -m tools.val_history <run> --best
-    python -m tools.val_history <run> --best --format json -o best.json
-    python -m tools.val_history <run> --epoch 42 --format csv -o e42.csv
+    python -m utils.reports.val_history <run> --epoch 42
+    python -m utils.reports.val_history <run> --best
+    python -m utils.reports.val_history <run> --best --format json -o best.json
+    python -m utils.reports.val_history <run> --epoch 42 --format csv -o e42.csv
 
     # whole history -> one flat CSV (uses pandas if installed, else stdlib csv)
-    python -m tools.val_history <run> --export-csv history.csv
+    python -m utils.reports.val_history <run> --export-csv history.csv
 
 Arguments:
     path                 run directory (containing val_history.jsonl) or the file.

@@ -1,4 +1,4 @@
-"""Pins train/metric_meta.describe() resolution.
+"""Pins eval/metric_meta.describe() resolution.
 
 Regression tests for the `best_` prefix shadowing bug: registered keys
 (`best_conf_thresh`, `best_checkpoint_epoch`) were unreachable because the
@@ -6,7 +6,7 @@ prefix-strip branch ran before the direct registry lookup, so their TensorBoard
 tooltips silently disappeared.
 """
 
-from train.metric_meta import METRIC_DESCRIPTIONS, describe
+from eval.metric_meta import METRIC_DESCRIPTIONS, describe
 
 
 def test_every_registered_key_resolves_to_its_own_entry():

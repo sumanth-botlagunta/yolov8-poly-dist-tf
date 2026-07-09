@@ -2,7 +2,7 @@
 
 The offline eval / export tools historically built the model without setting the
 global Keras precision policy, so a bfloat16-trained checkpoint computed in
-float32 (a different numerical path than training/serving). tools/shared/runtime_setup
+float32 (a different numerical path than training/serving). common/runtime_setup
 centralizes the policy application; this pins that:
   * a bfloat16 runtime config activates the mixed_bfloat16 global policy;
   * float32 leaves the default policy;
@@ -14,7 +14,7 @@ import unittest
 
 import tensorflow as tf
 
-from tools.shared.runtime_setup import apply_eval_precision_policy
+from common.runtime_setup import apply_eval_precision_policy
 
 
 def _cfg(dtype):

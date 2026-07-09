@@ -16,12 +16,12 @@ Output size (``--draw_on`` / the JSON ``bbox`` space):
 
 Usage:
     # SavedModel -> annotated images + predictions JSON, on the original-size images:
-    python tools/infer.py --saved_model /export/saved_model \
+    python utils/export/inference_saved_model.py --saved_model /export/saved_model \
         --images /path/to/images_dir --output_dir /tmp/infer_out \
         --emit both --draw_on original
 
     # From a training checkpoint (EMA weights preferred), visuals at model size:
-    python tools/infer.py --config configs/experiments/yolo/yolov8_poly_dist.yaml \
+    python utils/export/inference_saved_model.py --config configs/experiments/yolo/yolov8_poly_dist.yaml \
         --checkpoint /run/ckpt-100000 --images /path/to/imgs --emit visual --draw_on model
 
 Arguments:
@@ -136,8 +136,8 @@ def _poly_vertices_norm(poly_24x3, cxn, cyn, conf_thresh):
 
 def _load_checkpoint_model(config, ckpt_path):
     from models.yolo_v8 import build_yolov8
-    from tools.shared.ckpt_loading import restore_eval_weights
-    from tools.shared.runtime_setup import apply_eval_precision_policy
+    from common.ckpt_loading import restore_eval_weights
+    from common.runtime_setup import apply_eval_precision_policy
 
     apply_eval_precision_policy(config)
     model = build_yolov8(config.task.model)
@@ -151,8 +151,8 @@ def _load_checkpoint_model(config, ckpt_path):
 def main(_):
     tf.config.run_functions_eagerly(False)
     import cv2
-    from train.viz_utils import render_summary_images
-    from tools.shared.progress import Progress
+    from common.viz_utils import render_summary_images
+    from common.progress import Progress
 
     class_names = None
     try:

@@ -551,7 +551,6 @@ def build_input_reader_from_config(
         decoder = PolygonDecoder(
             max_vertices=parser_cfg.max_vertices,
             num_classes=num_classes,
-            resample_points=parser_cfg.resample_points,
         )
 
     # Parser: augment + resize images and build fixed-shape label tensors.
@@ -647,7 +646,6 @@ def build_input_reader_from_config(
         dist_cfg = data_cfg.distance_data
         dist_decoder = ServingBotDetDecoder(
             num_classes=num_classes,
-            resample_points=dist_cfg.parser.resample_points,
         )
         dist_parser = V8DistanceParser(
             output_size=output_size,

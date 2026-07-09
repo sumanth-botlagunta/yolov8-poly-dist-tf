@@ -13,7 +13,7 @@ interrupted run loses at most the last partial line); and a record is a superset
 what ``metrics_report.write_txt`` consumes, so any epoch round-trips back to the exact
 ckpt-format txt with no schema or SQL.
 
-Read/extract with ``tools/val_history.py`` (txt / json / csv, ``--best``, ``--list``).
+Read/extract with ``utils/reports/val_history.py`` (txt / json / csv, ``--best``, ``--list``).
 """
 
 from __future__ import annotations

@@ -1,19 +1,16 @@
 """Pinning test: resample_polygons `compact` gates the scattered-sentinel argsort.
 
-Background: resample_polygons unconditionally ran a stable argsort+gather to
-compact scattered sentinels to a prefix. At DECODE time (the hot path) the TFDS
-contract already guarantees a prefix, so that O(P log P) sort is a pure no-op and
-pure overhead on the decode shape (P≈5470). The sort is only needed by the
-copy-paste path, which invalidates out-of-bounds vertices in place and so hands
-interleaved -1 holes.
+resample_polygons can run a stable argsort+gather to compact scattered sentinels to
+a prefix. The copy-paste path invalidates out-of-bounds vertices in place and so
+hands interleaved -1 holes; it relies on compact=True to fix them. A contiguous-prefix
+input needs no sort, so the flag is off by default.
 
 The `compact` flag (default False) gates the sort. This test pins:
   1. On a contiguous-prefix input, compact=False == compact=True (sort is a no-op).
   2. On a SCATTERED-sentinel input, compact=True compacts correctly (no interior
      holes) while compact=False does NOT — so the flag is load-bearing and the
      copy-paste caller MUST pass compact=True.
-  3. Wiring: the decode-time caller uses the default (compact=False) and the
-     copy-paste caller passes compact=True.
+  3. Wiring: the copy-paste caller passes compact=True.
 """
 
 import inspect
@@ -93,21 +90,12 @@ def test_scattered_input_needs_compact():
     )
 
 
-def test_callers_wire_compact_correctly():
-    """Decode uses the default (compact=False); copy-paste passes compact=True."""
-    import data_pipeline.tfds_decoders as dec
+def test_copy_paste_wires_compact_true():
+    """Copy-paste passes compact=True (it can produce scattered sentinels)."""
     import data_pipeline.copy_paste as cp
 
-    dec_src = inspect.getsource(dec)
     cp_src = inspect.getsource(cp)
 
-    # Decode-time call must NOT request compaction (prefix is guaranteed there).
-    assert "resample_polygons(polygons, self._resample_points)" in dec_src, (
-        "decode-time resample_polygons call changed; re-verify it stays compact=False"
-    )
-    assert "compact=True" not in dec_src, (
-        "decode-time caller must not pass compact=True — that re-adds the hot-path sort"
-    )
     # Copy-paste must request compaction (it can produce scattered sentinels).
     assert "compact=True" in cp_src, (
         "copy-paste caller must pass compact=True to handle scattered sentinels"

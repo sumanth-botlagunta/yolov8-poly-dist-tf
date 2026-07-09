@@ -112,10 +112,10 @@ raise with the weighting and update this entry.
 
 ## 12. Exported SavedModel expects pre-normalized `[0,1]` input — no `/255` baked in
 
-`tools/export_saved_model.py:serving_fn` accepts `float32 [0,1]` images and passes them straight to
+`utils/export/export_saved_model.py:serving_fn` accepts `float32 [0,1]` images and passes them straight to
 the model; the model has no internal `/255` layer (`models/yolo_v8.py`). Normalization is done by
 `train.task.normalize_images` (uint8 `[0,255]` → float32 `[0,1]`) on every in-repo call path
-(`validation_step`, `tools/eval.py`), and the serving contract mirrors
+(`validation_step`, `utils/eval.py`), and the serving contract mirrors
 that. Two reasons: (1) baking `/255` into the graph would double-normalize any caller that already
 follows the documented `[0,1]` contract (e.g. a pipeline reusing `normalize_images`), flooring all
 inputs near 0; (2) keeping the contract identical to eval avoids a train/serve skew. The TensorSpec is
@@ -123,7 +123,7 @@ named `images_normalized_0_1`, documented in the module docstring's *Input Schem
 `serving_fn` decorator. A consumer feeding raw uint8/`[0,255]` frames must divide by 255 first.
 
 **The on-device DLC export is the exception — it bakes `/255` on purpose.**
-`tools/device/export_device_dlc.py` is a separate path that reproduces the legacy Qualcomm SNPE DLC
+`utils/export/export_device_savedmodel.py` is a separate path that reproduces the legacy Qualcomm SNPE DLC
 contract (see [device_export.md](device_export.md)). The on-device raw-image generator feeds raw
 `[0,255]` float32 (`IMAGE_NROM_FLAG=False`), so that graph divides by 255 internally (`--normalize`,
 default on) to reach the `[0,1]` the model trained on. It is a different tool for a different consumer:
@@ -185,7 +185,7 @@ weights are checkpointed as eval weights — treat as fresh-run.
 
 The original codebase ran class-agnostic NMS (one suppression pass over all classes). Ours is
 per-class (after top-1 masking), selectable via `detection_generator.nms_class_mode`. A
-head-to-head on one checkpoint (`tools/compare_nms_modes.py`, same raw predictions through both
+head-to-head on one checkpoint (same raw predictions through both
 modes) showed agnostic **worse** overall on this data: the precision gain from removing
 cross-class duplicates is smaller than the recall loss on region classes that legitimately
 contain other objects (bathroom / entrance / doorway boxes get suppressed by the higher-scored

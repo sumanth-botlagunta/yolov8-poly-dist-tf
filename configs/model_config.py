@@ -40,7 +40,7 @@ class RuntimeConfig:
     # CPU thread-pool caps (0 = leave TF defaults). On machines where the
     # process is cgroup-capped to fewer cores than are visible (e.g. 13 of 128),
     # TF's default pools oversubscribe massively and thrash; cap them to the
-    # actual quota. Applied in scripts/run_train.py before any TF op runs.
+    # actual quota. Applied in train/run_train.py before any TF op runs.
     inter_op_threads: int = 0
     intra_op_threads: int = 0
 
@@ -165,7 +165,7 @@ class MosaicConfig:
     # s ~ U[tile_crop_min, tile_crop_max] of its content at a random position,
     # then scales the crop to fill its quadrant (zoom/translate scale-invariance).
     # 0/0 = off (the content region fills its quadrant unchanged). Bounds are
-    # validated 0 < min <= max <= 1 (scripts/run_train.py:_validate_config).
+    # validated 0 < min <= max <= 1 (train/run_train.py:_validate_config).
     tile_crop_min: float = 0.0
     tile_crop_max: float = 0.0
     mosaic_crop_mode: str = "scale"
@@ -182,7 +182,7 @@ class MosaicConfig:
     # samples. The remaining R<4 trade-off is volume, not correlation: an epoch
     # consumes R/4 as many distinct decoded images as R=4, at 1/(4/R) the decode
     # cost. group_size must be a multiple of decodes_per_output and >= 4
-    # (scripts/run_train.py:_validate_config).
+    # (train/run_train.py:_validate_config).
     group_size: int = 32
     decodes_per_output: int = 4
     # Full-affine (random_perspective) params applied after mosaic assembly and to
@@ -207,10 +207,6 @@ class ParserConfig:
     angle_step: int = 15
     max_num_instances: int = 300
     max_vertices: int = 10938
-    # If > 0, resample every polygon to this many vertices at decode time so the
-    # augmentation pipeline carries [N, 2*resample_points] instead of the raw
-    # (huge) stored width. 0 = off. The 24-bin radial target is preserved.
-    resample_points: int = 0
     aug_rand_hue: float = 0.015
     aug_rand_saturation: float = 0.7
     aug_rand_brightness: float = 0.4

@@ -1,4 +1,4 @@
-"""Tests for tools/shared/ckpt_loading.restore_eval_weights.
+"""Tests for common/ckpt_loading.restore_eval_weights.
 
 Pins the contract that eval/export load EMA weights from a periodic checkpoint
 (model/ = raw, optimizer/ = EMA shadows) and raw weights from a best_-style
@@ -17,7 +17,7 @@ from configs.model_config import ModelConfig
 from models.yolo_v8 import build_yolov8
 from optimizers.sgd_warmup import SGDTorch
 from optimizers.ema import ExponentialMovingAverage
-from tools.shared.ckpt_loading import restore_eval_weights, _checkpoint_has_ema
+from common.ckpt_loading import restore_eval_weights, _checkpoint_has_ema
 
 
 _H = _W = 64

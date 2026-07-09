@@ -1,11 +1,11 @@
 # On-device export — Qualcomm SNPE DLC (drop-in replacement)
 
-`tools/device/export_device_dlc.py` exports a trained checkpoint to a TensorFlow SavedModel
+`utils/export/export_device_savedmodel.py` exports a trained checkpoint to a TensorFlow SavedModel
 laid out as a **drop-in replacement for the deployed on-device DLC**. The existing SNPE
 conversion → quantization → net-run → result-extraction pipeline keeps working
 **unchanged**; only the SavedModel path changes.
 
-This is distinct from `tools/export_saved_model.py`, which bakes NMS into the graph and
+This is distinct from `utils/export/export_saved_model.py`, which bakes NMS into the graph and
 emits the post-processed deploy dict for `[0,1]`-normalized input (server/host serving).
 
 ## The device contract
@@ -42,8 +42,7 @@ does this exporter (op-for-op): `[N,64] → reshape [N,4,16] → softmax over th
 Σ·[0,1,…,15]` (a 1×1 `conv2d`, weights `[1,1,16,1]`, bias 0) `→ [N,4]`. This is exactly
 `distance = Σ softmax(logits)·bin`, identical to `models/detection_generator.py::_decode_dfl`.
 The result is the per-side distance **in bin units (pre-stride)**; the on-device
-`YoloV8LayerModified` applies stride + anchor + NMS. `--verify` asserts the baked decode
-matches the in-repo `_decode_dfl` (reordered, see below).
+`YoloV8LayerModified` applies stride + anchor + NMS.
 
 ### Box channel order: `--legacy_box_order` (default ON)
 
@@ -56,7 +55,7 @@ deployed decoder applies the left/right (x) offsets to the **y**-axis → every 
 transposed → host 0.68 / device 0.19. The exporter therefore **reorders the box head
 `[l,t,r,b] → [t,l,b,r]` (`tf.gather [1,0,3,2]`)** by default, so the unchanged on-device
 decoder reads each offset on the correct axis. Set `--legacy_box_order=False` only if you
-decode with this repo or `tools/device/gen_pred_json_from_dlc.py` (both expect x-first).
+decode with this repo (it expects x-first).
 
 ## Two device-specific transforms vs the `[0,1]` host export
 
@@ -77,27 +76,19 @@ buries the head ops inside a `StatefulPartitionedCall` and renames outputs to
 `Identity:0…`. The exporter therefore freezes the graph (inline + variables→constants)
 and promotes each head to a clean **top-level op literally named** `box`/`cls`/…
 (`input_image` is already top-level), re-emitting a v1 SavedModel laid out the way the
-on-device extractor expects. `--verify` asserts these names exist in the GraphDef.
+on-device extractor expects.
 
 ## Usage
 
 ```bash
-# 1. Export the SavedModel (prefers EMA weights; --verify runs all contract checks)
-python -m tools.device.export_device_dlc \
+# 1. Export the SavedModel (prefers EMA weights)
+python -m utils.export.export_device_savedmodel \
     --config     configs/experiments/yolo/yolov8_poly_dist.yaml \
     --checkpoint /path/to/ckpts/epochN \
     --output_dir /path/to/epochN_export/saved_model \
-    --input_size 672,416 \
-    --verify
+    --input_size 672,416
 
-# 2. (optional) sanity-check the device SavedModel against the in-repo model on val
-#    images before converting
-python -m tools.device.validate_device_export \
-    --config      configs/experiments/yolo/yolov8_poly_dist.yaml \
-    --checkpoint  /path/to/ckpts/epochN \
-    --saved_model /path/to/epochN_export/saved_model
-
-# 3. Convert to DLC — the usual command, only --input_network changes
+# 2. Convert to DLC — the usual command, only --input_network changes
 ./snpe-tensorflow-to-dlc \
     --input_network /path/to/epochN_export/saved_model \
     --output_path   model_pre.dlc \
@@ -105,46 +96,21 @@ python -m tools.device.validate_device_export \
     --out_node cls --out_node box --out_node poly_angle \
     --out_node poly_conf --out_node poly_dist --out_node dist
 
-# 4. Quantize (raw [0,255] calibration list — unchanged)
+# 3. Quantize (raw [0,255] calibration list — unchanged)
 ./snpe-dlc-quantize \
     --input_list raw_images_672x416_image_list_000000-000027.txt \
     --input_dlc  model_pre.dlc \
     --output_dlc model_quant.dlc
 
-# 5. Net-run on device (unchanged)
+# 4. Net-run on device (unchanged)
 snpe-net-run --container model_quant.dlc \
     --input_list <eval>_raw_images_672x416_image_list_000000-002999.txt \
     --perf_profile burst
 ```
 
-`--verify` checks, against a built model: top-level op names present (SNPE), signature
-output shapes, that baked-in `/255` reproduces the raw model exactly, and that splitting
-the concatenated nodes back to per-level and decoding with the in-repo
-`YoloV8Layer` (the faithful port of the on-device `YoloV8LayerModified`) reproduces the
-deploy path — i.e. the concatenation is the lossless layout the device decoder expects.
+### Float32-policy guard
 
-### Troubleshooting `--verify`
-
-**`cls ... Not equal to tolerance`, large % of mismatched elements (matching shapes/dtypes).**
-The **% of mismatched elements is a misleading metric** here. The exported SavedModel
-is a ~280-layer float32 graph; it legitimately differs from the eager Keras model by
-benign accumulation — fused (`FusedBatchNormV3`, fused conv) vs unfused ops compute in
-a different order — which is **~1e-3 relative or smaller**. With trained weights that
-tiny difference lands outside a strict per-element `rtol=1e-5` band for most elements
-(60–80%), even though it is numerically negligible and SNPE's int8/int16 quantization
-swamps it entirely. The DLC is fine.
-
-`--verify` now judges by **relative magnitude** (`max|diff| / max|ref|`) instead of an
-element count at an unrealistic tolerance: benign accumulation passes, while a real
-fault — a wrong concat/wiring layout, weights dropped in the freeze step, or a
-precision asymmetry (bf16 stems under a leaked `mixed_bfloat16` policy vs the float32
-graph) — produces an O(1) relative error and fails loudly with diagnostics.
-
-To localize a genuine failure, compare the exported SavedModel against the in-repo model on
-val images with `python -m tools.device.validate_device_export` and scan the graph with
-`python -m tools.device.check_snpe_ready`.
-
-The exporter also still forces and asserts a float32 policy before/after building the
+The exporter forces and asserts a float32 policy before/after building the
 model, so a leaked `mixed_bfloat16` policy (which would make conv stems compute bf16
 while float32-pinned heads hide it) fails fast at the source.
 
@@ -175,4 +141,4 @@ standard SNPE-supported: `Conv2D`, `BiasAdd`, `Relu`, `MaxPool`,
 `ResizeNearestNeighbor`, `Mul`/`Sub`/`Rsqrt`/`AddV2` (folded BatchNorm constants),
 `ConcatV2`, `Reshape`, `StridedSlice`, `Squeeze`, `RealDiv` (the baked `/255`).
 
-Tests: `tests/test_export_device_dlc.py`.
+Tests: `tests/test_export_device_savedmodel.py`.

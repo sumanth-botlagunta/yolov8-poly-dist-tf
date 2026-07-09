@@ -165,11 +165,6 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
 - Colour augmentation (`batch_color_aug.py`) runs inside `train_step`; the `train/data_wait_ms`
   TensorBoard scalar (written by `YoloV8Trainer`) separates data-wait time from compute time,
   making it easy to tell whether the bottleneck is in tf.data or on the GPU.
-- `parser.resample_points` is 0 (off) in the tier YAMLs. When set to N>0, polygons are
-  arc-length-resampled to N vertices at decode, capping every downstream stage at `[N, 2N]`
-  columns instead of the raw stored width (up to `[N, 10940]`); points are interpolated
-  uniformly along the closed contour, not subsampled from stored vertices. With it off, the
-  raw width flows through the pipeline — watch padded-batch memory and `train/data_wait_ms`.
 
 ## Polygon-GT correctness notes (train-semantics)
 
@@ -196,12 +191,12 @@ they affect training — changing one mid-run would shift the GT a run is traini
   stable-argsorts valid-first to compact the kept vertices to a prefix before evenly sampling;
   on decode-time prefix input the sort is a no-op and the output is byte-identical.
 
-- If decode + pre-resize still dominate (see `tools/pipeline/diagnose_pipeline.py` stage table),
+- If decode + pre-resize still dominate (see `utils/pipeline/diagnose_pipeline.py` stage table),
   point the YAML at pre-resized `<name>_672` dataset variants when available: they store 672²
   JPEG + `orig_height`/`orig_width` (which `PolygonDecoder` prefers, keeping the copy-paste
   resolution correction exact). Detection sets only — servingbot must stay full-resolution
   because the distance parser letterboxes (aspect-preserving), and copy_paste crops are RGBA.
   The pre-resize map skips already-672² images via `tf.cond`.
-- Use `tools/benchmark_pipeline.py` for end-to-end throughput and
-  `tools/pipeline/diagnose_pipeline.py` for stage-by-stage attribution (its stage order MUST mirror
+- Use `utils/pipeline/benchmark_pipeline.py` for end-to-end throughput and
+  `utils/pipeline/diagnose_pipeline.py` for stage-by-stage attribution (its stage order MUST mirror
   `InputReader._build_detection_dataset` — keep them in sync).

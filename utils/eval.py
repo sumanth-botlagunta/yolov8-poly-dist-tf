@@ -18,17 +18,17 @@ Three modes share one evaluation code path (`evaluate_checkpoint`):
 
 Usage:
     # one checkpoint
-    python -m tools.eval \
+    python -m utils.eval \
         --config  configs/experiments/yolo/yolov8_poly_dist.yaml \
         --checkpoint /path/to/ckpt-step \
         --split val \
         --output_json /tmp/results.json
 
     # every existing checkpoint in a run directory, once
-    python -m tools.eval --config <cfg> --all   --watch_dir /run
+    python -m utils.eval --config <cfg> --all   --watch_dir /run
 
     # keep watching for new checkpoints
-    python -m tools.eval --config <cfg> --watch --watch_dir /run --interval 300
+    python -m utils.eval --config <cfg> --watch --watch_dir /run --interval 300
 
 Flags:
     --config        Path to experiment YAML.
@@ -89,7 +89,7 @@ log = logging.getLogger(__name__)
 def _load_model_from_checkpoint(config, ckpt_path: str) -> tf.keras.Model:
     """Build the model and restore EMA weights (falls back to raw if none present)."""
     from models.yolo_v8 import build_yolov8
-    from tools.shared.ckpt_loading import restore_eval_weights
+    from common.ckpt_loading import restore_eval_weights
 
     model = build_yolov8(config.task.model)
     model.deploy = True
@@ -154,7 +154,7 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
     total_batches = 0
     img_id_base = 0   # running image-id counter (val uses drop_remainder=False)
 
-    from tools.shared.progress import Progress
+    from common.progress import Progress
     pbar = Progress(total=None, desc='Evaluating', unit='batch')   # val_ds length unknown
     for step, (images, labels) in enumerate(val_ds):
         # Eval parser emits uint8; the model needs float32 [0, 1] (feeding
@@ -426,7 +426,7 @@ def main(_):
     # Activate the same precision policy the trainer used so a bfloat16-trained
     # checkpoint is evaluated on the bfloat16 compute path (must run BEFORE the
     # model is built; the global policy persists for every checkpoint in a loop).
-    from tools.shared.runtime_setup import apply_eval_precision_policy
+    from common.runtime_setup import apply_eval_precision_policy
     apply_eval_precision_policy(config)
 
     task = YoloV8Task(config)

@@ -1,4 +1,4 @@
-"""Tests for tools/device/export_device_dlc.py — the on-device DLC export.
+"""Tests for utils/export/export_device_savedmodel.py — the on-device DLC export.
 
 The device DLC contract (from the on-device SNPE tooling, see docs/device_export.md):
     input  node  input_image  float32 [1, 672, 416, 3]  pixels in [0,255]
@@ -17,7 +17,7 @@ import tensorflow as tf
 
 from configs.model_config import ModelConfig
 from models.yolo_v8 import build_yolov8
-from tools.device import export_device_dlc as ed
+from utils.export import export_device_savedmodel as ed
 
 H, W = 672, 416
 N_ANCHORS = sum((H // s) * (W // s) for s in (8, 16, 32))   # 5733
@@ -184,26 +184,6 @@ def test_force_float32_policy_raises_on_leaked_bf16(monkeypatch):
                         lambda: tf.keras.mixed_precision.Policy("mixed_bfloat16"))
     with pytest.raises(RuntimeError, match="not 'float32'"):
         ed._force_float32_policy()
-
-
-def test_assert_close_tolerates_benign_accumulation():
-    """Benign float32 graph accumulation (tiny relative error) must PASS even when a
-    large fraction of elements exceed a strict rtol=1e-5 band."""
-    rng = np.random.RandomState(0)
-    ref = rng.uniform(-15, 15, size=[1, 100, 39]).astype(np.float32)
-    got = ref + rng.normal(0, 7e-4 * 15, size=ref.shape).astype(np.float32)  # ~7e-4 rel
-    # Most elements fall outside rtol=1e-5, but the relative magnitude is benign.
-    assert np.mean(~np.isclose(got, ref, rtol=1e-5, atol=1e-4)) > 0.5
-    ed._assert_close("cls", got, ref)                   # must not raise
-
-
-def test_assert_close_flags_real_divergence():
-    """An O(1) relative error (wrong layout / dropped weights / bf16 stems) must fail
-    loudly, naming the real causes."""
-    ref = np.ones([1, 100, 39], np.float32)
-    got = np.zeros_like(ref)                            # 100% relative error
-    with pytest.raises(AssertionError, match="REAL fault"):
-        ed._assert_close("cls", got, ref)
 
 
 def test_graph_is_snpe_compatible(exported):
