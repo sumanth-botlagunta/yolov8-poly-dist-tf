@@ -43,7 +43,9 @@ _orig = A.transform_boxes_polygons
 counts = Counter()
 sizes = Counter()
 cls_in = Counter()
-cls_kept = Counter()     # size bucket of boxes deleted ONLY by the old 0.5 rule
+cls_kept = Counter()
+expel = Counter()      # single-pass expelled boxes: border-distance x size
+PASS = {'single': False}     # size bucket of boxes deleted ONLY by the old 0.5 rule
 
 
 def _bucket(side_px):
@@ -79,6 +81,13 @@ def _instrumented(boxes, polygons, M, *args, **kw):
         counts['boxes_total'] += 1
         if not base[i]:
             counts['left_frame_entirely'] += 1
+            if PASS['single']:
+                d = min(b[i][0], b[i][1], 1 - b[i][2], 1 - b[i][3])
+                side = min(b[i][2] - b[i][0], b[i][3] - b[i][1]) * H
+                db = ('touching(<2%)' if d < 0.02 else '<5%' if d < 0.05
+                      else '<10%' if d < 0.10 else '>10% interior')
+                sb = '<=16px' if side <= 16 else '<=48px' if side <= 48 else '>48px'
+                expel[f'{db:>14s} | {sb}'] += 1
             continue
         if not k_area01[i]:
             counts['area<0.1 (all recipes drop)'] += 1
@@ -102,7 +111,8 @@ from data_pipeline import mosaic as mosaic_mod
 mosaic_mod.transform_boxes_polygons = _instrumented
 
 def run_pass(freq, label, per_class=False):
-    counts.clear(); sizes.clear(); cls_in.clear(); cls_kept.clear()
+    counts.clear(); sizes.clear(); cls_in.clear(); cls_kept.clear(); expel.clear()
+    PASS['single'] = (freq == 0.0)
     m = mosaic_mod.Mosaic(
     output_size=[H, W], mosaic_frequency=freq,
     mosaic_center=mc.mosaic_center,
@@ -184,6 +194,10 @@ def _report(per_class=False):
     for c, n_in in cls_in.items():
         kept = cls_kept.get(c, 0)
         rows.append((kept / max(n_in, 1), c, n_in, kept))
+    if expel:
+        print('expelled singles: original border-distance | size (why they left):')
+        for k, v in expel.most_common():
+            print(f'  {k:28s} {v:7d}')
     if rows:
         print('per-class retention into training targets (lowest first):')
         for r, c, n_in, kept in sorted(rows)[:15]:
@@ -191,10 +205,56 @@ def _report(per_class=False):
                   f'retention={100*r:5.1f}%')
 
 
+def border_census(n_img=3000):
+    tot = near = 0
+    for i, ex in enumerate(_build_ds().unbatch()):
+        if i >= n_img:
+            break
+        b = ex['groundtruth_boxes'].numpy()
+        b = b[(b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1]) > 0]
+        tot += len(b)
+        near += int(((b[:, 0] < 0.02) | (b[:, 1] < 0.02)
+                     | (b[:, 2] > 0.98) | (b[:, 3] > 0.98)).sum())
+    print(f'\n===== RAW DATA border census ({min(n_img, i + 1)} images) =====')
+    print(f'boxes touching border: {near}/{tot} = {100 * near / max(tot, 1):.1f}%')
+
+
+def dump_singles(n=int(os.environ.get('EP_DUMP', '0'))):
+    if not n:
+        return
+    import cv2
+    os.makedirs('census_dump', exist_ok=True)
+    m = mosaic_mod.Mosaic(output_size=[H, W], mosaic_frequency=0.0,
+                          single_scale_min=pc.aug_scale_min,
+                          single_scale_max=pc.aug_scale_max,
+                          single_translate=pc.aug_rand_translate,
+                          single_area_thresh=pc.area_thresh,
+                          group_size=mc.group_size,
+                          decodes_per_output=mc.decodes_per_output,
+                          random_flip=True)
+    fn = m.mosaic_fn(True)
+    out = fn(next(iter(_build_ds())))
+    imgs = out['image'].numpy()
+    bxs = out['groundtruth_boxes'].numpy()
+    for i in range(min(n, imgs.shape[0])):
+        img = cv2.cvtColor(imgs[i], cv2.COLOR_RGB2BGR)
+        for bb in bxs[i]:
+            if (bb[2] - bb[0]) * (bb[3] - bb[1]) <= 0:
+                continue
+            cv2.rectangle(img, (int(bb[1] * W), int(bb[0] * H)),
+                          (int(bb[3] * W), int(bb[2] * H)), (0, 255, 0), 2)
+        cv2.imwrite(f'census_dump/single_{i:02d}.png', img)
+    print(f'\nwrote {min(n, imgs.shape[0])} single-path images with surviving '
+          'boxes -> census_dump/ (objects visible WITHOUT a green box = label '
+          'lost; empty margins = content translated away)')
+
+
 print(f'config={CONFIG}\nsource={name}[{split}]  groups={N_GROUPS} '
       f'(x{mc.group_size} images)')
+border_census()
 run_pass(1.0, 'MOSAIC path')
 run_pass(0.0, 'SINGLE-image path (the one the old shared 0.5 hit vs legacy)', per_class=True)
+dump_singles()
 print('\nReading: "area 0.1-0.5" is the population the old config trained AS '
       'BACKGROUND while visible; "ar>=20" is what the old config trained as '
       'positives but legacy/new drop. Judge each path against its own table; '
