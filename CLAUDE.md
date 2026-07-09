@@ -175,8 +175,8 @@ configs/
 utils/                 # runnable CLIs
   eval.py              # standalone evaluation over one or many checkpoints
   export/              # model export + inference
-    export_saved_model.py         # host/server SavedModel (NMS baked in)
-    export_device_savedmodel.py   # on-device SNPE-shaped SavedModel
+    export_saved_model.py         # on-device SNPE-shaped SavedModel (raw heads, no NMS)
+    device_decode.py              # rebuild deploy detections from the device heads
     inference_saved_model.py      # folder inference: predictions JSON + visuals
   reports/             # validation-history extraction + reporting
     val_history.py       # inspect/extract/export val_history.jsonl (txt/json/csv/xlsx/parquet)

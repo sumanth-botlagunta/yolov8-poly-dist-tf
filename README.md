@@ -153,12 +153,12 @@ background), run `python -m utils.confusion_matrix --config <yaml> --checkpoint 
 
 ## Export
 
-Most deployments use the **on-device Qualcomm SNPE/DLC** export — it produces a SavedModel that
-is a drop-in replacement for the deployed device DLC (raw head outputs, `[0,255]` input,
-DFL-decoded boxes):
+Export produces the **on-device Qualcomm SNPE/DLC** SavedModel — a drop-in replacement for
+the deployed device DLC (raw per-head outputs, `[0,255]` input, DFL-decoded boxes, no
+in-graph NMS):
 
 ```bash
-python -m utils.export.export_device_savedmodel \
+python -m utils.export.export_saved_model \
     --config configs/experiments/yolo/yolov8_poly_dist.yaml \
     --checkpoint /path/to/run_dir/ckpt-<step> \
     --output_dir /path/to/export \
@@ -169,15 +169,9 @@ Then convert with the unchanged `snpe-tensorflow-to-dlc → snpe-dlc-quantize �
 pipeline. The full workflow and the box channel-order contract are in
 [docs/device_export.md](docs/device_export.md).
 
-For host/server serving instead, export a TF SavedModel with NMS baked in (optionally TFLite):
-
-```bash
-python -m utils.export.export_saved_model \
-    --config configs/experiments/yolo/yolov8_poly_dist.yaml \
-    --checkpoint /path/to/run_dir/ckpt-<step> \
-    --output_dir /path/to/saved_model \
-    [--tflite]
-```
+To run the exported SavedModel on a folder of images (it reconstructs deploy-style boxes,
+polygons, and distance from the flat heads), use `utils/export/inference_saved_model.py`
+(see [docs/guides/inference.md](docs/guides/inference.md)).
 
 ---
 
@@ -192,7 +186,7 @@ optimizers/     SGDTorch (momentum warmup) + EMA
 eval/           COCO / polygon / distance evaluators + per-category report + metric metadata
 train/          task, custom trainer loop, run_train entry point + supervisor
 common/         shared library: viz, ckpt loading, runtime setup, progress, run metadata
-utils/          CLIs: eval, confusion_matrix; export/ (savedmodel, device, inference); reports/; pipeline/
+utils/          CLIs: eval, confusion_matrix; export/ (savedmodel, decode, inference); reports/; pipeline/
 notebooks/      data-pipeline walkthrough, TensorBoard/run analysis, checkpoint inspection
 tests/          unit / integration / smoke
 ```

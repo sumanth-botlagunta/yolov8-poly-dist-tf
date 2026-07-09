@@ -9,8 +9,17 @@ images; per image it produces:
   * predictions — a COCO-style JSON of all detections (bbox + score + class +
     distance) in the chosen coordinate space.
 
+The exported SavedModel is the device-contract artifact (utils/export/
+export_saved_model.py): its signature has flat per-anchor outputs (box/cls/poly_*/
+dist) and takes ``input_image`` float32 pixels in [0, 255]. This tool reconstructs
+deploy-style detections from those flat heads (utils/export/device_decode.py —
+LTRB->anchor->NMS, sigmoid/softplus activations), so boxes, classes, scores,
+polygons, and distance are all available from the SavedModel path. An older
+post-processed SavedModel (with ``num_detections`` in its signature) is still
+consumed on its original path.
+
 --draw_on selects the output coordinate space (JSON bbox and drawn overlays):
-  * model    — the exported input size (e.g. 672 or 416), from the signature/config.
+  * model    — the exported input size (e.g. 672 or 672x416), from the signature/config.
   * original — mapped back to source-image pixels via the inverse letterbox. Default.
 
 Usage:
@@ -46,6 +55,10 @@ try:
                       'Output coordinate space: original image pixels or model input size.')
     flags.DEFINE_float('score', 0.25, 'Min detection confidence to keep/draw.')
     flags.DEFINE_integer('input_size', 0, 'Override square input size; 0 = read from config/SavedModel.')
+    flags.DEFINE_enum('device_box_order', 'yfirst', ['yfirst', 'xfirst'],
+                      "Box-channel order of the device SavedModel's box head: 'yfirst' "
+                      "([t,l,b,r], the export's legacy_box_order=True default) or 'xfirst' "
+                      "([l,t,r,b], a --legacy_box_order=False export).")
     flags.DEFINE_bool('no_poly', False, 'Disable polygon overlay.')
     flags.DEFINE_string('predictions_json', None, 'JSON path (default: <output_dir>/predictions.json).')
 except flags.DuplicateFlagError:
@@ -71,26 +84,26 @@ def _list_images(path: str):
     return sorted(files)
 
 
-def _letterbox(img_hw3_uint8, size, pad=114):
-    """Aspect-preserving resize to (size, size) with gray padding.
+def _letterbox(img_hw3_uint8, out_h, out_w, pad=114):
+    """Aspect-preserving resize to (out_h, out_w) with gray padding.
 
-    Returns (canvas01 float32 [size,size,3] in [0,1], r, top, left) where r/top/left
+    Returns (canvas01 float32 [out_h,out_w,3] in [0,1], r, top, left) where r/top/left
     are the scale and pad offsets needed to invert the letterbox.
     """
     import cv2
     h, w = img_hw3_uint8.shape[:2]
-    r = min(size / h, size / w)
+    r = min(out_h / h, out_w / w)
     nh, nw = int(round(h * r)), int(round(w * r))
     resized = cv2.resize(img_hw3_uint8, (nw, nh), interpolation=cv2.INTER_LINEAR)
-    canvas = np.full((size, size, 3), pad, np.uint8)
-    top, left = (size - nh) // 2, (size - nw) // 2
+    canvas = np.full((out_h, out_w, 3), pad, np.uint8)
+    top, left = (out_h - nh) // 2, (out_w - nw) // 2
     canvas[top:top + nh, left:left + nw] = resized
     return canvas.astype(np.float32) / 255.0, r, top, left
 
 
-def _inv_point(xn, yn, size, r, top, left):
+def _inv_point(xn, yn, out_w, out_h, r, top, left):
     """model-input-normalized (xn,yn) -> original-image pixel (x,y)."""
-    return (xn * size - left) / r, (yn * size - top) / r
+    return (xn * out_w - left) / r, (yn * out_h - top) / r
 
 
 def _per_image_preds(predictions, i):
@@ -150,21 +163,44 @@ def main(_):
     def _name(c):
         return class_names[int(c)] if class_names and int(c) < len(class_names) else str(int(c))
 
-    # --- load model (checkpoint or SavedModel) ---
+    # --- load model (checkpoint or SavedModel); establish run() + model (H, W) ---
     if FLAGS.saved_model:
+        from utils.export.device_decode import (
+            reconstruct_detections, is_device_contract, is_legacy_contract)
         loaded = tf.saved_model.load(FLAGS.saved_model)
         infer = loaded.signatures['serving_default']
-        size = FLAGS.input_size or int(infer.inputs[0].shape[1])
+        out_keys = list(infer.structured_outputs.keys())
+        sig_in = infer.inputs[0].shape
+        mh = FLAGS.input_size or int(sig_in[1])
+        mw = FLAGS.input_size or int(sig_in[2])
 
-        def run(batch):
-            return infer(tf.constant(batch))
+        if is_device_contract(out_keys):
+            legacy_order = (FLAGS.device_box_order == 'yfirst')
+            log.info("Device-contract SavedModel (box_order=%s) — reconstructing detections "
+                     "from flat heads.", FLAGS.device_box_order)
+
+            def run(batch):
+                dev = infer(input_image=tf.constant((batch * 255.0).astype(np.float32)))
+                npd = reconstruct_detections(dict(dev), mh, mw, legacy_box_order=legacy_order)
+                return {k: tf.constant(v) for k, v in npd.items()}
+        elif is_legacy_contract(out_keys):
+            log.info("Post-processed SavedModel (num_detections signature) — using its "
+                     "detections directly.")
+
+            def run(batch):
+                return infer(tf.constant(batch))
+        else:
+            raise SystemExit(
+                f"SavedModel signature outputs {sorted(out_keys)} match neither the device "
+                "contract (flat 'box'+'cls' heads) nor a post-processed deploy dict "
+                "(with 'num_detections'). Re-export with utils/export/export_saved_model.py.")
     else:
         if not FLAGS.config or not FLAGS.checkpoint:
             raise SystemExit("Provide --saved_model, or both --config and --checkpoint.")
         from configs.yaml_loader import load_config
         from train.task import normalize_images
         config = load_config(FLAGS.config)
-        size = FLAGS.input_size or int(config.task.model.input_size[0])
+        mh = mw = FLAGS.input_size or int(config.task.model.input_size[0])
         model = _load_checkpoint_model(config, FLAGS.checkpoint)
 
         def run(batch):
@@ -178,7 +214,7 @@ def main(_):
     want_vis = FLAGS.emit in ('visual', 'both')
     want_json = FLAGS.emit in ('json', 'both')
     log.info("Running on %d image(s) | model=%dx%d | emit=%s | draw_on=%s -> %s",
-             len(files), size, size, FLAGS.emit, FLAGS.draw_on, FLAGS.output_dir)
+             len(files), mh, mw, FLAGS.emit, FLAGS.draw_on, FLAGS.output_dir)
 
     coco_preds = []          # COCO-style detection list (for the JSON)
     pbar = Progress(total=len(files), desc='Infer', unit='img')
@@ -190,7 +226,7 @@ def main(_):
             continue
         H, W = bgr.shape[:2]
         rgb = bgr[..., ::-1]
-        img01, r, top, left = _letterbox(rgb, size)
+        img01, r, top, left = _letterbox(rgb, mh, mw)
         predictions = run(img01[None, ...])
         pred = _per_image_preds(predictions, 0)
         dist = predictions['distance'][0].numpy() if 'distance' in predictions else None
@@ -203,12 +239,12 @@ def main(_):
             for k in keep:
                 y1, x1, y2, x2 = [float(v) for v in pred['bbox'][k]]   # yxyx norm to model
                 if FLAGS.draw_on == 'original':
-                    px1, py1 = _inv_point(x1, y1, size, r, top, left)
-                    px2, py2 = _inv_point(x2, y2, size, r, top, left)
+                    px1, py1 = _inv_point(x1, y1, mw, mh, r, top, left)
+                    px2, py2 = _inv_point(x2, y2, mw, mh, r, top, left)
                     px1, px2 = sorted((max(0, min(W, px1)), max(0, min(W, px2))))
                     py1, py2 = sorted((max(0, min(H, py1)), max(0, min(H, py2))))
                 else:
-                    px1, py1, px2, py2 = x1 * size, y1 * size, x2 * size, y2 * size
+                    px1, py1, px2, py2 = x1 * mw, y1 * mh, x2 * mw, y2 * mh
                 rec = {
                     'image_id': img_id, 'file_name': os.path.basename(f),
                     'category_id': int(pred['classes'][k]),
@@ -231,8 +267,8 @@ def main(_):
                 out_img = bgr.copy()
                 for k in keep:
                     y1, x1, y2, x2 = [float(v) for v in pred['bbox'][k]]
-                    p1 = tuple(int(round(v)) for v in _inv_point(x1, y1, size, r, top, left))
-                    p2 = tuple(int(round(v)) for v in _inv_point(x2, y2, size, r, top, left))
+                    p1 = tuple(int(round(v)) for v in _inv_point(x1, y1, mw, mh, r, top, left))
+                    p2 = tuple(int(round(v)) for v in _inv_point(x2, y2, mw, mh, r, top, left))
                     cv2.rectangle(out_img, p1, p2, (0, 200, 0), 2)
                     label = f"{_name(pred['classes'][k])} {pred['confidence'][k]:.2f}"
                     if dist is not None:
@@ -244,7 +280,7 @@ def main(_):
                         verts = _poly_vertices_norm(pred['polygons'][k], cxn, cyn, _POLY_CONF)
                         if len(verts) >= 3:
                             opts = np.array([[int(round(a)), int(round(b))]
-                                             for a, b in (_inv_point(vx, vy, size, r, top, left)
+                                             for a, b in (_inv_point(vx, vy, mw, mh, r, top, left)
                                                           for vx, vy in verts)], np.int32)
                             cv2.polylines(out_img, [opts.reshape(-1, 1, 2)], True,
                                           (0, 220, 100), 2, cv2.LINE_AA)

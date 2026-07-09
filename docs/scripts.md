@@ -89,6 +89,9 @@ predictions JSON and/or annotated images, in the model-input or original-image c
 - `--output_dir` — where annotated PNGs + `predictions.json` are written. `--predictions_json` overrides the JSON path.
 - `--score` — min confidence to keep/draw (default 0.25). `--no_poly` — boxes only.
 - `--input_size` — override the square input size (0 = read from config/SavedModel).
+- `--device_box_order` — box-channel order of a device-contract SavedModel: `yfirst`
+  (the export default) | `xfirst` (a `--legacy_box_order=False` export). Detections are
+  reconstructed from the flat device heads (boxes, polygons, distance).
 ```bash
 python -m utils.export.inference_saved_model --saved_model /export/saved_model --images /imgs \
     --output_dir /tmp/out --emit both --draw_on original
@@ -96,8 +99,9 @@ python -m utils.export.inference_saved_model --saved_model /export/saved_model -
 
 ## Export
 
-### `python -m utils.export.export_device_savedmodel` — on-device SNPE/DLC export (most common)
-SavedModel that drop-in-replaces the deployed device DLC. See [device_export.md](device_export.md).
+### `python -m utils.export.export_saved_model` — on-device SNPE/DLC export
+The single exporter: a SavedModel that drop-in-replaces the deployed device DLC (raw per-head
+outputs, `[0,255]` input, DFL-decoded boxes, no in-graph NMS). See [device_export.md](device_export.md).
 - `--config` (req), `--checkpoint` (req), `--output_dir` (req).
 - `--input_size` — `H,W` for the device (e.g. `672,416`).
 - `--normalize` (default on) — bake `/255` so the graph accepts raw `[0,255]` input.
@@ -105,15 +109,7 @@ SavedModel that drop-in-replaces the deployed device DLC. See [device_export.md]
   on-device decoder (y-first); set `False` only if you decode with this repo.
 - `--debug_taps` — emit intermediate tap nodes for SavedModel-vs-DLC bisection.
 ```bash
-python -m utils.export.export_device_savedmodel --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000 --output_dir /export --input_size 672,416
-```
-
-### `python -m utils.export.export_saved_model` — host/server SavedModel
-Deploy SavedModel with NMS baked in; expects `[0,1]` input.
-- `--config` (req), `--checkpoint` (req), `--output_dir` (req).
-- `--tflite` — also run the TFLite converter and write `model.tflite`.
-```bash
-python -m utils.export.export_saved_model --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000 --output_dir /export
+python -m utils.export.export_saved_model --config configs/experiments/yolo/yolov8_poly_dist.yaml --checkpoint /run/ckpt-100000 --output_dir /export --input_size 672,416
 ```
 
 ## Pipeline

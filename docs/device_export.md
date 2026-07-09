@@ -1,12 +1,13 @@
 # On-device export — Qualcomm SNPE DLC (drop-in replacement)
 
-`utils/export/export_device_savedmodel.py` exports a trained checkpoint to a TensorFlow SavedModel
+`utils/export/export_saved_model.py` exports a trained checkpoint to a TensorFlow SavedModel
 laid out as a **drop-in replacement for the deployed on-device DLC**. The existing SNPE
 conversion → quantization → net-run → result-extraction pipeline keeps working
 **unchanged**; only the SavedModel path changes.
 
-This is distinct from `utils/export/export_saved_model.py`, which bakes NMS into the graph and
-emits the post-processed deploy dict for `[0,1]`-normalized input (server/host serving).
+This is the only exporter. It emits raw per-head tensors (no in-graph NMS) for raw
+`[0,255]` input; host tools reconstruct deploy-style detections from those heads via
+`utils/export/device_decode.py` (see [guides/inference.md](guides/inference.md)).
 
 ## The device contract
 
@@ -82,7 +83,7 @@ on-device extractor expects.
 
 ```bash
 # 1. Export the SavedModel (prefers EMA weights)
-python -m utils.export.export_device_savedmodel \
+python -m utils.export.export_saved_model \
     --config     configs/experiments/yolo/yolov8_poly_dist.yaml \
     --checkpoint /path/to/ckpts/epochN \
     --output_dir /path/to/epochN_export/saved_model \
@@ -141,4 +142,4 @@ standard SNPE-supported: `Conv2D`, `BiasAdd`, `Relu`, `MaxPool`,
 `ResizeNearestNeighbor`, `Mul`/`Sub`/`Rsqrt`/`AddV2` (folded BatchNorm constants),
 `ConcatV2`, `Reshape`, `Squeeze`, `RealDiv` (the baked `/255`).
 
-Tests: `tests/test_export_device_savedmodel.py`.
+Tests: `tests/test_export_saved_model.py`.

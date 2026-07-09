@@ -55,7 +55,7 @@ Applied in `train/run_train.py:_apply_runtime_config` before any TF op runs.
 | `angle_step` | `15` | Polygon angular bin size; `output_poly_size` must equal `360 // angle_step`. |
 | `output_poly_size` | `24` | Polygon vertices/bins. **Invariant:** `== 360 // angle_step`. |
 | `with_polygons` / `with_distance` | `true` | Toggle the polygon / distance heads (the three tiers). |
-| `deploy` | `true` | `true` bakes NMS into the forward pass (eval/export); the trainer sets it `false` for raw head outputs. |
+| `deploy` | `true` | `true` runs NMS in the forward pass (eval); the trainer and the SNPE export set it `false` for raw head outputs. |
 | `backbone` | `cspdarknetv8s` | **model_id takes precedence** over `depth_scale`/`width_scale` (both 1.0 in YAML but the model is `-S`). |
 | `detection_generator` | — | `max_boxes=300`, `nms_thresh=0.65`, `score_thresh=0.05`, distance range `[0.5, 10.0]`. |
 | `detection_generator.nms_class_mode` | `per_class` | NMS suppression scope: `per_class` runs NMS independently per class; `agnostic` runs ONE NMS over all boxes (suppresses cross-class duplicates at the same location). Eval-time post-processing only. |

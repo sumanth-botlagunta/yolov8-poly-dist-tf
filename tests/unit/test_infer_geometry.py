@@ -6,23 +6,25 @@ import numpy as np
 from utils.export import inference_saved_model as infer
 
 
-def test_letterbox_inverse_round_trips_nonsquare():
-    H, W, size = 480, 640, 672
-    _, r, top, left = infer._letterbox(np.zeros((H, W, 3), np.uint8), size)
+def test_letterbox_inverse_round_trips_square_target():
+    H, W, mh, mw = 480, 640, 672, 672
+    _, r, top, left = infer._letterbox(np.zeros((H, W, 3), np.uint8), mh, mw)
     for ox, oy in [(0, 0), (200, 100), (639, 479), (320, 240)]:
-        xn = (ox * r + left) / size       # original px -> model normalized
-        yn = (oy * r + top) / size
-        bx, by = infer._inv_point(xn, yn, size, r, top, left)
+        xn = (ox * r + left) / mw          # original px -> model normalized
+        yn = (oy * r + top) / mh
+        bx, by = infer._inv_point(xn, yn, mw, mh, r, top, left)
         assert abs(bx - ox) < 1e-3 and abs(by - oy) < 1e-3
 
 
-def test_letterbox_inverse_round_trips_portrait():
-    H, W, size = 800, 600, 416
-    _, r, top, left = infer._letterbox(np.zeros((H, W, 3), np.uint8), size)
-    xn = (250 * r + left) / size
-    yn = (700 * r + top) / size
-    bx, by = infer._inv_point(xn, yn, size, r, top, left)
-    assert abs(bx - 250) < 1e-3 and abs(by - 700) < 1e-3
+def test_letterbox_inverse_round_trips_rectangular_target():
+    # Rectangular model input (the device export size), portrait source image.
+    H, W, mh, mw = 800, 600, 672, 416
+    _, r, top, left = infer._letterbox(np.zeros((H, W, 3), np.uint8), mh, mw)
+    for ox, oy in [(0, 0), (250, 700), (599, 799), (300, 400)]:
+        xn = (ox * r + left) / mw
+        yn = (oy * r + top) / mh
+        bx, by = infer._inv_point(xn, yn, mw, mh, r, top, left)
+        assert abs(bx - ox) < 1e-3 and abs(by - oy) < 1e-3
 
 
 def test_poly_decode_respects_conf_gate():

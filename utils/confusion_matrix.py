@@ -7,6 +7,13 @@ checkpoint (with its config + EMA weights) OR an exported SavedModel; the
 validation dataset is always built from the config, so ``--config`` is required
 in both modes.
 
+The exported SavedModel is the device-contract artifact (utils/export/
+export_saved_model.py): its signature exposes flat per-anchor heads (box/cls/...)
+and takes ``input_image`` pixels in [0, 255]. This tool reconstructs the boxes /
+classes / scores it needs from those heads (utils/export/device_decode.py). An
+older post-processed SavedModel (with ``num_detections`` in its signature) is still
+consumed directly.
+
 Matrix orientation is ``matrix[predicted, ground_truth]``:
   * a matched detection increments ``matrix[pred_class, gt_class]`` (diagonal =
     correct class, off-diagonal = misclassification),
@@ -353,11 +360,36 @@ def _run(FLAGS) -> None:
 
     # Model source: checkpoint (build + restore EMA) or exported SavedModel.
     if FLAGS.saved_model:
+        from utils.export.device_decode import (
+            reconstruct_detections, is_device_contract, is_legacy_contract)
         loaded = tf.saved_model.load(FLAGS.saved_model)
         infer = loaded.signatures['serving_default']
+        out_keys = list(infer.structured_outputs.keys())
+        sig_in = infer.inputs[0].shape
 
-        def predict(images):
-            return infer(normalize_images(images))
+        if is_device_contract(out_keys):
+            mh, mw = int(sig_in[1]), int(sig_in[2])
+            legacy_order = (FLAGS.device_box_order == 'yfirst')
+            log.info('Device-contract SavedModel (box_order=%s) — reconstructing '
+                     'detections from flat heads.', FLAGS.device_box_order)
+
+            def predict(images):
+                # The device SavedModel takes one image at a time ([1, H, W, 3]) with
+                # pixels in [0, 255]; reconstruct each and stack back to a batch.
+                imgs = tf.cast(images, tf.float32)
+                per = [reconstruct_detections(dict(infer(input_image=imgs[i:i + 1])),
+                                              mh, mw, legacy_box_order=legacy_order)
+                       for i in range(int(imgs.shape[0]))]
+                return {k: tf.constant(np.concatenate([p[k] for p in per], axis=0))
+                        for k in ('bbox', 'classes', 'confidence', 'num_detections')}
+        elif is_legacy_contract(out_keys):
+            def predict(images):
+                return infer(normalize_images(images))
+        else:
+            raise SystemExit(
+                f'SavedModel signature outputs {sorted(out_keys)} match neither the device '
+                "contract (flat 'box'+'cls' heads) nor a post-processed deploy dict "
+                "(with 'num_detections'). Re-export with utils/export/export_saved_model.py.")
     else:
         model = _load_checkpoint_model(config, FLAGS.checkpoint)
 
@@ -429,6 +461,10 @@ def _define_flags():
         flags.DEFINE_string('checkpoint', None, 'Checkpoint path prefix.')
         flags.DEFINE_string('saved_model', None, 'Exported SavedModel dir.')
         flags.DEFINE_string('split', 'val', "Eval split: 'val', 'test', or 'train'.")
+        flags.DEFINE_enum('device_box_order', 'yfirst', ['yfirst', 'xfirst'],
+                          "Box-channel order of a device-contract SavedModel's box head: "
+                          "'yfirst' ([t,l,b,r], the export's legacy_box_order=True default) "
+                          "or 'xfirst' ([l,t,r,b], a --legacy_box_order=False export).")
         flags.DEFINE_float('conf', 0.25, 'Min detection confidence, applied before matching.')
         flags.DEFINE_float('iou', 0.5, 'IoU threshold for a positive match.')
         flags.DEFINE_string('output_csv', None, 'Write the raw integer matrix (CSV) here.')

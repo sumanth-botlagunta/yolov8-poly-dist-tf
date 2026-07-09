@@ -16,7 +16,7 @@ This folder is **committed** so the whole team gets the same Claude Code setup
 Run any of these in Claude Code:
 - `/train` — launch a training run
 - `/eval` — standalone evaluation on a checkpoint
-- `/export` — export to SavedModel (+ optional TFLite)
+- `/export` — export the on-device SNPE-DLC SavedModel
 - `/benchmark` — profile data-pipeline throughput
 - `/test` — run the pytest suite
 - `/check-env` — verify the training environment + dataset availability

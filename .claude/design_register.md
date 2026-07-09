@@ -110,26 +110,18 @@ So the knob doesn't silently lie (its earlier behavior: `use_acsl: true` trained
 YAMLs set `use_acsl: false`, so this affects no current run. When ACSL is implemented, replace the
 raise with the weighting and update this entry.
 
-## 12. Exported SavedModel expects pre-normalized `[0,1]` input — no `/255` baked in
+## 12. The single exporter bakes `/255` for the on-device DLC contract
 
-`utils/export/export_saved_model.py:serving_fn` accepts `float32 [0,1]` images and passes them straight to
-the model; the model has no internal `/255` layer (`models/yolo_v8.py`). Normalization is done by
-`train.task.normalize_images` (uint8 `[0,255]` → float32 `[0,1]`) on every in-repo call path
-(`validation_step`, `utils/eval.py`), and the serving contract mirrors
-that. Two reasons: (1) baking `/255` into the graph would double-normalize any caller that already
-follows the documented `[0,1]` contract (e.g. a pipeline reusing `normalize_images`), flooring all
-inputs near 0; (2) keeping the contract identical to eval avoids a train/serve skew. The TensorSpec is
-named `images_normalized_0_1`, documented in the module docstring's *Input Schema* and at the
-`serving_fn` decorator. A consumer feeding raw uint8/`[0,255]` frames must divide by 255 first.
-
-**The on-device DLC export is the exception — it bakes `/255` on purpose.**
-`utils/export/export_device_savedmodel.py` is a separate path that reproduces the legacy Qualcomm SNPE DLC
+`utils/export/export_saved_model.py` is the only exporter, and it reproduces the Qualcomm SNPE DLC
 contract (see [device_export.md](device_export.md)). The on-device raw-image generator feeds raw
-`[0,255]` float32 (`IMAGE_NROM_FLAG=False`), so that graph divides by 255 internally (`--normalize`,
-default on) to reach the `[0,1]` the model trained on. It is a different tool for a different consumer:
-it emits raw head logits as six concatenated nodes (`box/cls/poly_angle/poly_dist/poly_conf/dist`,
-`[1, N, C]`, levels 3→4→5) instead of the deploy/NMS dict, and runs in float32 (not the training
-`mixed_bfloat16`) for a clean SNPE graph.
+`[0,255]` float32 (`IMAGE_NROM_FLAG=False`), so the exported graph divides by 255 internally
+(`--normalize`, default on) to reach the `[0,1]` the model trained on — the model itself has no
+internal `/255` layer (`models/yolo_v8.py`); in-repo call paths (`validation_step`, `utils/eval.py`)
+normalize via `train.task.normalize_images`. The export emits raw head logits as concatenated nodes
+(`box/cls/poly_angle/poly_dist/poly_conf/dist`, `[1, N, C]`, levels 3→4→5) instead of a deploy/NMS
+dict, and runs in float32 (not the training `mixed_bfloat16`) for a clean SNPE graph. Host tools that
+want deploy-style detections from that SavedModel rebuild them from the flat heads via
+`utils/export/device_decode.py`.
 
 ## 13. `jitter` config knob is reserved (parsed, defaulted to 0.0, not wired)
 

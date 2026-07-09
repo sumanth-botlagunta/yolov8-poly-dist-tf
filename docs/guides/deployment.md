@@ -8,14 +8,14 @@ channel order, baked `/255`, float32 graph, BatchNorm fold), see
 ## Overview of the pipeline
 
 ```
-checkpoint ──export_device_savedmodel──▶ SavedModel ──snpe-tensorflow-to-dlc──▶ .dlc
+checkpoint ──export_saved_model──▶ SavedModel ──snpe-tensorflow-to-dlc──▶ .dlc
    ──snpe-dlc-quantize──▶ quantized .dlc ──snpe-net-run──▶ raw outputs
 ```
 
 ## 1. Export the device SavedModel
 
 ```bash
-python -m utils.export.export_device_savedmodel \
+python -m utils.export.export_saved_model \
     --config     configs/experiments/yolo/yolov8_poly_dist.yaml \
     --checkpoint /path/to/run_dir/ckpt-<step> \
     --output_dir /path/to/export/saved_model \
@@ -62,4 +62,5 @@ on-device/DLC order and the export default),
 
 ## Related
 - Reference: [device_export.md](../device_export.md) · [scripts.md](../scripts.md) (the `utils.export.*` table)
-- For host/server serving instead of device, see `utils/export/export_saved_model.py` ([scripts.md](../scripts.md)).
+- To run the exported SavedModel on the host (reconstructing boxes/polygons/distance from the
+  flat device heads), see `utils/export/inference_saved_model.py` ([inference.md](inference.md)).

@@ -21,6 +21,10 @@ python -m utils.export.inference_saved_model \
 `--images` accepts a single file or a directory (jpg/jpeg/png/bmp/webp). A progress bar shows
 throughput.
 
+The exported SavedModel is the device-contract artifact (raw per-head outputs, `[0,255]` input);
+this tool reconstructs deploy-style boxes, polygons, and distance from those flat heads
+(`utils/export/device_decode.py`), so the SavedModel and checkpoint paths produce the same outputs.
+
 ## What to emit — `--emit`
 
 | `--emit` | Produces |
@@ -46,6 +50,8 @@ original full-resolution image.
 - `--score` — minimum confidence to keep/draw (default 0.25).
 - `--no_poly` — boxes only (skip polygon contours).
 - `--input_size` — override the square input size (0 = read from config/SavedModel).
+- `--device_box_order` — box-channel order of a device-contract SavedModel: `yfirst` (the export
+  default) or `xfirst` (a `--legacy_box_order=False` export). Mismatch transposes every box.
 
 ## Example: deployable predictions on original-size images
 
