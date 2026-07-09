@@ -1,40 +1,26 @@
 """Run a trained model (checkpoint or exported SavedModel) on a folder of images.
 
-Point it at a checkpoint (+config) or an exported SavedModel and a file/folder of
-images; it produces, per image, any of:
+Point it at a checkpoint (+config) or an exported SavedModel plus a file/folder of
+images; per image it produces:
 
-  * **visual** — an annotated image (boxes + polygons + class/score, distance when the
-    model has a distance head), drawn either on the **model input** (the exact 672² /
-    416² geometry the network sees) or back on the **original** full-resolution image.
-  * **predictions** — a COCO-style JSON of all detections (bbox + score + class +
-    distance), in whichever coordinate space you choose.
+  * visual — an annotated image (boxes + polygons + class/score, plus distance when
+    the model has a distance head), drawn on the model-input geometry or back on the
+    original full-resolution image.
+  * predictions — a COCO-style JSON of all detections (bbox + score + class +
+    distance) in the chosen coordinate space.
 
-Output size (``--draw_on`` / the JSON ``bbox`` space):
-  * ``model``    — the exported input size (e.g. 672 or 416), read from the SavedModel
-                   signature / config.
-  * ``original`` — mapped back to the source image pixels (inverse letterbox). Default.
+--draw_on selects the output coordinate space (JSON bbox and drawn overlays):
+  * model    — the exported input size (e.g. 672 or 416), from the signature/config.
+  * original — mapped back to source-image pixels via the inverse letterbox. Default.
 
 Usage:
-    # SavedModel -> annotated images + predictions JSON, on the original-size images:
     python utils/export/inference_saved_model.py --saved_model /export/saved_model \
         --images /path/to/images_dir --output_dir /tmp/infer_out \
         --emit both --draw_on original
 
-    # From a training checkpoint (EMA weights preferred), visuals at model size:
-    python utils/export/inference_saved_model.py --config configs/experiments/yolo/yolov8_poly_dist.yaml \
+    python utils/export/inference_saved_model.py \
+        --config configs/experiments/yolo/yolov8_poly_dist.yaml \
         --checkpoint /run/ckpt-100000 --images /path/to/imgs --emit visual --draw_on model
-
-Arguments:
-    --saved_model           exported SavedModel dir (alternative to --checkpoint).
-    --config / --checkpoint experiment YAML + checkpoint prefix (the other source).
-    --images (req)          an image file or a directory of images (jpg/png/bmp/webp).
-    --output_dir            where annotated images / predictions.json are written.
-    --emit                  visual | json | both (default: both).
-    --draw_on               original | model — output coordinate space (default: original).
-    --score                 min detection confidence to keep/draw (default: 0.25).
-    --input_size            override the square model input; 0 = read from config/SavedModel.
-    --no_poly               disable polygon overlay.
-    --predictions_json      path for the JSON (default: <output_dir>/predictions.json).
 """
 
 import glob

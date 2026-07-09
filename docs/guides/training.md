@@ -89,10 +89,12 @@ all true by construction. See [training.md](../training.md#epoch-semantics).
   resolved TFDS dataset versions, and the environment). Together they make every checkpoint
   reproducible: `git checkout <commit>`, use `params.yaml`, those dataset versions.
 
-## 6. Close-mosaic (optional, sharpens final accuracy)
+## 6. Close-mosaic (optional knob)
 
-Set `parser.mosaic.close_mosaic_epochs: N` to disable mosaic + mixup for the final N epochs — the
-trainer rebuilds a mosaic-free stream at epoch `total - N` (the Ultralytics trick). Default 0 (off).
+`parser.mosaic.close_mosaic_epochs: N` disables mosaic + mixup for the final N epochs — the
+trainer rebuilds a mosaic-free stream at epoch `total - N` (the Ultralytics close_mosaic knob).
+Default 0 (off). It is a training-semantics change, so treat it as an experiment on the tier
+config, not a default to turn on.
 
 ## 7. Common pitfalls
 

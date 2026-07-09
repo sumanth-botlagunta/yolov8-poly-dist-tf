@@ -48,10 +48,6 @@ class DistanceEvaluator:
         self._pred: list = []
         self._gt:   list = []
 
-    # ------------------------------------------------------------------
-    # Accumulation
-    # ------------------------------------------------------------------
-
     def update(self, pred_log_dist: np.ndarray, gt_log_dist: np.ndarray) -> None:
         """Accumulate one batch of matched prediction/GT pairs.
 
@@ -64,17 +60,13 @@ class DistanceEvaluator:
         pred = np.asarray(pred_log_dist, dtype=np.float32).ravel()
         gt   = np.asarray(gt_log_dist,   dtype=np.float32).ravel()
 
-        # Drop sentinels AND any non-finite pred/gt: a single nan/inf prediction
+        # Drop sentinels and any non-finite pred/gt: a single nan/inf prediction
         # (e.g. from an upstream log(0)) would otherwise poison every aggregate
         # (mean/rmse → nan) and break JSON serialization of the metrics.
         valid = (gt > INVALID_SENTINEL) & np.isfinite(pred) & np.isfinite(gt)
         if valid.any():
             self._pred.append(pred[valid])
             self._gt.append(gt[valid])
-
-    # ------------------------------------------------------------------
-    # Evaluation
-    # ------------------------------------------------------------------
 
     def evaluate(self) -> Dict[str, float]:
         """Compute distance metrics in meter space.

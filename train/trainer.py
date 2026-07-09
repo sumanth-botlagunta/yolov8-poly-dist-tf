@@ -1,14 +1,8 @@
 """Custom training loop for YOLOv8.
 
-Does NOT use orbit.Controller. Manages:
-    - Epoch + step loop with tf.function-wrapped inner step.
-    - EMA weight swap around validation.
-    - tf.train.CheckpointManager for periodic saves and auto-resume.
-    - TensorBoard logging via tf.summary.
-    - Auto-resume: on startup checks output_dir for latest checkpoint.
-
-Classes:
-    YoloV8Trainer: Coordinates YoloV8Task with data, checkpoints, and logging.
+YoloV8Trainer drives the epoch/step loop with a tf.function-wrapped inner step,
+swaps in EMA weights around validation, manages periodic and best checkpoints
+with auto-resume, and writes TensorBoard summaries.
 """
 
 import dataclasses
@@ -72,11 +66,10 @@ class YoloV8Trainer:
         self._strategy    = strategy or tf.distribute.MirroredStrategy()
         self._resume_from = resume_from
 
-        # Multi-replica (MirroredStrategy) training is supported: the train step is
-        # dispatched via strategy.run, the loss normalizers (num_objs,
-        # target_scores_sum) are all-reduced to global counts, and SGDTorch
-        # all-reduces gradients across replicas. The single-replica path is a no-op
-        # for all of those, so single-device training is numerically unchanged.
+        # Multi-replica (MirroredStrategy): the train step is dispatched via
+        # strategy.run, the loss normalizers (num_objs, target_scores_sum) are
+        # all-reduced to global counts, and SGDTorch all-reduces gradients. The
+        # single-replica path is a no-op for all of those.
         self._num_replicas = self._strategy.num_replicas_in_sync
         self._distributed  = self._num_replicas > 1
         if self._distributed:
@@ -116,14 +109,12 @@ class YoloV8Trainer:
     def train(self, total_epochs: int) -> None:
         """Run the full training loop.
 
-        Epoch semantics: when ``steps_per_loop > 0`` (the normal case — derived
-        as train_total_examples // batch), every epoch is EXACTLY that many
-        steps, drawn from one persistent iterator over the infinite (repeated)
-        training stream. One epoch therefore equals one nominal pass over the
-        training set, and the steps/epoch, total-step, LR-schedule, and ETA
-        numbers reported at startup are the numbers that actually happen.
-        When ``steps_per_loop == 0`` (synthetic/test datasets with no example
-        count configured) the loop falls back to data-driven epochs.
+        Epoch semantics: when ``steps_per_loop > 0`` (the normal case, derived as
+        train_total_examples // batch) every epoch runs exactly that many steps
+        from one persistent iterator over the infinite (repeated) training stream,
+        so one epoch equals one nominal data pass and the startup step/LR/ETA
+        numbers hold by construction. When ``steps_per_loop == 0`` (synthetic/test
+        datasets with no example count) the loop falls back to data-driven epochs.
         """
         self._setup()
         start_epoch = self._auto_resume(self._resume_from)
@@ -138,7 +129,7 @@ class YoloV8Trainer:
         if spl > 0 and self._train_iter is None:
             self._train_iter = iter(self._train_ds)
 
-        # Save a pre-training checkpoint so epoch 1 crashes always have a restore point.
+        # Pre-training checkpoint so an epoch-1 crash still has a restore point.
         if start_epoch == 0:
             self._save_checkpoint()
             log.info("Initial checkpoint saved at step 0.")
@@ -162,12 +153,11 @@ class YoloV8Trainer:
             _aug_logged  = False
 
             if spl > 0:
-                # Fixed-count epoch. After a mid-epoch resume global_step is not
-                # a multiple of steps_per_loop; run only the remainder so epoch
-                # boundaries stay at exact multiples (epoch k ends at k*spl).
-                # 0 = this epoch trained fully but its validation never
-                # completed (crash during validation) — fall through with no
-                # training steps so the validation below runs for it now.
+                # Fixed-count epoch. After a mid-epoch resume global_step is not a
+                # multiple of steps_per_loop, so run only the remainder and epoch k
+                # still ends at k*spl. A return of 0 means this epoch trained fully
+                # but crashed during validation: fall through with no training
+                # steps so the validation below runs for it.
                 steps_this_epoch = self._steps_for_epoch(python_step, spl, epoch)
                 if steps_this_epoch == 0:
                     log.info(
@@ -179,7 +169,7 @@ class YoloV8Trainer:
                         try:
                             yield next(self._train_iter)
                         except StopIteration:
-                            # Only possible if the training stream is finite
+                            # Only reachable if the training stream is finite
                             # (misconfiguration — the detection stream repeats).
                             log.warning(
                                 "Training dataset exhausted mid-epoch at "
@@ -193,10 +183,10 @@ class YoloV8Trainer:
             else:
                 epoch_inputs = self._train_ds
 
-            # Timing: the `for` pulls the next batch from the iterator BEFORE the
-            # body runs, so (body start − previous body end) is the time spent
-            # waiting on the input pipeline. Reporting only the compute time
-            # would overstate throughput badly whenever training is input-bound.
+            # The `for` pulls the next batch before the body runs, so
+            # (body start − previous body end) is the input-pipeline wait.
+            # Reporting compute time alone would overstate throughput when
+            # training is input-bound.
             prev_body_end = time.time()
             pbar = None   # created lazily on the first step (needs the loss keys)
             for inputs in epoch_inputs:
@@ -217,7 +207,7 @@ class YoloV8Trainer:
                     self._log_aug_images(aug_inputs, python_step)
                     _aug_logged = True
 
-                # Sync the step's losses to host ONCE and reuse for both the epoch
+                # Sync the step's losses to host once, reused for both the epoch
                 # accumulator and the progress bar (avoids a second device→host copy).
                 step_vals = {k: float(v) for k, v in step_losses.items()}
                 for k, v in step_vals.items():
@@ -258,15 +248,15 @@ class YoloV8Trainer:
                         pbar.close()
                     if python_step != last_saved_step:
                         self._sync_completed_epochs(python_step, spl)
-                        # Interruption save goes to resume/ — keeps the main
-                        # checkpoint directory a clean epoch-boundary sequence.
+                        # Interruption save goes to resume/ so the main directory
+                        # stays a clean epoch-boundary sequence.
                         self._save_resume_checkpoint()
                         last_saved_step = python_step
                     log.info("Graceful shutdown at step %d (epoch %d interrupted).",
                              python_step, epoch + 1)
                     return
 
-                # Reset AFTER logging/checkpointing so their cost is not
+                # Reset after logging/checkpointing so their cost is not
                 # attributed to the next step's data wait.
                 prev_body_end = time.time()
 
@@ -275,8 +265,8 @@ class YoloV8Trainer:
 
             # ---- validation (EMA weights) ----
             # try/finally so a failure inside validation can never leave the EMA
-            # (shadow) weights swapped in as the live weights — that state would
-            # silently corrupt subsequent training and any checkpoint saved after.
+            # shadow weights swapped in as the live weights, which would corrupt
+            # subsequent training and any checkpoint saved after.
             val_start = time.time()
             self._optimizer.swap_in(self._model)
             try:
@@ -288,19 +278,18 @@ class YoloV8Trainer:
             # ---- best checkpoint ----
             best_metric_name = trainer_cfg.best_checkpoint_eval_metric
             if best_metric_name not in val_metrics:
-                # Missing key (typo, or the metric's head is disabled) would silently
-                # default to 0.0 and never save a best checkpoint — surface it loudly.
+                # A missing key (typo, or the metric's head is disabled) would
+                # default to 0.0 and never save a best checkpoint; surface it.
                 log.warning(
                     "best_checkpoint_eval_metric '%s' not in validation metrics %s; "
                     "no best checkpoint will be saved this epoch.",
                     best_metric_name, sorted(val_metrics.keys()),
                 )
             metric_val = val_metrics.get(best_metric_name, 0.0)
-            # Honor best_checkpoint_metric_comp: 'higher' (default) keeps the max,
-            # 'lower' keeps the min (e.g. tracking an error metric). _best_metric
-            # stores the value SIGNED so the stored comparison is always "greater
-            # is better": negate under 'lower'. Previously this knob was parsed
-            # but ignored (comparison hardcoded to >).
+            # best_checkpoint_metric_comp: 'higher' (default) keeps the max,
+            # 'lower' keeps the min (e.g. an error metric). _best_metric stores the
+            # value signed so the comparison is always "greater is better" (negated
+            # under 'lower').
             comp = getattr(self._config.trainer, 'best_checkpoint_metric_comp',
                            'higher')
             signed = -metric_val if comp == 'lower' else metric_val
@@ -308,22 +297,23 @@ class YoloV8Trainer:
                 self._best_metric.assign(signed)
                 self._save_best_checkpoint(epoch=epoch + 1, step=python_step)
 
-            # Mark this epoch as fully complete BEFORE the epoch-end checkpoint so
-            # that on resume we correctly skip this epoch and start from the next one.
+            # Mark the epoch complete before the epoch-end checkpoint so a resume
+            # skips it and starts from the next one.
             self._epoch_var.assign(epoch + 1)
 
-            # Epoch-end checkpoint — ALWAYS written, even when the in-loop
-            # periodic save already wrote this step: that pre-validation save
-            # recorded the epoch as not-yet-validated (see _sync_completed_epochs),
-            # and this save re-writes the same checkpoint number with validation
-            # completed. Costs one extra checkpoint write per epoch when
-            # ckpt_interval == steps_per_loop; buys exact resume semantics.
+            # Epoch-end checkpoint, always written even when the in-loop periodic
+            # save already wrote this step: that pre-validation save recorded the
+            # epoch as not-yet-validated (see _sync_completed_epochs), and this one
+            # re-writes the same checkpoint number with validation completed. One
+            # extra write per epoch when ckpt_interval == steps_per_loop; buys
+            # exact resume semantics.
             self._save_checkpoint()
             last_saved_step = python_step
 
-            # Honor a preemption signal that arrived during validation / checkpointing.
-            # Validation can take minutes; without this check a SIGTERM during it would
-            # not be acted on until the next epoch's first step — past the grace window.
+            # Act on a preemption signal that arrived during validation /
+            # checkpointing. Validation can take minutes; without this check a
+            # SIGTERM during it waits until the next epoch's first step, past the
+            # grace window.
             if self._shutdown_requested:
                 log.info("Graceful shutdown after epoch %d validation.", epoch + 1)
                 return
@@ -352,12 +342,11 @@ class YoloV8Trainer:
     def _maybe_close_mosaic(self, epoch: int, total_epochs: int) -> None:
         """Disable mosaic + mixup for the final ``close_mosaic_epochs`` epochs.
 
-        At the first epoch ``>= total_epochs - close_mosaic_epochs`` the train stream is
-        rebuilt once with ``mosaic_frequency`` / ``mixup_frequency`` set to 0 (the
-        Ultralytics ``close_mosaic`` trick — training on un-mosaicked images at the end
-        sharpens final accuracy). Step/epoch accounting is unaffected (the trainer still
-        runs a fixed step count from the new iterator). No-op when ``close_mosaic_epochs``
-        is 0 (the default), so behaviour is unchanged unless configured.
+        At the first epoch ``>= total_epochs - close_mosaic_epochs`` the train
+        stream is rebuilt once with ``mosaic_frequency`` / ``mixup_frequency`` set
+        to 0 (Ultralytics ``close_mosaic``). Step/epoch accounting is unaffected —
+        the trainer still runs a fixed step count from the new iterator. No-op when
+        ``close_mosaic_epochs`` is 0 (the default).
         """
         import dataclasses
         mosaic_cfg = getattr(getattr(self._config.task.train_data, 'parser', None),
@@ -384,22 +373,20 @@ class YoloV8Trainer:
     def _sync_completed_epochs(self, python_step: int, steps_per_loop: int) -> None:
         """Sync ``completed_epochs`` before a save that lands on an epoch boundary.
 
-        The final step of an epoch triggers the in-loop periodic save (with all
-        three tier configs, ``checkpoint_interval == steps_per_loop``) BEFORE the
-        post-validation ``_epoch_var.assign(epoch + 1)`` — and the epoch-end save
-        is then skipped by the ``last_saved_step`` guard. Without this sync every
-        boundary checkpoint persisted ``completed_epochs`` one too low, so any
-        resume from one re-ran a full extra epoch (and re-launching a finished
-        run trained one epoch past ``decay_steps`` at the cosine floor).
+        The epoch's final step triggers the in-loop periodic save (with all tier
+        configs ``checkpoint_interval == steps_per_loop``) before the
+        post-validation ``_epoch_var.assign(epoch + 1)``, and the epoch-end save
+        is then skipped by the ``last_saved_step`` guard. Without this sync the
+        boundary checkpoint would persist ``completed_epochs`` one too low and a
+        resume from it would re-run a full epoch.
 
-        Training-wise the epoch IS complete at this point, but its validation
-        has not run yet, so the boundary save records the epoch as NOT completed
-        (``completed_epochs`` = trained epochs − 1). If the process dies during
-        validation, a resume then runs zero training steps for that epoch
-        (``_steps_for_epoch`` returns 0) and executes the pending validation —
-        no boundary checkpoint is ever left unevaluated. After validation
-        succeeds, the epoch-end save re-writes the same checkpoint number with
-        the true ``completed_epochs``, so a normal restart does not re-validate.
+        The epoch is trained but not yet validated here, so the boundary save
+        records it as not completed (``completed_epochs`` = trained epochs − 1).
+        A crash during validation then resumes with zero training steps for that
+        epoch (``_steps_for_epoch`` returns 0) and runs the pending validation, so
+        no boundary checkpoint is left unevaluated. The epoch-end save re-writes
+        the same checkpoint number with the true count, so a normal restart does
+        not re-validate.
         """
         if steps_per_loop > 0 and python_step % steps_per_loop == 0:
             self._epoch_var.assign(python_step // steps_per_loop - 1)
@@ -426,10 +413,10 @@ class YoloV8Trainer:
     # ------------------------------------------------------------------
 
     def _will_resume(self) -> bool:
-        """True if this run already has a checkpoint to resume from (so seed-init should
-        be skipped — the run's own weights win). Makes `finetune_from` / `init_checkpoint`
-        a fresh-start-only seed: a restarted/dropped fine-tune resumes normally from its
-        own checkpoints and never re-reads (or crashes on a moved) source checkpoint."""
+        """True if this run already has a checkpoint to resume from, so seed-init
+        is skipped and the run's own weights win. This makes `finetune_from` /
+        `init_checkpoint` a fresh-start-only seed: a restarted fine-tune resumes
+        from its own checkpoints and never re-reads the source checkpoint."""
         if self._resume_from:
             return True
         for d in (self._output_dir, os.path.join(self._output_dir, 'resume')):
@@ -440,22 +427,21 @@ class YoloV8Trainer:
     def _setup(self) -> None:
         with self._strategy.scope():
             self._model     = self._task.build_model()
-            # Seed-init (finetune_from / init_checkpoint) only on a truly fresh run. If a
-            # resumable checkpoint exists, _auto_resume restores this run's own weights —
-            # so skipping init here avoids re-loading the source and a dropped fine-tune
-            # just resumes with the normal command.
+            # Seed-init (finetune_from / init_checkpoint) only on a fresh run. When
+            # a resumable checkpoint exists, _auto_resume restores this run's own
+            # weights, so skipping init here avoids re-loading the source.
             if self._will_resume():
                 log.info("Resumable checkpoint present — skipping seed-init "
                          "(finetune_from / init_checkpoint); restoring this run's own weights.")
             else:
                 self._task.initialize(self._model)
-            # Freeze modules BEFORE building the optimizer so trainable_variables (and the
+            # Freeze before building the optimizer so trainable_variables (and the
             # SGD slots / EMA) already exclude the frozen weights. Applied on resume too.
             self._task.apply_freezing(self._model)
             self._optimizer = self._task.build_optimizer()
             self._task._loss_fn = self._task.build_losses()
-            # Gradient-accumulation accumulators (no-op unless grad_accum_steps > 1) —
-            # created here in cross-replica scope, after freezing fixes trainable_variables.
+            # Gradient-accumulation accumulators (no-op unless grad_accum_steps > 1),
+            # created after freezing fixes trainable_variables.
             self._task.prepare_grad_accumulation(self._model)
             # Pre-create optimizer slots in cross-replica context: under
             # strategy.run variables cannot be created inside the replica context.
@@ -463,18 +449,16 @@ class YoloV8Trainer:
                 self._optimizer.build(self._model.trainable_variables)
 
         task_cfg = self._config.task
-        # Training input: build the merged stream at the GLOBAL batch size, then let
-        # the strategy split each global batch into per-replica slices
-        # (experimental_distribute_dataset). This is true data parallelism — the
-        # per-replica gradients sum to the full-batch gradient, so the result is
-        # numerically identical to single-device. (drop_remainder keeps the batch
-        # dim static so the split is even; global batch should be divisible by the
-        # replica count.)
+        # Build the merged training stream at the global batch size; the strategy
+        # splits each global batch into per-replica slices, whose gradients sum to
+        # the full-batch gradient (numerically identical to single-device).
+        # drop_remainder keeps the batch dim static so the split is even; the
+        # global batch should be divisible by the replica count.
         self._train_ds = self._task.build_inputs(task_cfg.train_data)
         if self._distributed:
             self._train_ds = self._strategy.experimental_distribute_dataset(self._train_ds)
-        # Validation stays single-device (read primary replica); not the bottleneck
-        # and keeps the COCO/distance/polygon aggregation logic simple and correct.
+        # Validation stays single-device; it is not the bottleneck and keeps the
+        # COCO/distance/polygon aggregation simple.
         self._val_ds   = self._task.build_inputs(task_cfg.validation_data)
 
         _task, _model, _optimizer = self._task, self._model, self._optimizer
@@ -486,12 +470,12 @@ class YoloV8Trainer:
                 per_replica = _strategy.run(
                     _task.train_step, args=(inputs, _model, _optimizer)
                 )
-                # Losses are already normalized by the GLOBAL object count, so each
-                # replica returns its share; SUM-reduce reconstructs the full scalar.
-                # The norm DIAGNOSTICS are not per-replica shares: weight_norm is
-                # identical on every (mirrored) replica and grad_norm is a per-replica
-                # global-norm, so SUM would report ~N× the true value — MEAN gives the
-                # correct single-device-equivalent diagnostic.
+                # Losses are normalized by the global object count, so each replica
+                # returns its share and a sum-reduce reconstructs the full scalar.
+                # The norm diagnostics are not per-replica shares (weight_norm is
+                # identical on every replica, grad_norm is a per-replica
+                # global-norm), so they mean-reduce for a single-device-equivalent
+                # value.
                 _mean_keys = ('grad_norm', 'weight_norm')
                 return {
                     k: _strategy.reduce(
@@ -523,15 +507,12 @@ class YoloV8Trainer:
             self._output_dir,
             max_to_keep=self._config.trainer.max_to_keep,
         )
-        # Separate manager for INTERRUPTION saves (SIGTERM/SIGINT, supervisor
-        # restarts, preemptions). Keeping these out of the main directory keeps
-        # it a clean sequence of epoch-boundary checkpoints, while interruption
-        # saves rotate in resume/ (max 2). _auto_resume picks whichever of the
-        # two directories holds the highest global step, so a mid-epoch
-        # interruption resumes exactly where it stopped (the fixed-count epoch
-        # loop then runs only the remaining steps to the next boundary), and a
-        # stale resume checkpoint is automatically superseded once a newer
-        # epoch-boundary save exists.
+        # Separate manager for interruption saves (SIGTERM/SIGINT, supervisor
+        # restarts, preemptions), rotating in resume/ (max 2) so the main
+        # directory stays a clean epoch-boundary sequence. _auto_resume picks
+        # whichever directory holds the highest global step, so a mid-epoch
+        # interruption resumes where it stopped and a stale resume checkpoint is
+        # superseded once a newer boundary save exists.
         self._resume_ckpt_manager = tf.train.CheckpointManager(
             self._ckpt,
             os.path.join(self._output_dir, 'resume'),
@@ -558,8 +539,8 @@ class YoloV8Trainer:
             yaml.dump(dataclasses.asdict(self._config), _f, default_flow_style=False)
         log.info("Full resolved config saved to %s", params_path)
 
-        # Provenance: code (git commit + dirty diff) + data (resolved TFDS versions) +
-        # invocation + environment, so the run dir alone answers "what produced this".
+        # Provenance: git commit + dirty diff, resolved TFDS versions, invocation,
+        # and environment, so the run dir alone records what produced it.
         try:
             from datetime import datetime
             from common.run_metadata import write_run_metadata
@@ -720,10 +701,8 @@ class YoloV8Trainer:
         )
 
         # Append the per-category F1 report (best-conf + all-conf sweep + headline
-        # scalars) as ONE line to <run>/val_history.jsonl. Replaces the previous
-        # per-epoch json+txt pair (hundreds of files); append is O(line) and off the
-        # train step → no training-throughput impact. Extract any epoch back to the
-        # ckpt-format txt/csv with utils/reports/val_history.py. Never fatal.
+        # scalars) as one line to <run>/val_history.jsonl. Extract any epoch back
+        # to the ckpt-format txt/csv with utils/reports/val_history.py. Never fatal.
         report = getattr(self._task, '_last_val_report', None)
         if report is not None:
             try:
@@ -749,9 +728,8 @@ class YoloV8Trainer:
                              gts_list: list = None) -> None:
         """Render prediction- and ground-truth-overlay images to TensorBoard.
 
-        Writes two tags at the same step so they can be flipped between for a
-        direct prediction-vs-GT comparison: ``val/predictions`` and
-        ``val/ground_truth``. Boxes are labelled with the class taxonomy names.
+        Writes ``val/predictions`` and ``val/ground_truth`` at the same step for a
+        direct comparison. Boxes are labelled with the class taxonomy names.
         """
         from common.viz_utils import render_summary_images, render_gt_images
         from configs.class_map import DETECTION_CLASSES
@@ -787,16 +765,14 @@ class YoloV8Trainer:
     def _log_aug_images(self, inputs, step: int) -> None:
         """Log augmented training images with ground-truth overlays once per epoch.
 
-        Overlaying the post-augmentation GT boxes/polygons turns this into a
-        visual check that mosaic/affine/flip kept the labels aligned with the
-        pixels. Falls back to raw frames if labels are absent or opencv is
-        unavailable.
+        Overlaying the post-augmentation GT boxes/polygons gives a visual check
+        that mosaic/affine/flip kept the labels aligned with the pixels. Falls
+        back to raw frames if labels are absent or opencv is unavailable.
 
-        NOTE: these are PRE-colour-aug frames (geometry + labels only). Colour
-        augmentation (HSV/albumentations) now happens on the accelerator inside
-        the compiled train_step, so the images here are the parser's uint8
-        output before normalization/colour jitter. They are scaled to float
-        [0, 1] for the renderers (which expect [0, 1]).
+        These are pre-colour-aug frames (geometry + labels only): colour
+        augmentation runs on the accelerator inside the compiled train_step, so
+        the images are the parser's uint8 output, scaled to float [0, 1] for the
+        renderers.
         """
         try:
             from common.viz_utils import render_gt_images
@@ -943,27 +919,18 @@ class YoloV8Trainer:
         metric_val   = float(self._best_metric)
         best_dir     = os.path.join(self._output_dir, f'best_{metric_name}')
         os.makedirs(best_dir, exist_ok=True)
-        # Save the RAW (live) model weights together with the optimizer + step
-        # counters, exactly like a periodic checkpoint — do NOT swap EMA weights
-        # into the model first.
+        # Saves the raw (live) model weights plus the optimizer + step counters,
+        # like a periodic checkpoint — no EMA swap into `model/`. The EMA shadow
+        # weights are tracked inside the wrapper (`optimizer=self._optimizer`), so
+        # this checkpoint already serializes them; eval/export recover them via
+        # `ema.swap_in(model)`. Swapping EMA into `model/` would pair EMA weights
+        # with SGD velocity slots computed against the raw weights — an incoherent
+        # (weights, momentum) pair that corrupts a training resume.
         #
-        # Why no swap_in: the EMA shadow weights are tf.Variables tracked inside
-        # the EMA wrapper (`optimizer=self._optimizer`), so they are already
-        # serialized to disk by this checkpoint and recovered on resume via
-        # `ema.swap_in(model)` (eval/export use common/ckpt_loading.py for exactly
-        # this). If we instead swapped EMA into `model/`, a *training* resume from
-        # this checkpoint would load EMA weights into the model while the SGD
-        # velocity slots restored from `optimizer/` were computed against the RAW
-        # (pre-EMA) weights — an incoherent (weights, momentum) pair that corrupts
-        # the subsequent trajectory and the EMA shadow update. Saving raw weights
-        # keeps the model/optimizer pair coherent for resume; the EMA shadows in
-        # `optimizer/` give eval/export the correct inference state.
-        #
-        # Saving the optimizer + counters (vs. a model-only inference checkpoint)
-        # is required for resume: without the SGD `iterations` variable the cosine
-        # LR schedule reads, the LR would snap back to its initial value and the
-        # momentum/velocity slots would reset, corrupting the trajectory.
-        # `global_step` / `completed_epochs` keep resume bookkeeping consistent.
+        # The optimizer + counters are required for resume: without the SGD
+        # `iterations` the cosine LR would snap back to its initial value and the
+        # momentum slots would reset. `global_step` / `completed_epochs` keep
+        # resume bookkeeping consistent.
         best_ckpt = tf.train.Checkpoint(
             model=self._model,
             optimizer=self._optimizer,
@@ -1016,13 +983,11 @@ class YoloV8Trainer:
         only would overstate speed whenever training is input-bound.
         """
         sgd        = self._optimizer._optimizer
-        # Log the LR that actually moved the weights for the batch just completed,
-        # not next step's LR. `apply_gradients` increments `iterations` at its end,
-        # so `sgd.lr` (which reads the schedule at the current `iterations`) is one
-        # step ahead by the time this logs.
-        # SGDTorch-only introspection is hasattr-guarded: keras optimizers
-        # (adamw/adam via optimizers/factory.py) have neither attribute, and an
-        # unguarded read crashed the run at the first logging step.
+        # Log the LR that moved the weights for the batch just completed, not next
+        # step's. `apply_gradients` increments `iterations` at its end, so `sgd.lr`
+        # (read at the current `iterations`) is one step ahead by now. The SGDTorch
+        # introspection is hasattr-guarded because keras optimizers (adamw/adam)
+        # have neither attribute.
         if hasattr(sgd, 'lr_for_last_step'):
             lr = float(sgd.lr_for_last_step)
         else:
@@ -1049,8 +1014,8 @@ class YoloV8Trainer:
             wnorm = float(losses.get('weight_norm', 0.0))
             self._scalar('train/update_ratio', lr * gnorm / max(wnorm, 1e-12), step=step,
                          key='update_ratio')
-            # Per-param-group effective LR (SGDTorch only) — makes the bias/BN-vs-weight
-            # warmup ramp visible. Skipped for keras optimizers (no param groups).
+            # Per-param-group effective LR (SGDTorch only) makes the bias/BN-vs-
+            # weight warmup ramp visible. Skipped for keras optimizers.
             if hasattr(sgd, 'group_lrs_for_last_step'):
                 lr_bias, lr_weight = sgd.group_lrs_for_last_step()
                 self._scalar('train/lr_bias',   float(lr_bias),   step=step, key='lr_bias')
@@ -1066,10 +1031,10 @@ class YoloV8Trainer:
             except Exception:
                 pass
 
-        # Console output is the live progress bar (common/progress.py); this
-        # method now only writes the per-step TensorBoard scalars. The full
-        # compute-vs-data-wait breakdown lives in TB (train/step_time_ms,
-        # train/data_wait_ms, train/throughput_img_per_s); the bar shows img/s + losses.
+        # Console output is the live progress bar (common/progress.py); this method
+        # only writes the per-step TensorBoard scalars. The compute-vs-data-wait
+        # breakdown lives in TB (train/step_time_ms, train/data_wait_ms,
+        # train/throughput_img_per_s); the bar shows img/s + losses.
 
     def _log_epoch(
         self,
@@ -1134,10 +1099,11 @@ class YoloV8Trainer:
 
         with self._tb_writer.as_default():
             for k, v in val_metrics.items():
-                # Per-category metrics arrive as `cls/<NN_name>/<metric>`. Route them to a
-                # SEPARATE top-level group keyed by metric — `per_class/<metric>/<NN_name>` —
-                # so TensorBoard groups all classes of one metric together and they no longer
-                # flood the headline `val/` group. `key=k` keeps the per-class tooltip.
+                # Per-category metrics arrive as `cls/<NN_name>/<metric>`. Route
+                # them to a separate top-level group keyed by metric
+                # (`per_class/<metric>/<NN_name>`) so all classes of one metric sit
+                # together and out of the headline `val/` group. `key=k` keeps the
+                # per-class tooltip.
                 if k.startswith('cls/'):
                     parts = k.split('/')
                     if len(parts) == 3:

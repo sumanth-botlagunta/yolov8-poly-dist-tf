@@ -6,18 +6,17 @@ Produces the same label schema as V8ParserExtended but:
     - Does not apply Copy-Paste or Mosaic augmentation.
     - with_polygons defaults to False (distance dataset has no polygon labels).
 
-Colour augmentation (HSV jitter + normalize /255) is NO LONGER done here. The
-parser emits a uint8 image so the merged batch carries uint8; the per-batch
-colour pipeline runs on the accelerator in ``train.task.train_step`` via
+Colour augmentation (HSV jitter + normalize /255) runs elsewhere: the parser
+emits a uint8 image so the merged batch carries uint8, and the per-batch colour
+pipeline runs on the accelerator in ``train.task.train_step`` via
 ``data_pipeline.batch_color_aug.batch_color_augment``. That step applies HSV to
-ALL rows — the distance stream's HSV params (aug_rand_hue/saturation/brightness)
-are configured equal to the detection stream's from the same YAML, so this is
-the same HSV distribution this parser applied before — and applies
-albumentations only to ``ignore_bg == 0`` rows, so the distance stream still
-receives NO albumentations (matching today's per-stream behaviour).
+all rows (the distance stream's aug_rand_hue/saturation/brightness are set equal
+to the detection stream's from the same YAML, so both streams see the same HSV
+distribution) and applies albumentations only to ``ignore_bg == 0`` rows, so the
+distance stream receives none.
 
 Classes:
-    V8DistanceParser: Lightweight parser for the distance stream.
+    V8DistanceParser: lightweight parser for the distance stream.
 """
 
 from __future__ import annotations
@@ -87,8 +86,8 @@ class V8DistanceParser(Parser):
         if self._random_flip:
             image, boxes = self._maybe_flip(image, boxes)
 
-        # Colour augmentation (HSV + normalize /255) is now done once per batch
-        # on the accelerator in train.task.train_step. Keep the image uint8.
+        # Colour augmentation (HSV + normalize /255) runs once per batch on the
+        # accelerator in train.task.train_step. Keep the image uint8.
 
         # Build label tensors.
         n_gt = tf.shape(boxes)[0]

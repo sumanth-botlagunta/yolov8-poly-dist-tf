@@ -33,17 +33,6 @@ Usage:
         --config configs/experiments/yolo/yolov8_poly_dist.yaml \
         --saved_model /export/saved_model \
         --split val
-
-Flags:
-    --config       Path to experiment YAML (required; builds the eval dataset).
-    --checkpoint   Checkpoint path prefix (mutually exclusive with --saved_model).
-    --saved_model  Exported SavedModel dir (mutually exclusive with --checkpoint).
-    --split        Eval split: 'val', 'test', or 'train'.
-    --conf         Min detection confidence, applied before matching (default 0.25).
-    --iou          IoU threshold for a positive match (default 0.5).
-    --output_csv   Write the raw integer matrix (with labels) to this CSV path.
-    --output_png   Write a row-normalized heat map here (needs matplotlib).
-    --top          Number of top confusions to print in the summary (default 20).
 """
 
 import logging

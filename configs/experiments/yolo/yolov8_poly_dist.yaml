@@ -94,7 +94,7 @@ task:
     tfds_for_cnp_split: train_f
     global_batch_size: 128
     is_training: true
-    # sized for the full multi-source detection stream (images stay ENCODED
+    # sized for the full multi-source detection stream (images stay encoded
     # through shuffle via SkipDecoding; ~30k encoded images is a few GB host RAM)
     shuffle_buffer_size: 30000
     # tf.data worker threads for the training pipeline (0 = all visible cores;
@@ -116,12 +116,9 @@ task:
       aug_rand_translate: 0.1
       aug_scale_min: 1.0
       aug_scale_max: 1.0
-      # (aug_rand_angle / aug_rand_perspective removed: they were dead config — never
-      #  applied. Geometric aug is the mosaic-stage random_perspective below, set via
-      #  mosaic.degrees / mosaic.shear / mosaic.translate.)
       random_flip: true
-      # Single-image (non-mosaic) pre-warp rotation. OFF for parity (the legacy
-      # pipeline did not rotate). The mosaic path never rotates regardless.
+      # Single-image (non-mosaic) pre-warp rotation, off. The mosaic path never
+      # rotates regardless.
       rotate: false
       rotate_degrees: null
       resize_with_random_method: true
@@ -136,39 +133,33 @@ task:
         mosaic_frequency: 0.5
         mixup_frequency: 0.0
         mosaic_center: 0.25
-        # Geometric augmentation = verified original-codebase parity: mosaics
-        # get ONE canvas->output warp with scale gain [0.4, 1.9] and NOTHING
-        # else (no rotation — the original hard-disabled it; no translate; no
-        # shear/perspective). Non-mosaic singles get NO scale gain and a small
-        # translate (parser.aug_scale_min/max=1.0 + parser.aug_rand_translate
-        # below, wired to the Mosaic module's single path). Flip happens
-        # per-TILE inside the mosaic (independent per tile) and per single
-        # image — the assembled canvas is never mirrored.
+        # Mosaics get one canvas->output warp with scale gain [0.4, 1.9] and
+        # nothing else (no rotation, translate, shear, or perspective). Non-mosaic
+        # singles get no scale gain and a small translate (parser.aug_scale_min/max
+        # = 1.0 + parser.aug_rand_translate). Flip is per-tile inside the mosaic
+        # and per single image; the assembled canvas is never mirrored.
         aug_scale_min: 0.4
         aug_scale_max: 1.9
-        # Per-tile random-window crop: OFF (0/0). When enabled each tile crops a
+        # Per-tile random-window crop: off (0/0). When enabled each tile crops a
         # random window of side fraction s ~ U[min, max] of its content and scales
-        # it to the quadrant. The confirmed original scale variety is the [0.4, 1.9]
+        # it to the quadrant. Here size variety comes only from the [0.4, 1.9]
         # whole-canvas warp.
         tile_crop_min: 0.0
         tile_crop_max: 0.0
         mosaic_crop_mode: scale
-        # legacy parity: the MOSAIC path uses 0.5; the single-image path uses
-        # the parser-level area_thresh (0.1) wired via single_area_thresh
+        # the mosaic path uses 0.5; the single-image path uses the parser-level
+        # area_thresh (0.1) wired via single_area_thresh
         area_thresh: 0.5
         jitter: 0.0
         group_size: 32
-        # R=1: each decoded image is reused in 4 outputs of its group (Sidon-shift
-        # selection — any two outputs share at most ONE source image, so no
-        # near-duplicate samples; stock-Ultralytics-like reuse semantics). R=4
-        # consumes 4x more distinct images per epoch at ~4x the decode cost.
-        # The post-unbatch shuffle buffer (3072, input_reader.py) disperses the
-        # recurrences ~24 batches apart so same-batch reuse is rare.
+        # R=1: each decoded image recurs in 4 outputs of its group (Sidon-shift
+        # selection: any two outputs share at most one source, so no near-duplicate
+        # samples). R=4 consumes 4x more distinct images per epoch at ~4x the
+        # decode cost. The post-unbatch shuffle buffer (3072, input_reader.py)
+        # disperses recurrences ~24 batches apart so same-batch reuse is rare.
         decodes_per_output: 1
-        # Mosaic-path affine knobs (the single path uses the parser-level
-        # values). Original-codebase parity: rotation fully OFF — the mosaic
-        # path NEVER rotates (wired to 0 in code because polygon rotation was
-        # unimplemented in the original); translate 0, shear 0.
+        # Mosaic-path affine knobs (the single path uses the parser-level values).
+        # The mosaic path never rotates (wired to 0 in code); translate 0, shear 0.
         shear: 0.0
         translate: 0.0
     distance_data:
@@ -218,9 +209,8 @@ task:
       aug_rand_translate: 0.0
       aug_scale_min: 1.0
       aug_scale_max: 1.0
-      # (aug_rand_angle / aug_rand_perspective removed: dead config, never applied.)
-      # Evaluation is deterministic — the eval parse path never flips. This is
-      # false to match reality; the eval parser would ignore `true` silently.
+      # Eval is deterministic; the eval parse path never flips (a `true` here
+      # would be ignored silently).
       random_flip: false
       resize_with_random_method: false
       skip_crowd_during_training: true
@@ -247,9 +237,8 @@ trainer:
   # restart policy: resume only from epoch-boundary checkpoints so every epoch
   # is one full uniform pass (set true to resume mid-epoch remainders instead)
   mid_epoch_resume: false
-  # verified against the actual TFDS builders:
-  # cleaner_polygon2026 268,384 + field_misrecog2026 416 + station_misrecog 2,366.
-  # (Was 305,780 — stale; it inflated steps/epoch to 2388 vs the true 2118.)
+  # verified against the TFDS builders: cleaner_polygon2026 268,384 +
+  # field_misrecog2026 416 + station_misrecog 2,366.
   train_total_examples: 271166
   validation_total_examples: 3903
   # steps_per_loop, train_steps, validation_steps auto-computed from the above
@@ -290,10 +279,9 @@ runtime:
   mixed_precision_dtype: bfloat16
   run_eagerly: false
   enable_xla: false
-  # Host CPU is cgroup-capped at ~13 cores while 128 are visible; cap TF's
-  # pools to the real quota (tune on the machine if the cap changes).
-  # The training step is GPU-bound, so its host pools get few threads; the
-  # 13-core quota is reserved for the tf.data private pool (13 above). Total
-  # threads ≈ quota avoids context-switch thrash (was 4+12+13 = 29 on 13 cores).
+  # Host CPU is cgroup-capped at ~13 cores while 128 are visible; cap TF's pools
+  # to the real quota (tune if the cap changes). The training step is GPU-bound,
+  # so its host pools get few threads and the quota is reserved for the tf.data
+  # private pool (13 above). Total threads ~= quota avoids context-switch thrash.
   inter_op_threads: 2
   intra_op_threads: 4

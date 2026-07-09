@@ -1,21 +1,15 @@
-"""Shared checkpoint-loading helper for eval / export tools.
+"""Checkpoint loading for eval / export, preferring EMA weights.
 
-The trainer writes two kinds of checkpoints, and BOTH store the RAW (live)
-weights under ``model/`` with the EMA shadow weights under ``optimizer/`` (the
-EMA wrapper):
-  - periodic ``ckpt-N``
-  - ``best_*/ckpt`` (also carries ``global_step`` / ``completed_epochs`` so it is
-    a valid training-resume source, not inference-only).
+The trainer writes periodic ``ckpt-N`` and ``best_*/ckpt`` checkpoints (the latter also
+carries ``global_step`` / ``completed_epochs``, so it is a valid training-resume source).
+Both store the raw (live) weights under ``model/`` and the EMA shadows under
+``optimizer/`` (the EMA wrapper). EMA weights are what the trainer validates with and
+what ships; a plain ``Checkpoint(model=model).restore(...)`` reads only ``model/`` and
+silently loads the raw, non-averaged weights.
 
-EMA weights are what the trainer validates with and what should be deployed.
-A plain ``Checkpoint(model=model).restore(...)`` only reads ``model/``, so it
-silently loads the RAW (non-averaged) weights from either checkpoint — the worse
-inference state.
-
-``restore_eval_weights`` removes that footgun: it detects whether the checkpoint
-carries EMA shadows and, if so, restores the EMA wrapper and swaps the shadows
-into the model. Otherwise it restores ``model/`` directly. Both eval and export
-use this so they cannot diverge.
+``restore_eval_weights`` detects whether the checkpoint carries EMA shadows: if so it
+restores the EMA wrapper and swaps the shadows into the model, otherwise it restores
+``model/`` directly. Eval and export both use it so they cannot diverge.
 """
 
 import logging
@@ -28,10 +22,10 @@ log = logging.getLogger(__name__)
 def _checkpoint_has_ema(ckpt_path: str) -> bool:
     """True if the checkpoint stores EMA shadow variables (a periodic ckpt-N).
 
-    Raises if the checkpoint has an ``optimizer/`` subtree but no recognizable
-    EMA markers — that means a periodic checkpoint whose EMA wrapper attribute
-    names drifted, and silently falling back to the RAW weights would deploy the
-    worse, non-averaged weights without any signal (fail-closed-but-wrong).
+    Raises if the checkpoint has an ``optimizer/`` subtree but no recognizable EMA
+    markers — that means a periodic checkpoint whose EMA wrapper attribute names
+    drifted; silently falling back to the raw weights would deploy the non-averaged
+    weights without any signal.
     """
     try:
         names = [n for n, _ in tf.train.list_variables(ckpt_path)]
@@ -71,9 +65,9 @@ def restore_eval_weights(model: tf.keras.Model, ckpt_path: str) -> str:
         sgd = SGDTorch(lr_fn=lambda step: tf.constant(0.0), warmup_steps=0)
         ema = ExponentialMovingAverage(optimizer=sgd, model=model)
         # expect_partial: the SGD slot variables are intentionally not rebuilt
-        # here (we only need the EMA shadows + model graph). assert_existing_
-        # objects_matched() is NOT used — it false-positives on the unbuilt
-        # optimizer slots even for a valid checkpoint. A missing/typo'd path
+        # here (only the EMA shadows + model graph are needed).
+        # assert_existing_objects_matched() is not used — it false-positives on the
+        # unbuilt optimizer slots even for a valid checkpoint. A missing/typo'd path
         # still fails loudly: restore() raises NotFoundError on a nonexistent
         # checkpoint, and _checkpoint_has_ema guards the renamed-EMA case.
         tf.train.Checkpoint(model=model, optimizer=ema).restore(ckpt_path).expect_partial()

@@ -1,27 +1,24 @@
-"""Vectorized, per-BATCH colour augmentation for the YOLOv8 data pipeline.
+"""Vectorized, per-batch colour augmentation for the YOLOv8 data pipeline.
 
-These ops REPLACE the per-sample colour-augmentation steps that used to run
-inside the parsers (``yolo_parser._parse_train_data`` steps 5-7 and
-``distance_parser._augment_color`` + ``/255``). The parsers now emit uint8
-images and carry uint8 through batching (4× less host→device memory traffic);
-the colour pipeline runs once per batch inside the compiled ``train_step`` so it
-executes on the GPU instead of the CPU-capped tf.data workers.
+The colour pipeline runs once per batch inside the compiled ``train_step`` (on
+the GPU, off the CPU-capped tf.data workers). The parsers emit uint8 images and
+carry uint8 through batching; this module casts /255 and applies HSV +
+albumentations across the batch.
 
-Per-image randomness distribution is preserved EXACTLY:
+The per-image randomness distribution matches a per-sample application exactly:
 
-  * HSV: a separate (dh, ds, dv) triple is drawn per image (``[B]`` random
-    vectors), matching the old per-sample ``tf.image.random_hue/​saturation/​
-    brightness`` draws. The only intentional deviation is a single fused
-    rgb→hsv→rgb round trip (the old path did one round trip for hue and another
-    for saturation); this is mathematically identical (see ``apply_hsv_deltas``).
-  * Albumentations: the per-image enter gate (u < freq) and the four
-    independent p=0.01 transform gates are drawn per image, in the SAME ORDER
-    as the old per-sample ``apply_albumentations`` ``tf.cond`` chain, so the
-    induced per-image distribution is identical.
+  * HSV: a separate (dh, ds, dv) triple is drawn per image (``[B]`` vectors), as
+    in per-image ``tf.image.random_hue/saturation/brightness``. Hue and
+    saturation are fused into one rgb→hsv→rgb round trip, which is mathematically
+    identical (see ``apply_hsv_deltas``).
+  * Albumentations: the per-image enter gate (u < freq) and the four independent
+    p=0.01 transform gates are drawn per image, in the same order as the
+    per-sample ``apply_albumentations`` ``tf.cond`` chain, so the induced
+    distribution is identical.
 
-The ``_box_blur_tf`` separable-depthwise-conv blur is ported (copied + adapted
-to batch form) from ``data_pipeline.augmentations._box_blur_tf``; the private
-helper is intentionally NOT imported so this module stands alone.
+``_box_blur_tf`` is ported to batch form from
+``data_pipeline.augmentations._box_blur_tf`` (kept local rather than imported so
+this module stands alone).
 """
 
 from __future__ import annotations
@@ -150,9 +147,9 @@ def apply_albumentations_masks(
 ) -> tf.Tensor:
     """Apply the four albumentations transforms, each gated by a per-image mask.
 
-    Transforms are applied in the SAME ORDER as the per-sample
+    Transforms are applied in the same order as the per-sample
     ``apply_albumentations`` ``tf.cond`` chain, so each transform sees the output
-    of the previous one (matching the sequential per-image semantics exactly):
+    of the previous one (sequential per-image semantics):
         Blur        3×3 box blur                       (m_blur)
         MedianBlur  3×3 box blur (mean≈median at k=3)  (m_median)
         ToGray      rgb_to_grayscale tiled to 3ch      (m_gray)
@@ -177,13 +174,11 @@ def apply_albumentations_masks(
     gray = tf.tile(tf.image.rgb_to_grayscale(x), [1, 1, 1, 3])
     x = _sel(m_gray, gray, x)
     # CLAHE (p=0.01) — local contrast boost via unsharp mask at tile scale (~33px).
-    # The 33×33 box blur is by far the most expensive op here, yet m_clahe is true
-    # with probability ~0.01·freq, so for almost every batch NO image is selected
-    # and _sel would just return x unchanged. Guard the whole CLAHE branch behind
-    # tf.cond(reduce_any(m_clahe)): inside @tf.function (and in eager) the false
-    # branch — overwhelmingly the common case — skips the 33-px blur entirely. The
-    # result is byte-identical to the unconditional form (tf.where with an
-    # all-False mask returns x), this only avoids wasted compute.
+    # The 33×33 box blur is the most expensive op here, yet m_clahe is true with
+    # probability ~0.01·freq, so for almost every batch no image is selected. Guard
+    # the CLAHE branch behind tf.cond(reduce_any(m_clahe)) so the common (all-False)
+    # case skips the 33-px blur. The result is identical to the unconditional form
+    # (tf.where with an all-False mask returns x); this only avoids wasted compute.
     def _apply_clahe():
         local_mean = _box_blur_batch(x, 33)
         clahe = tf.clip_by_value(x + 0.5 * (x - local_mean), 0.0, 1.0)
@@ -204,8 +199,7 @@ def batch_albumentations(
     ``apply_albumentations`` (augmentations.py): each image first draws an
     enter gate ``u < freq``; on entry it draws four independent ``u < 0.01``
     gates (Blur, MedianBlur, ToGray, CLAHE) in that order. Rows excluded by
-    ``row_mask`` never enter (preserving today's per-stream behaviour, where the
-    distance stream got no albumentations).
+    ``row_mask`` never enter (the distance stream gets no albumentations).
 
     Args:
         images:   float32 [B, H, W, 3] in [0, 1].
@@ -244,10 +238,9 @@ def batch_color_augment(
 ) -> tf.Tensor:
     """Full per-batch colour pipeline: cast→/255 → HSV → albumentations.
 
-    REPLACES the parser-side colour steps (normalize /255, ``hsv_augment``,
-    ``apply_albumentations`` in ``yolo_parser``; ``_augment_color`` + /255 in
-    ``distance_parser``). Call this once per batch inside the compiled training
-    step so the work runs on the accelerator.
+    Call once per batch inside the compiled training step so the colour work runs
+    on the accelerator. The parsers emit uint8 and apply no colour augmentation
+    themselves.
 
     Args:
         images:        uint8 OR float32 [B, H, W, 3]. uint8 is cast and divided

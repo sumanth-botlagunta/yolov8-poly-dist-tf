@@ -83,8 +83,9 @@ trainer:
 > below the source model in the first epoch, the LR is still too high — halve it.
 
 Also worth tuning:
-- **Gentler augmentation** — lower `parser.mosaic.mosaic_frequency`, and set `close_mosaic_epochs`
-  so the last epochs train on un-mosaicked images (the model settles on clean data).
+- **Gentler augmentation** — lower `parser.mosaic.mosaic_frequency` so the fine-tune sees fewer
+  heavily composited images. (`parser.mosaic.close_mosaic_epochs` can drop mosaic entirely for the
+  final N epochs, but it changes training semantics — treat it as an experiment, not a default.)
 - **Watch `train/update_ratio`** in TensorBoard (`lr·‖grad‖/‖weights‖`): a healthy fine-tune sits
   around `1e-3`; much higher means the LR is too aggressive for the trained weights.
 

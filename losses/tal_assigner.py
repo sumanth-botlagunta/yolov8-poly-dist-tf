@@ -1,19 +1,13 @@
 """Task-Aligned label assignment (stop-gradient).
 
-Implements the TAL assignment algorithm from YOLOv8:
-    alignment_metric = pred_score^alpha * CIoU^beta   (CIoU clamped at 0)
-    top-k candidates per GT, filtered by spatial constraint,
-    duplicates resolved by max-CIoU.
-
-The overlap metric is COMPLETE IoU, not plain IoU: Ultralytics YOLOv8
-ranks candidate anchors by
-``bbox_iou(..., CIoU=True).clamp(0)``, so an anchor whose predicted box has
-the same raw overlap but a worse center offset / aspect mismatch ranks
-lower. Raised to beta=6 this materially changes which anchors become
-positives.
+Ultralytics YOLOv8 TAL: alignment = score^alpha * CIoU^beta (CIoU clamped at 0),
+top-k candidates per GT, filtered by an anchor-center-in-box spatial constraint,
+duplicates resolved by max-CIoU. Overlap is Complete IoU, not plain IoU, so at
+beta=6 a candidate's center offset / aspect mismatch changes whether it becomes a
+positive.
 
 Classes:
-    TaskAlignedAssigner: Pure assignment — no gradient flows through this module.
+    TaskAlignedAssigner: pure assignment; no gradient flows through it.
 """
 
 import math
@@ -30,7 +24,7 @@ def _pairwise_ciou(pd_exp: tf.Tensor, gt_exp: tf.Tensor,
     placement, ``atan2(w, h + eps)`` aspect term — safe on degenerate 0-boxes
     such as padded GT rows). Inputs are pre-expanded for broadcasting, e.g.
     ``pd_exp [B, A, 1, 4]`` × ``gt_exp [B, 1, M, 4]`` → ``[B, A, M]``.
-    NOT clamped — the caller clamps at 0 (reference: ``.clamp_(0)``).
+    Not clamped; the caller clamps at 0.
     """
     ix1 = tf.maximum(pd_exp[..., 0], gt_exp[..., 0])
     iy1 = tf.maximum(pd_exp[..., 1], gt_exp[..., 1])
@@ -67,8 +61,8 @@ def _pairwise_ciou(pd_exp: tf.Tensor, gt_exp: tf.Tensor,
 class TaskAlignedAssigner:
     """Stop-gradient TAL label assignment.
 
-    All tensor operations use tf.stop_gradient on inputs before any computation
-    so the assignment never contributes to the training gradient.
+    Inputs arrive stop-gradient'd from the caller, so the assignment never
+    contributes to the training gradient.
     """
 
     def __init__(
@@ -84,10 +78,9 @@ class TaskAlignedAssigner:
         self.beta  = beta
         self.eps   = eps
         # Polygon target width = (360 // angle_step) bins × 3 channels
-        # (dist, angle, conf). Used only in the no-GT fallback path below; the
-        # gather path infers width from gt_polys. Derived from angle_step so a
-        # non-15° config (e.g. 10° → 36 bins → 108) gets the right zero-target
-        # shape instead of a hardcoded 72.
+        # (dist, angle, conf). Used only in the no-GT fallback below; the gather
+        # path infers width from gt_polys. Derived from angle_step so a non-15°
+        # config (e.g. 10° → 36 bins → 108) gets the right zero-target shape.
         self.angle_step = angle_step
         self.poly_size  = (360 // angle_step) * 3
 
@@ -120,12 +113,10 @@ class TaskAlignedAssigner:
         M = tf.shape(gt_labels)[1]
 
         # ── 1. CIoU between predictions and GTs ─────────────────────────
-        # pd_bboxes [B, A, 4] × gt_bboxes [B, M, 4] → [B, A, M]. Complete IoU
-        # (center-distance + aspect penalties), clamped at 0 — matching
-        # Ultralytics' bbox_iou(..., CIoU=True).clamp_(0). Plain
-        # intersection/union ranks off-center candidates too favorably at
-        # beta=6. Padded GT rows ([0,0,0,0]) stay finite through the
-        # atan2/eps guards and are zeroed downstream via mask_gt.
+        # [B, A, 4] × [B, M, 4] → [B, A, M], Complete IoU clamped at 0
+        # (Ultralytics bbox_iou(..., CIoU=True).clamp_(0)). Padded GT rows
+        # ([0,0,0,0]) stay finite through the atan2/eps guards and are zeroed
+        # downstream via mask_gt.
         pd_exp = pd_bboxes[:, :, tf.newaxis, :]   # [B, A, 1, 4]
         gt_exp = gt_bboxes[:, tf.newaxis, :, :]   # [B, 1, M, 4]
         iou = tf.maximum(_pairwise_ciou(pd_exp, gt_exp), 0.0)  # [B, A, M]
@@ -184,16 +175,14 @@ class TaskAlignedAssigner:
         fg_mask       = tf.reduce_any(candidate_mask, axis=-1)     # [B, A] bool
 
         # ── 7. Gather assigned GT attributes ─────────────────────────────
-        # INVARIANT: for BACKGROUND anchors (fg_mask == False) target_gt_idx is 0
-        # (argmax over an all-zero row), so every target_* below holds GT-0's
-        # values, NOT a meaningful assignment. Consumers MUST mask by fg_mask.
-        # Do NOT "clean this up" by zeroing the background targets: TaskAlignedLoss
-        # computes CIoU on ALL anchors before weighting by fg_mask, and CIoU on a
-        # zeroed [0,0,0,0] box hits atan(0/0)=NaN — then NaN*0 (the bg weight)
-        # poisons the whole box loss. GT-0 is a real, finite box, which keeps that
-        # masked-out term finite. The GT-0 gather is therefore load-bearing for
-        # NaN-safety, not a bug. target_scores below IS zeroed for background
-        # (via assigned_align * fg_mask), which is what the cls loss reads.
+        # For background anchors (fg_mask == False) target_gt_idx is 0 (argmax over
+        # an all-zero row), so every target_* below holds GT-0's values, not a
+        # meaningful assignment — consumers must mask by fg_mask. The GT-0 gather is
+        # load-bearing for NaN-safety: TaskAlignedLoss computes CIoU on all anchors
+        # before weighting by fg_mask, and CIoU on a zeroed [0,0,0,0] box hits
+        # atan(0/0)=NaN, then NaN*0 (the bg weight) would poison the box loss; GT-0
+        # is a real finite box. target_scores below is zeroed for background (via
+        # assigned_align * fg_mask), which is what the cls loss reads.
         target_labels = tf.gather(gt_labels, target_gt_idx, batch_dims=1)   # [B, A]
         target_bboxes = tf.gather(gt_bboxes, target_gt_idx, batch_dims=1)   # [B, A, 4]
 
@@ -214,23 +203,20 @@ class TaskAlignedAssigner:
             target_dists = tf.zeros([B, A, 1], dtype=tf.float32)
 
         # ── 8. Soft target_scores: one-hot × normalized alignment ────────
-        # Matches Ultralytics YOLOv8: the soft target is scaled by the GT's
-        # localization quality (pos_overlaps = per-GT max IoU over candidates), so
-        # well-localized objects get higher classification targets. Omitting
-        # pos_overlaps would flatten every assigned anchor's target to a max of 1.0
-        # and drop the IoU-quality weighting of the classification loss.
+        # Ultralytics YOLOv8: the soft target is scaled by the GT's localization
+        # quality (pos_overlaps = per-GT max IoU over candidates), so well-localized
+        # objects get higher classification targets.
         align_max_per_gt = tf.reduce_max(
             align_spatial, axis=1, keepdims=True
         )  # [B, 1, M]
-        # iou_cand (= iou * candidate_mask) was already computed above — reuse it
-        # instead of recomputing the same masked-IoU tensor.
+        # Reuse iou_cand (= iou * candidate_mask) from above.
         pos_overlaps = tf.reduce_max(iou_cand, axis=1, keepdims=True)  # [B, 1, M]
         align_norm = (
             align_spatial * pos_overlaps / (align_max_per_gt + self.eps)
         )  # [B, A, M]
 
-        # gather the assigned GT's alignment per anchor (== one_hot(target_gt_idx)·align_norm,
-        # summed over M — bit-identical, but without materializing the [B,A,M] one-hot).
+        # Gather the assigned GT's alignment per anchor — equivalent to
+        # one_hot(target_gt_idx)·align_norm summed over M, without the one-hot.
         assigned_align = tf.gather(align_norm, target_gt_idx, axis=-1, batch_dims=2)  # [B, A]
         assigned_align = assigned_align * tf.cast(fg_mask, tf.float32)
 

@@ -1,22 +1,8 @@
-"""Training task orchestration for YOLOv8 polygon + distance model.
+"""Training task orchestration for the YOLOv8 polygon + distance model.
 
-Responsibilities:
-    - Build model (backbone, decoder, head, detection generator).
-    - Load init checkpoint for backbone + decoder modules.
-    - Build train and validation tf.data pipelines via InputReader.
-    - Implement train_step and validation_step compatible with the
-      TF Model Garden trainer loop.
-    - Aggregate and log scalar + image summaries.
-    - Manage EMA weight swapping around validation.
-
-Optimizer: SGD-Torch variant with cosine LR decay + linear warmup.
-    initial_lr:    0.01
-    warmup_steps:  6,354
-    total_steps:   635,400
-    alpha (min LR ratio): 0.01
-
-Classes:
-    YoloV8Task: Training task class.
+YoloV8Task builds the model, optimizer, and losses, constructs the train and
+validation tf.data pipelines, and implements the per-step forward/loss/gradient
+logic plus the validation-metric aggregation the trainer drives.
 """
 
 import logging
@@ -31,11 +17,10 @@ log = logging.getLogger(__name__)
 def normalize_images(images: tf.Tensor) -> tf.Tensor:
     """uint8 [0, 255] → float32 [0, 1]; float images pass through unchanged.
 
-    The parsers emit uint8 (colour aug + /255 moved to the batch level), so
-    EVERY consumer that calls ``model(images)`` directly — ``validation_step``
-    and ``utils/eval.py`` — must normalize through
-    this one helper. Feeding raw uint8 to the model raises (float32 conv
-    kernels); feeding 0–255 floats would silently produce garbage.
+    Parsers emit uint8 (colour aug + /255 moved to the batch level), so every
+    consumer that calls ``model(images)`` directly (validation_step, eval tools)
+    normalizes through this helper. Raw uint8 raises on the float32 conv kernels;
+    0–255 floats would silently produce garbage.
     """
     if images.dtype == tf.uint8:
         return tf.cast(images, tf.float32) / 255.0
@@ -56,9 +41,8 @@ class YoloV8Task:
         # Gradient accumulation state (None unless trainer.grad_accum_steps > 1).
         self._grad_accumulators = None
         self._accum_counter = None
-        # Stashes the per-category F1 report from the last validation pass so the
-        # trainer (which owns the output dir + epoch) can persist it. None until a
-        # validation pass with a COCO evaluator has run.
+        # Per-category F1 report from the last validation pass, stashed for the
+        # trainer (which owns the output dir + epoch) to persist.
         self._last_val_report = None
 
     # ------------------------------------------------------------------
@@ -78,18 +62,16 @@ class YoloV8Task:
     def initialize(self, model: tf.keras.Model) -> None:
         """Seed the model weights at the start of a fresh run.
 
-        Two mutually-exclusive paths (both no-ops once a run has its own checkpoints —
-        auto-resume then takes over):
+        Two mutually-exclusive paths, both no-ops once a run has its own
+        checkpoints (auto-resume takes over):
 
-        * ``finetune_from`` (fine-tuning): load the FULL model from a trained checkpoint,
-          preferring its **EMA / deployed weights** (``restore_eval_weights`` — the same
-          path eval/export use). The optimizer/EMA/step are NOT loaded; a fresh optimizer
-          is built next, so the config's fine-tune LR schedule / epochs apply from step 0.
-        * ``init_checkpoint`` (transfer-init): restore the selected modules (default
-          backbone + decoder; random head) from a model checkpoint written by this
-          codebase (``tf.train.Checkpoint(model=...)`` — trainer and best_ckpt
-          checkpoints qualify). Exact, order-independent, and it fails loudly if a
-          requested module is absent from the checkpoint.
+        * ``finetune_from``: load the full model from a trained checkpoint,
+          preferring its EMA / deployed weights (``restore_eval_weights``). The
+          optimizer/EMA/step are not loaded; a fresh optimizer is built next, so
+          the config's fine-tune LR schedule / epochs apply from step 0.
+        * ``init_checkpoint``: restore the selected modules (default backbone +
+          decoder; random head) from a checkpoint written by this codebase. Fails
+          loudly if a requested module is absent from the checkpoint.
         """
         finetune_from = getattr(self._config.task, 'finetune_from', None)
         if finetune_from:
@@ -109,23 +91,20 @@ class YoloV8Task:
                 raise ValueError(
                     f"task.init_checkpoint_modules: unknown module '{name}'. "
                     f"Expected one of: backbone, decoder, head.")
-        # Load the FULL model via restore_eval_weights — the same loader eval and
-        # export use. It handles every checkpoint layout this codebase writes
-        # (trainer checkpoints keep the complete weights in the EMA shadows; the
-        # bare ``model/`` object graph omits list-tracked C2f variables, so a
-        # plain tf.train.Checkpoint restore of a module subtree can silently
-        # under-load). Non-selected modules are snapshotted first and restored
-        # after, so e.g. the head keeps its fresh random initialization.
+        # restore_eval_weights loads the full model (the loader eval/export use);
+        # it handles every checkpoint layout this codebase writes, including the
+        # EMA-shadow weights a bare ``model/`` object-graph restore misses.
+        # Non-selected modules are snapshotted first and restored after, so e.g.
+        # the head keeps its fresh random init.
         from common.ckpt_loading import restore_eval_weights
         all_modules = ('backbone', 'decoder', 'head')
         keep = [m for m in all_modules
                 if m not in modules and getattr(model, m, None) is not None]
         snapshot = {m: [tf.identity(v) for v in getattr(model, m).variables]
                     for m in keep}
-        # Fingerprint the requested modules BEFORE the restore: if the checkpoint
-        # does not actually cover them (wrong path, wrong format, foreign layout),
-        # expect_partial() inside the loader restores nothing and raises nothing —
-        # and the "warm start" is silently random weights. Fail loudly instead.
+        # Fingerprint the requested modules before the restore: expect_partial()
+        # in the loader neither restores nor raises when the checkpoint does not
+        # cover them, leaving silently-random weights. Detect that and fail loudly.
         before = {m: [tf.reduce_sum(tf.abs(v)).numpy() for v in getattr(model, m).variables]
                   for m in modules}
         kind = restore_eval_weights(model, ckpt_path)
@@ -152,13 +131,13 @@ class YoloV8Task:
                  ", ".join(keep) or "none")
 
     def apply_freezing(self, model: tf.keras.Model) -> None:
-        """Freeze whole modules (``task.freeze_modules``) and/or the first N backbone
-        layers (``task.freeze_backbone_layers``) — set ``trainable=False``.
+        """Freeze whole modules (``task.freeze_modules``) and/or the first N
+        backbone layers (``task.freeze_backbone_layers``) via ``trainable=False``.
 
-        Keras propagates ``trainable=False`` to sublayers and runs frozen BatchNorm in
-        inference mode (running stats held), so a frozen layer truly stops learning.
-        Idempotent — applied on every start (including resume), before the optimizer is
-        built so ``model.trainable_variables`` already excludes the frozen weights.
+        Keras propagates ``trainable=False`` to sublayers and runs frozen BatchNorm
+        in inference mode (running stats held). Idempotent and applied on every
+        start (including resume), before the optimizer is built, so
+        ``model.trainable_variables`` already excludes the frozen weights.
         """
         task = self._config.task
         frozen = getattr(task, 'freeze_modules', None) or []
@@ -247,11 +226,10 @@ class YoloV8Task:
     def build_optimizer(self) -> Any:
         """Build the optimizer + LR schedule (config-selectable) wrapped in EMA.
 
-        Requires build_model() to have been called first (EMA needs model.variables).
-        The optimizer and schedule are chosen by ``optimizer.type`` / ``learning_rate.type``
-        (optimizers/factory.py); the defaults ('sgd' / 'cosine') reproduce the previous
-        SGDTorch + CosineDecay path exactly. Returns an ExponentialMovingAverage wrapping
-        the chosen optimizer.
+        Requires build_model() first (EMA needs model.variables). The optimizer
+        and schedule are chosen by ``optimizer.type`` / ``learning_rate.type``
+        (optimizers/factory.py); defaults are 'sgd' / 'cosine'. Returns an
+        ExponentialMovingAverage wrapping the chosen optimizer.
         """
         from optimizers.factory import build_core_optimizer, build_lr_schedule
         from optimizers.ema import ExponentialMovingAverage
@@ -326,11 +304,10 @@ class YoloV8Task:
         images, labels = inputs
 
         # Per-batch colour augmentation on the accelerator (replaces the parser-
-        # side /255 + HSV + albumentations). The parsers emit uint8 so the
-        # pipeline carries 4× less memory; this runs HSV on every row and
-        # albumentations only on detection rows (ignore_bg == 0). When images
-        # already arrive as float (some tests), they're assumed to be in [0, 1]
-        # and the /255 is skipped by batch_color_augment.
+        # side /255 + HSV + albumentations; parsers emit uint8 so the pipeline
+        # carries 4x less memory). HSV runs on every row, albumentations only on
+        # detection rows (ignore_bg == 0). Float inputs are assumed [0, 1] and the
+        # /255 is skipped inside batch_color_augment.
         from data_pipeline.batch_color_aug import batch_color_augment
         p = self._config.task.train_data.parser
         images = batch_color_augment(
@@ -347,18 +324,16 @@ class YoloV8Task:
             total, box, dfl, cls, dist, poly, poly_a, poly_d, poly_c = self._loss_fn(feats, labels)
 
         grads = tape.gradient(total, model.trainable_variables)
-        # Global gradient norm BEFORE clipping — a key debugging signal (spikes →
-        # instability; compare against gradient_clip_norm to see if clipping is active).
+        # Pre-clip global gradient norm — instability signal; compare against
+        # gradient_clip_norm to see whether clipping is active.
         grad_norm = tf.linalg.global_norm([g for g in grads if g is not None])
-        # Global weight norm — pairs with grad_norm for the update-to-weight ratio
-        # (logged as train/update_ratio) and shows weight growth vs weight decay.
+        # Pairs with grad_norm for the update-to-weight ratio (train/update_ratio).
         weight_norm = tf.linalg.global_norm(model.trainable_variables)
-        # Pass clip_norm INTO the optimizer so clipping happens after the
-        # cross-replica gradient sum (clipping here, per-replica, would break
-        # single-vs-multi-GPU equivalence). No-op on a single replica.
+        # clip_norm goes into the optimizer so clipping happens after the
+        # cross-replica gradient sum; per-replica clipping here would break
+        # single-vs-multi-GPU equivalence. No-op on a single replica.
         clip_norm = self._config.task.gradient_clip_norm
         if self._grad_accumulators is None:
-            # Default path (grad_accum_steps == 1) — apply every step, byte-identical.
             optimizer.apply_gradients(
                 zip(grads, model.trainable_variables), clip_norm=clip_norm
             )
@@ -374,9 +349,9 @@ class YoloV8Task:
             'dist_loss':       dist,
             'poly_loss':       poly,
             'poly_angle_loss': poly_a,
-            # Diagnostic (stashed by the loss fn, not in its return tuple): angle
-            # MAE that floors at 0 — the BCE angle loss has a large entropy floor
-            # and reads flat even while the head learns.
+            # Angle MAE diagnostic (stashed by the loss fn): floors at 0, unlike
+            # the BCE angle loss whose large entropy floor reads flat while the
+            # head is still learning.
             'poly_angle_mae':  self._loss_fn.poly_angle_mae_diag,
             'poly_dist_loss':  poly_d,
             'poly_conf_loss':  poly_c,
@@ -396,8 +371,7 @@ class YoloV8Task:
         Runs the model in deploy=True mode to obtain decoded detections.
         """
         images, labels = inputs
-        # Parsers now emit uint8; normalize to [0, 1] here. Keep float passthrough
-        # for backward compat (some tests feed already-normalized float images).
+        # Normalize uint8 → [0, 1]; already-normalized float inputs pass through.
         images = normalize_images(images)
         original_deploy = model.deploy
         model.deploy = True
@@ -517,9 +491,8 @@ class YoloV8Task:
 
         metrics = coco_ev.evaluate()
 
-        # Build the per-category F1/precision/recall report (best-conf + all-conf
-        # sweep) and stash it for the trainer to persist. Tiny + off the train
-        # step, so it does not affect training throughput. Never fatal.
+        # Per-category F1/precision/recall report (best-conf + all-conf sweep),
+        # stashed for the trainer to persist. Never fatal.
         try:
             from eval.metrics_report import build_report
             self._last_val_report = build_report(
@@ -537,8 +510,8 @@ class YoloV8Task:
             per_cat = coco_ev.per_category_full_metrics()
             for cat_id, cat_m in per_cat.items():
                 # Tag as cls/<NN>_<name>/<metric>: the zero-padded index keeps
-                # TensorBoard's alphabetical ordering numeric, while the class name
-                # makes the tag readable (no need to remember the index → name map).
+                # TensorBoard's alphabetical ordering numeric; the class name
+                # keeps the tag readable.
                 name = DETECTION_CLASSES.get(cat_id, f'class_{cat_id}')
                 label = f'{cat_id:02d}_{name}'
                 for mn, mv in cat_m.items():

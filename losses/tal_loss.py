@@ -57,8 +57,6 @@ _LEVEL_STRIDES = {"3": 8, "4": 16, "5": 32}
 
 
 # ---------------------------------------------------------------------------
-# CIoU helper (module-level to avoid closure overhead)
-# ---------------------------------------------------------------------------
 
 def _bbox_iou_loss(b1: tf.Tensor, b2: tf.Tensor, iou_type: str = "ciou",
                    eps: float = 1e-7) -> tf.Tensor:
@@ -68,8 +66,7 @@ def _bbox_iou_loss(b1: tf.Tensor, b2: tf.Tensor, iou_type: str = "ciou",
         iou   — 1 - IoU
         giou  — Generalized IoU (enclosing-area penalty)
         diou  — Distance IoU (center-distance penalty)
-        ciou  — Complete IoU (center distance + aspect-ratio) — the DEFAULT and the
-                exact previous computation (byte-identical)
+        ciou  — Complete IoU (center distance + aspect-ratio); default
         eiou  — Efficient IoU (center + width + height penalties)
         siou  — SCYLLA IoU (angle + distance + shape cost)
 
@@ -150,7 +147,7 @@ def _bbox_iou_loss(b1: tf.Tensor, b2: tf.Tensor, iou_type: str = "ciou",
         siou = iou - 0.5 * (dist_cost + shape_cost)
         return 1.0 - siou
 
-    # Default: ciou — EXACTLY the previous computation (keep byte-identical).
+    # Default: ciou.
     v = (4.0 / (math.pi ** 2)) * tf.square(
         tf.math.atan2(w2, h2 + eps) - tf.math.atan2(w1, h1 + eps)
     )
@@ -216,9 +213,8 @@ class TaskAlignedLossExtended:
         self.num_vertices   = 360 // angle_step  # = 24
 
         # ACSL (Adaptive Class Suppression Loss) is parsed from config (AcslConfig)
-        # but the weighting math is NOT implemented here. The flag used to be a
-        # silent no-op: a user could set `use_acsl: true` in YAML and train as if
-        # it had taken effect. Fail loud instead so the dead knob can never lie.
+        # but its weighting math is not implemented here; fail loud rather than
+        # silently training as if the flag took effect.
         if use_acsl:
             raise NotImplementedError(
                 "use_acsl=True is not supported: the ACSL class-suppression "
@@ -321,9 +317,8 @@ class TaskAlignedLossExtended:
         fl_idx = tf.cast(tgt_floor, tf.int32)                            # [B, A, 4]
         cl_idx = tf.minimum(fl_idx + 1, self.reg_max - 1)
 
-        # Gather the floor/ceil bin log-probs directly (indices are already clamped to
-        # [0, reg_max-1]). Bit-identical to the previous one-hot×reduce_sum, but without
-        # materializing two [B, A, 4, reg_max] one-hot tensors.
+        # Gather the floor/ceil bin log-probs directly (indices already clamped to
+        # [0, reg_max-1]); avoids materializing two [B, A, 4, reg_max] one-hots.
         log_p_fl = tf.gather(pd_log_softmax, fl_idx, axis=-1, batch_dims=3)  # [B, A, 4]
         log_p_cl = tf.gather(pd_log_softmax, cl_idx, axis=-1, batch_dims=3)
 
@@ -345,10 +340,10 @@ class TaskAlignedLossExtended:
     ) -> tf.Tensor:
         """Classification loss, with ignore_bg masking.
 
-        ``cls_loss_type`` selects the per-element loss (default ``bce`` is byte-identical
-        to the previous behaviour): ``focal`` adds the focal modulating factor,
-        ``varifocal`` (VFL) weights positives by their soft target and negatives by
-        ``alpha · p^gamma``. ``label_smoothing`` (0 = off) softens the BCE targets.
+        ``cls_loss_type`` selects the per-element loss (default ``bce``): ``focal``
+        adds the focal modulating factor, ``varifocal`` (VFL) weights positives by
+        their soft target and negatives by ``alpha · p^gamma``. ``label_smoothing``
+        (0 = off) softens the BCE targets.
         """
         target = target_scores
         if self.label_smoothing > 0.0:
@@ -368,7 +363,7 @@ class TaskAlignedLossExtended:
             weight = tf.where(target > 0.0, target,
                               self.focal_alpha * tf.pow(p, self.focal_gamma))
             bce = bce * weight
-        # else "bce": unchanged (default)
+        # else "bce": default
 
         bce_sum = tf.reduce_sum(bce, axis=-1)   # [B, A]
 
@@ -394,8 +389,8 @@ class TaskAlignedLossExtended:
     ) -> tf.Tensor:
         """L1 loss on log-scale distances, masked to valid GT entries (> -10.0).
 
-        Normalized by ``num_objs`` (total GT object count in the batch), matching
-        the old-codebase convention. dist_gain is calibrated to this scale.
+        Normalized by ``num_objs`` (total GT object count in the batch); dist_gain
+        is calibrated to this scale.
         """
         return distance_l1_loss(pd_dist, target_dist, fg_mask, num_objs)
 
@@ -417,30 +412,22 @@ class TaskAlignedLossExtended:
             dist:  radial distance from box center (pre-computed by parser).
             angle: sub-bin angular offset (vertex_angle - bin_start)/angle_step
                    in [0, 1) on bins that hold a vertex, 0.0 elsewhere.
-            conf:  1.0 if a valid vertex was assigned to this bin (the validity
-                   mask used by the angle/dist losses).
+            conf:  1.0 if a valid vertex was assigned to this bin; also the
+                   validity mask used by the angle/dist losses.
 
-        ``ignore_bg`` ([B] int) marks distance-stream images (ignore_bg=1) that
-        carry NO polygon GT — their ``target_polygons`` is all-zero, so every
-        conf bin reads 0. The conf loss trains on ALL bins (negative signal on
-        empty bins), so without this guard a distance-stream foreground anchor
-        (a real object) would be trained to emit conf≈0 on every vertex, which
-        is wrong: those rows have no polygon label, not an empty polygon. We
-        therefore zero the polygon loss on ignore_bg=1 rows entirely (angle/dist
-        already contribute zero there since their vertex mask is empty, but conf
-        would not). This mirrors the ignore_bg guard in ``_class_loss``.
+        ``ignore_bg`` ([B] int) marks distance-stream images that carry no polygon
+        GT (all-zero ``target_polygons``). Since conf trains on all bins, their
+        real foreground objects would otherwise be pushed to conf≈0 on every
+        vertex, so the whole polygon loss is zeroed on ignore_bg=1 rows (angle/dist
+        already contribute zero there via the empty vertex mask; conf would not).
 
-        All three normalize by num_objs. Angle and dist average over the VALID
-        vertices only (masked by conf). Conf averages over ALL bins to provide a
-        negative signal that suppresses confidence on empty bins (it is NOT
-        conf-masked, unlike angle/dist).
+        All three normalize by num_objs. Angle and dist average over the valid
+        vertices only (masked by conf); conf averages over all bins to supply a
+        negative signal on empty bins.
 
         Returns:
-            (poly_total, angle_loss, dist_loss_val, conf_loss_val)
-            poly_total:    weighted sum (poly_gain * (angle_gain*angle + dist_gain*dist + conf_gain*conf))
-            angle_loss:    raw pre-gain polygon angle loss
-            dist_loss_val: raw polygon distance loss
-            conf_loss_val: raw polygon confidence loss
+            (poly_total, angle_loss, dist_loss_val, conf_loss_val); poly_total is
+            the gain-weighted sum, the other three are raw pre-gain sub-losses.
         """
         target_dist  = target_polygons[:, :, 0::3]   # [B, A, 24]
         target_angle = target_polygons[:, :, 1::3]   # [B, A, 24] — sub-bin offset
@@ -465,10 +452,8 @@ class TaskAlignedLossExtended:
         )
 
         # Diagnostic only (not part of the loss): |sigmoid(pred) − target| MAE over
-        # valid vertices of fg anchors. The BCE angle loss has a large irreducible
-        # entropy floor (continuous target), so its curve reads flat while the head
-        # learns; this floors at 0. Stashed on self (not returned) so the public
-        # 9-tuple contract — and every test unpacking it — is unchanged.
+        # valid vertices of fg anchors. Stashed on self (not returned) so the public
+        # 9-tuple contract is unchanged.
         from losses.polygon_loss import polygon_angle_mae
         self.poly_angle_mae_diag = polygon_angle_mae(
             pd_poly_angle, target_angle, vertex_mask, poly_fg_b
@@ -503,10 +488,10 @@ class TaskAlignedLossExtended:
         anc_list, stride_list = [], []
 
         for level_str, stride_val in _LEVEL_STRIDES.items():
-            # Defensive float32: the heads pin their outputs to float32 even under
-            # a mixed-bfloat16 policy, so these casts are no-ops today — they keep
-            # every loss term in full precision if that pinning is ever removed
-            # (a bf16 loss here would silently degrade DFL/BCE numerics).
+            # Heads pin their outputs to float32 even under mixed-bfloat16, so these
+            # casts are no-ops today; they keep every loss term in full precision if
+            # that pinning is ever removed (a bf16 loss here would degrade DFL/BCE
+            # numerics).
             box_lvl = tf.cast(feats["box"][level_str], tf.float32)   # [B, H, W, 64]
             B_val   = tf.shape(box_lvl)[0]
             fH      = tf.shape(box_lvl)[1]

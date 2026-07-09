@@ -6,21 +6,19 @@ The canonical store is **JSON** (full-precision, dependency-free). From a saved 
   * ``.txt``  — console-style tables (best-conf per category + all-confidence sweep),
                 matching the on-device eval print format.
   * ``.csv``  — two files: ``<base>_best_conf.csv`` and ``<base>_all_conf.csv``.
-  * ``.xlsx`` — ONE workbook, TWO sheets: "best_conf" (all classes at their best
+  * ``.xlsx`` — one workbook, two sheets: "best_conf" (all classes at their best
                 confidence) and "all_conf" (all classes at every confidence).
 
-Excel is written with the **standard library only** (a minimal OOXML zip), so it works
+Excel is written with the standard library only (a minimal OOXML zip), so it works
 without pandas/openpyxl. Numbers are written as real numeric cells (Excel can sum/sort).
 
 Typical use:
   * During training the trainer calls :func:`build_report` and appends the result
     (one line per validation) to ``<run>/val_history.jsonl`` via
-    ``eval/val_history.py``; extract any epoch back to txt/json/csv with
-    ``utils/reports/val_history.py``. ``utils/eval.py --output_dir`` still uses
-    :func:`save_canonical` to drop a ``<ckpt>_val.json`` + ``.txt`` pair for a
-    single offline evaluation.
-  * Offline, ``utils/reports/export_val_metrics.py`` reads one report JSON and
-    calls :func:`write_csv` / :func:`write_xlsx` / :func:`write_txt`.
+    ``eval/val_history.py``. ``utils/eval.py --output_dir`` uses :func:`save_canonical`
+    to drop a ``<ckpt>_val.json`` + ``.txt`` pair for a single offline evaluation.
+  * Offline, ``utils/reports/val_history.py`` reads a report JSON (or an epoch from the
+    jsonl store) and calls :func:`write_csv` / :func:`write_xlsx` / :func:`write_txt`.
 """
 
 from __future__ import annotations

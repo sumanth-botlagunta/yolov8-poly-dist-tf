@@ -56,10 +56,10 @@ class COCOEvaluator:
         # Every metric comes from one COCOevalCustom: mAP / mAP50 / AR100 from its
         # precision/recall summary, and F1score50 from a confidence-threshold sweep
         # (step 0.05) on the cumulative precision/recall with a hallucination-GT recall
-        # correction, at IoU=0.5 / area='all' / **maxDets=10**, macro-averaged over
-        # categories with a valid (>=0) bestF1.  The GT-build policy is exposed as
+        # correction, at IoU=0.5 / area='all' / maxDets=10, macro-averaged over
+        # categories with a valid (>= 0) bestF1. The GT-build policy is exposed as
         # flags: the defaults absorb dontcare regions and keep crowd GT; setting
-        # ``ignore_iscrowds`` instead drops crowd GT.  ``iscrowds_labels`` defaults to
+        # ``ignore_iscrowds`` instead drops crowd GT. ``iscrowds_labels`` defaults to
         # the project's crowd-policy category ids.
         self._num_classes    = num_classes
         self._H, self._W     = image_size[0], image_size[1]
@@ -73,15 +73,11 @@ class COCOEvaluator:
         self._dt_anns: List[dict] = []
         self._gt_anns: List[dict] = []
         self._gt_imgs: List[dict] = []
-        # pycocotools stores matched GT ID in dtMatches; 0 is falsy so any
-        # annotation with id=0 would be treated as unmatched.  Start at 1.
+        # pycocotools stores the matched GT id in dtMatches; 0 is falsy, so an
+        # annotation with id=0 would read as unmatched. Start ids at 1.
         self._img_id  = 1
         self._ann_id  = 1
         self._ev      = None   # single COCOevalCustom (all IoU thresholds + F1 sweep)
-
-    # ------------------------------------------------------------------
-    # Accumulation
-    # ------------------------------------------------------------------
 
     def update(self, predictions: dict, groundtruths: dict) -> None:
         """Accumulate one batch of predictions and GT.
@@ -115,20 +111,20 @@ class COCOEvaluator:
 
             self._gt_imgs.append({'id': img_id, 'height': H, 'width': W})
 
-            # ---- GT annotations ----
+            # GT annotations
             for j in range(n_gt):
                 cat       = int(groundtruths['classes'][i, j])
                 is_crowd  = bool(is_crowd_arr[i, j])    if is_crowd_arr    is not None else False
                 is_dc     = bool(is_dontcare_arr[i, j]) if is_dontcare_arr is not None else False
 
-                # iscrowd objects whose class is in the crowd-class list → skip entirely
+                # iscrowd objects whose class is in the crowd-class list are skipped
                 if self._ignore_iscrowds and is_crowd and cat in self._iscrowds_labels:
                     continue
 
                 y1, x1, y2, x2 = [float(v) for v in groundtruths['bbox'][i, j]]
                 xywh = [x1 * W, y1 * H, (x2 - x1) * W, (y2 - y1) * H]
 
-                # Carry dontcare as a SEPARATE field — NOT collapsed into iscrowd.
+                # Carry dontcare as a separate field, not collapsed into iscrowd.
                 # COCOevalCustom keys dontcare absorption off ann['dontcare'] (IoU
                 # >= 0.5 fixed), while iscrowd stays = raw is_crowd for the crowd
                 # policy (COCOevalCustom._prepare additionally sets iscrowd=1 for
@@ -147,7 +143,7 @@ class COCOEvaluator:
                 })
                 self._ann_id += 1
 
-            # ---- Detection results ----
+            # Detection results
             for j in range(n_det):
                 y1, x1, y2, x2 = [float(v) for v in predictions['bbox'][i, j]]
                 cat   = int(predictions['classes'][i, j])
@@ -161,10 +157,6 @@ class COCOEvaluator:
                 })
 
             self._img_id += 1
-
-    # ------------------------------------------------------------------
-    # Evaluation
-    # ------------------------------------------------------------------
 
     def evaluate(self) -> Dict[str, float]:
         """Compute mAP and related metrics from accumulated data.
@@ -187,7 +179,7 @@ class COCOEvaluator:
 
         cats = [{'id': c, 'name': str(c)} for c in range(self._num_classes)]
 
-        # GT carries raw iscrowd (= is_crowd) plus a SEPARATE 'dontcare' field;
+        # GT carries raw iscrowd (= is_crowd) plus a separate 'dontcare' field;
         # COCOevalCustom absorbs dontcare at IoU>=0.5 via dtMatchesDc and sets
         # iscrowd=1 for iscrowds_labels categories in _prepare.
         gt_dict = {
@@ -214,7 +206,7 @@ class COCOEvaluator:
 
         image_ids = [img['id'] for img in self._gt_imgs]
 
-        # ---- Single evaluator: full PR summary (IoU 0.50:0.95) + F1 sweep ----
+        # Single evaluator: full PR summary (IoU 0.50:0.95) + F1 sweep.
         ev = COCOevalCustom(
             coco_gt, coco_dt, iouType='bbox',
             find_best_score_thresh=self._find_best_score_thresh,
@@ -323,17 +315,13 @@ class COCOEvaluator:
             }
         return result
 
-    # ------------------------------------------------------------------
-    # Per-category F1 / precision / recall tables (for the saved report)
-    # ------------------------------------------------------------------
-
     def _pr_arrays_at_50(self):
         """(precision, scores, recThrs) at IoU=0.5, area='all', maxDets=f1_max_dets.
 
-        Uses the SAME detection budget (``f1_max_dets``, default 10) as the headline
-        F1score50 and the per-category best-F1 table, so the all-conf sweep table is
-        consistent with them (it previously read at maxDets=100 and silently disagreed).
-        precision/scores are [R=101, K] (recall-point × class); recThrs is [101].
+        Uses the same detection budget (``f1_max_dets``, default 10) as the headline
+        F1score50 and the per-category best-F1 table, so the all-conf sweep table stays
+        consistent with them. precision/scores are [R=101, K] (recall-point × class);
+        recThrs is [101].
         Returns (None, None, None) if evaluate() hasn't run.
         """
         ev = getattr(self, '_ev', None)
@@ -371,7 +359,7 @@ class COCOEvaluator:
     def per_category_conf_sweep(self, conf_grid, envelope=False) -> List[Dict[str, float]]:
         """Per-category F1/precision/recall at each confidence threshold. After evaluate().
 
-        Default (``envelope=False``): reads the RAW confidence sweep grid stored by
+        Default (``envelope=False``): reads the raw confidence sweep grid stored by
         ``COCOevalCustom.accumulate`` (sweep_f1 / sweep_precision / sweep_recall at
         IoU=0.5, area='all', maxDets=``f1_max_dets``) — the exact operating-point
         counts the headline F1score50 / per-category best-F1 are selected from, so the
@@ -445,11 +433,10 @@ class COCOEvaluator:
         sweep + per-category AP / GT counts. Numbers are full-precision floats; a
         machine-readable structure callers serialize to JSON / csv / xlsx / txt.
 
-        ``envelope_sweep=False`` (default) builds the all-conf table from the RAW
+        ``envelope_sweep=False`` (default) builds the all-conf table from the raw
         operating-point sweep so it agrees with the headline F1score50 / best-conf
-        table; ``envelope_sweep=True`` uses COCO's interpolated envelope precision (the
-        legacy behavior). The chosen source is reported as ``sweep_source`` = 'raw' or
-        'coco_envelope'.
+        table; ``envelope_sweep=True`` uses COCO's interpolated envelope precision. The
+        chosen source is reported as ``sweep_source`` = 'raw' or 'coco_envelope'.
         """
         if conf_grid is None:
             # Floor 0.10 to match the best-F1 sweep grid (COCOevalCustom._scoreTreshCand);

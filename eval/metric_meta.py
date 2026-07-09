@@ -147,9 +147,9 @@ def describe(key: str) -> Optional[str]:
             base = _PER_CATEGORY.get(metric, metric)
             return f"**Per-class {base}** for class `{class_label}`."
         return None
-    # Exact registry entries win over the generic best_ composition — otherwise
-    # registered keys like `best_conf_thresh` / `best_checkpoint_epoch` were
-    # shadowed by the prefix strip (describe('conf_thresh') → None → no tooltip).
+    # Exact registry entries take priority over the generic best_ prefix composition,
+    # so registered keys like `best_conf_thresh` / `best_checkpoint_epoch` resolve
+    # directly rather than being stripped to an unknown inner key.
     if key in METRIC_DESCRIPTIONS:
         return METRIC_DESCRIPTIONS[key]
     if key.startswith("best_"):

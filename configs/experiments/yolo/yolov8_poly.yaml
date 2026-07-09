@@ -1,9 +1,9 @@
 # Experiment: yolov8_poly
 # Pipeline: bbox + cls + polygon (24-vertex PolyYOLO). NO distance head.
-# Standalone, fully self-contained config (the loader does NOT apply `base:`
-# inheritance here — every field below is the live value). It parallels
-# yolov8_poly_dist.yaml with the distance head/stream disabled; diff the two files
-# to see what differs (with_distance, dist_gain, distance_data, etc.).
+# Standalone, self-contained config (no `base:` inheritance; every field below
+# is the live value). Parallels yolov8_poly_dist.yaml with the distance
+# head/stream disabled; diff the two to see what differs (with_distance,
+# dist_gain, distance_data, etc.).
 
 task:
   init_checkpoint: initial_checkpoint_folder/ckpt-920304
@@ -110,8 +110,8 @@ task:
       aug_scale_min: 1.0
       aug_scale_max: 1.0
       random_flip: true
-      # Single-image (non-mosaic) pre-warp rotation. OFF for parity (the legacy
-      # pipeline did not rotate). The mosaic path never rotates regardless.
+      # Single-image (non-mosaic) pre-warp rotation, off. The mosaic path never
+      # rotates regardless.
       rotate: false
       rotate_degrees: null
       resize_with_random_method: true
@@ -123,28 +123,27 @@ task:
       mosaic:
         mosaic_frequency: 0.5
         mixup_frequency: 0.0
-        mosaic_center: 0.25   # explicit; matches Mosaic.__init__ + poly_dist tier (was 0.2)
-        # Canvas->output warp scale gain (stock YOLO [0.5, 1.5]) — the only source of
-        # per-sample size variety. Per-image placement scale is fixed (upright tiles).
+        mosaic_center: 0.25   # matches Mosaic.__init__ + the poly_dist tier
+        # Canvas->output warp scale gain (stock YOLO [0.5, 1.5]) — the only source
+        # of per-sample size variety. Per-image placement scale is fixed.
         aug_scale_min: 0.5
         aug_scale_max: 1.5
-        # Per-tile random-window crop: OFF (0/0). Enable to crop a random
-        # window (side fraction s ~ U[min, max]) of each tile before scaling
-        # it to the quadrant.
+        # Per-tile random-window crop: off (0/0). Enable to crop a random window
+        # (side fraction s ~ U[min, max]) of each tile before scaling it to the
+        # quadrant.
         tile_crop_min: 0.0
         tile_crop_max: 0.0
         mosaic_crop_mode: scale
-        # legacy parity: the MOSAIC path uses 0.5; the single-image path uses
-        # the parser-level area_thresh (0.1) wired via single_area_thresh
+        # the mosaic path uses 0.5; the single-image path uses the parser-level
+        # area_thresh (0.1) wired via single_area_thresh
         area_thresh: 0.5
         jitter: 0.0
         group_size: 32
         decodes_per_output: 4   # R: 4 = stock-YOLO (no reuse); lower = more reuse, less decode
-        # random_perspective (full-affine) strength applied after mosaic assembly
-        # AND to non-mosaic single images. Rotation PARITY: the mosaic path never
-        # rotates (the mosaic warp is hard-wired to no rotation in code); single-image
-        # rotation is the parser-level rotate / rotate_degrees. shear off (0).
-        # aug_rand_translate above is NOT the affine translate.
+        # random_perspective strength applied after mosaic assembly and to
+        # non-mosaic single images. The mosaic path never rotates (wired to no
+        # rotation in code); single-image rotation is the parser-level rotate /
+        # rotate_degrees. shear off (0); aug_rand_translate is not the affine translate.
         shear: 0.0
         translate: 0.1
 
@@ -152,7 +151,7 @@ task:
     tfds_name: "cleaner_polygon2026:2.0.0"
     tfds_split: test
     tfds_data_dir: /home/user/tensorflow_datasets/
-    global_batch_size: 64   # match the poly_dist tier; bs=2 ran ~32x more val batches/epoch
+    global_batch_size: 64   # match the poly_dist tier
     is_training: false
     shuffle_buffer_size: 100
     prob_copy_n_paste: 0.0
@@ -171,9 +170,8 @@ task:
       aug_scale_min: 1.0
       aug_scale_max: 1.0
       # Must be false for eval: V8ParserExtended._parse_eval_data never reads
-      # random_flip (only _parse_train_data does), so a true here was misleading —
-      # it implied flips that the eval path never applies. Kept false for clarity
-      # and parity with yolov8_poly_dist.yaml.
+      # random_flip (only _parse_train_data does), so a true here would imply
+      # flips the eval path never applies.
       random_flip: false
       resize_with_random_method: false
       skip_crowd_during_training: true
@@ -184,7 +182,7 @@ task:
       mosaic:
         mosaic_frequency: 0.0
         mixup_frequency: 0.0
-        mosaic_center: 0.25   # explicit; matches Mosaic.__init__ + poly_dist tier (was 0.2)
+        mosaic_center: 0.25   # matches Mosaic.__init__ + the poly_dist tier
         aug_scale_min: 1.0
         aug_scale_max: 1.0
         mosaic_crop_mode: null

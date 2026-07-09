@@ -25,7 +25,7 @@ try:
     flags.DEFINE_bool  ('debug',      False, 'Enable eager execution and verbose logging.')
     flags.DEFINE_string('resume_from', None, 'Resume from a specific checkpoint (overrides auto-latest).')
     flags.DEFINE_string('finetune_from', None,
-                        'Fine-tune: seed a FRESH run from a trained checkpoint (full model, '
+                        'Fine-tune: seed a fresh run from a trained checkpoint (full model, '
                         'EMA/deployed weights; fresh optimizer/EMA/LR). Overrides the config '
                         'task.finetune_from. Distinct from --resume_from (same run, continues).')
 except flags.DuplicateFlagError:
@@ -66,10 +66,10 @@ def _build_strategy(runtime_cfg) -> tf.distribute.Strategy:
 
 
 def _validate_config(config, output_dir: str) -> None:
-    """Validate mandatory config fields before any GPU or model work begins.
+    """Validate config invariants before any GPU or model work begins.
 
-    Raises ValueError with a clear message on the first problem found so the
-    user sees exactly what is wrong before waiting for model build or TFDS load.
+    Collects every violation and raises ValueError listing them, so problems
+    surface before the model build or TFDS load.
     """
     import os
     errors = []
@@ -96,12 +96,11 @@ def _validate_config(config, output_dir: str) -> None:
             "runs exactly steps_per_loop steps per epoch — without it epochs have "
             "no defined length."
         )
-    # decay_steps is an EXPLICIT YAML value (not derived); if it drifts from the
-    # number of optimizer updates the cosine schedule ends early or never anneals.
-    # The LR schedule advances once per OPTIMIZER UPDATE (optimizer.iterations),
-    # which with gradient accumulation (grad_accum_steps=N) is one update every N
-    # micro-steps — so it should anneal over train_steps // N updates, NOT the
-    # micro-step count. At N=1 expected_decay == train_steps (unchanged). Warn loudly.
+    # decay_steps is an explicit YAML value (not derived); if it drifts from the
+    # optimizer-update count the cosine schedule ends early or never anneals. The
+    # schedule advances once per optimizer update, which under gradient
+    # accumulation (grad_accum_steps=N) is one update per N micro-steps — so it
+    # should span train_steps // N updates. At N=1 that equals train_steps.
     n_accum = max(1, getattr(trainer, 'grad_accum_steps', 1))
     decay = trainer.optimizer_config.learning_rate.decay_steps
     expected_decay = trainer.train_steps // n_accum
@@ -214,11 +213,10 @@ def _validate_config(config, output_dir: str) -> None:
                 f"(or 0/0 to disable), got [{tc_min}, {tc_max}]"
             )
         if 1 <= r < 4:
-            # Not an error — R<4 is supported. The Sidon-shift source selection
-            # (data_pipeline/mosaic.py) caps any two outputs of a group at ONE
-            # shared source image, so R<4 no longer produces near-duplicate
-            # outputs; what remains is that each image is reused in 4/R outputs,
-            # i.e. an epoch consumes R/4 as many distinct images as R=4.
+            # R<4 is supported (not an error). Sidon-shift source selection caps
+            # any two outputs of a group at one shared image, so R<4 avoids
+            # near-duplicate outputs; each image just recurs in 4/R outputs, i.e.
+            # an epoch consumes R/4 as many distinct images as R=4.
             logging.info(
                 "mosaic.decodes_per_output=%d (< 4): each decoded image is "
                 "reused in %d outputs per group (Sidon selection, <=1 shared "
@@ -249,10 +247,10 @@ def _validate_config(config, output_dir: str) -> None:
     # --- validation stream sanity ---
     vd = getattr(task, "validation_data", None)
     if vd is not None and getattr(vd, "is_training", False):
-        # is_training=True on the val stream builds the INFINITE training
-        # pipeline; `for inputs in val_ds` then never terminates and the first
-        # epoch's validation hangs forever. DataConfig defaults is_training to
-        # True, so a YAML that drops the key hits exactly this.
+        # is_training=True on the val stream builds the infinite training
+        # pipeline, so `for inputs in val_ds` never terminates and validation
+        # hangs. DataConfig defaults is_training to True, so a YAML that omits
+        # the key hits exactly this.
         errors.append(
             "validation_data.is_training must be false (an infinite training "
             "stream as the val set hangs validation forever)"
@@ -295,10 +293,9 @@ def _apply_runtime_config(runtime_cfg, debug: bool) -> None:
         tf.config.run_functions_eagerly(True)
         logging.set_verbosity(logging.DEBUG)
 
-    # Thread-pool caps — must run before the TF context initializes (i.e. before
-    # any op executes). On cgroup-capped machines TF sizes its pools to the
-    # VISIBLE core count (e.g. 128) while the process may only use a fraction
-    # (e.g. 13 cores) — hundreds of threads contending for 13 cores thrash.
+    # Thread-pool caps must run before the TF context initializes (before any op
+    # executes). On cgroup-capped machines TF sizes its pools to the visible core
+    # count while the process can use only a fraction, so its threads thrash.
     inter = getattr(runtime_cfg, 'inter_op_threads', 0)
     intra = getattr(runtime_cfg, 'intra_op_threads', 0)
     if inter > 0:
@@ -316,11 +313,10 @@ def _apply_runtime_config(runtime_cfg, debug: bool) -> None:
     # bypass the dtype handling and fall through to float32 unannounced.
     precision = (runtime_cfg.mixed_precision_dtype or "float32").strip().lower()
     if precision in ("float16", "fp16", "half", "mixed_float16"):
-        # float16 needs dynamic loss scaling to avoid gradient underflow, but the
-        # custom SGDTorch optimizer + bare GradientTape training step do not apply
-        # any loss scaling. Enabling mixed_float16 here would train poorly / stall
-        # silently. Reject it until loss scaling is wired up; bfloat16 is supported
-        # (no loss scaling required) and is the recommended Tensor-Core path.
+        # float16 needs dynamic loss scaling to avoid gradient underflow, which
+        # the SGDTorch optimizer + bare GradientTape step do not apply. Reject it
+        # until loss scaling is wired up; bfloat16 needs none and is the
+        # recommended Tensor-Core path.
         raise NotImplementedError(
             "mixed_precision_dtype='float16' is not supported: the training step "
             "has no loss scaling, so float16 gradients would underflow. Use "

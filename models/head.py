@@ -3,22 +3,19 @@
 Six output heads per FPN level (strides 8, 16, 32):
     box:        float32 [batch, H, W, 64]   DFL distribution (4 × 16 bins)
     cls:        float32 [batch, H, W, 39]   class logits
-    poly_angle: float32 [batch, H, W, 24]   per-vertex angle classification
+    poly_angle: float32 [batch, H, W, 24]   per-vertex angle sub-bin offset
     poly_dist:  float32 [batch, H, W, 24]   per-vertex radial distance
     poly_conf:  float32 [batch, H, W, 24]   per-vertex confidence
     dist:       float32 [batch, H, W,  1]   object distance (log-scale)
 
 Head architecture:
-    cv2feat: 2 × Conv(4*reg_max + 3*poly_size, 3×3) — shared stem for box and all poly branches
-    cv3:     2 × Conv(128, 3×3)                      — cls stem (fixed 128 ch at all levels)
-    cv4:     num_dist_block × Conv(128, 3×3)          — dist stem (fixed 128 ch at all levels)
+    cv2feat: 2 × Conv(4*reg_max + 3*poly_size, 3×3) — shared stem for box and poly branches
+    cls:     2 × Conv(128, 3×3)                      — cls stem (128 ch at all levels)
+    dist:    num_dist_block × Conv(128, 3×3)          — dist stem (128 ch at all levels)
 
-Smart bias initialization is applied when smart_bias=True:
-    class head bias: log(5 / num_classes / (input_size/stride)^2)   # input_size=672 by default
-    box head bias:   1.0
-
-Classes:
-    YoloV8Head: Builds and applies all six heads across all FPN levels.
+Smart bias init (smart_bias=True):
+    class bias: log(5 / num_classes / (input_size/stride)^2)   # input_size=672
+    box bias:   1.0
 """
 
 from __future__ import annotations
@@ -40,11 +37,10 @@ _DIST_HIDDEN = 128   # dist stem channels — fixed at all levels
 class YoloV8Head(tf.keras.layers.Layer):
     """Multi-branch detection head for YOLOv8.
 
-    Box and all polygon branches share a common cv2feat stem so that the
-    same intermediate features feed box regression and polygon prediction.
-
-    cv2feat hidden channels = 4*reg_max + 3*output_poly_size (136 for defaults).
-    cls and dist stems always use 128 channels regardless of FPN level.
+    Box and all polygon branches share a common cv2feat stem, so the same
+    features feed box regression and polygon prediction. cv2feat hidden channels
+    = 4*reg_max + 3*output_poly_size (136 for defaults); cls and dist stems use
+    128 channels at every FPN level.
     """
 
     def __init__(
@@ -73,7 +69,7 @@ class YoloV8Head(tf.keras.layers.Layer):
         self.with_polygons    = with_polygons
         self.with_distance    = with_distance
 
-        # cv2feat channels: shared by box and all poly branches
+        # cv2feat channels, shared by box and all poly branches.
         self._cv2_hidden = 4 * reg_max + 3 * output_poly_size  # 136 for reg_max=16, poly=24
 
         self._norm_kw = dict(
@@ -84,10 +80,6 @@ class YoloV8Head(tf.keras.layers.Layer):
         )
         self._levels: Optional[List[str]] = None
 
-    # ------------------------------------------------------------------
-    # Lazy build
-    # ------------------------------------------------------------------
-
     def build(self, input_shape: Dict) -> None:
         """Build per-level branch layers.
 
@@ -97,27 +89,24 @@ class YoloV8Head(tf.keras.layers.Layer):
         levels = sorted(input_shape.keys())
         self._levels = levels
 
-        c2 = self._cv2_hidden   # 136 — shared for box + poly, fixed at all levels
+        c2 = self._cv2_hidden   # 136, shared for box + poly at all levels
 
         for level in levels:
             nk = self._norm_kw
 
-            # ---- cv2feat: shared 2-conv stem for box and all poly branches ----
+            # cv2feat: shared 2-conv stem for box and all poly branches.
             setattr(self, f"cv2feat_s1_{level}", _ConvBnAct(c2, 3, **nk))
             setattr(self, f"cv2feat_s2_{level}", _ConvBnAct(c2, 3, **nk))
 
-            # ---- box prediction from cv2feat output ----
-            # Prediction heads are pinned to float32 so logits stay float32 under a
-            # mixed_bfloat16 global policy. The loss (softmax/log_softmax/BCE in
-            # losses/tal_loss.py) has no float32 cast on head outputs, so bf16 logits
-            # would either dtype-mismatch the float32 DFL bins or lose precision.
-            # This is a no-op under the default float32 policy.
+            # Prediction heads pinned to float32 so logits stay float32 under a
+            # mixed_bfloat16 policy; the loss casts nothing, so bf16 logits would
+            # dtype-mismatch the float32 DFL bins or lose precision.
             setattr(self, f"box_pred_{level}",
                     tf.keras.layers.Conv2D(4 * self.reg_max, 1, use_bias=True,
                                            padding="same", dtype="float32",
                                            name=f"box_pred_{level}"))
 
-            # ---- cls stem: 2 × Conv(128, 3×3), fixed at all levels ----
+            # cls stem: 2 × Conv(128, 3×3).
             setattr(self, f"cls_s1_{level}", _ConvBnAct(_CLS_HIDDEN, 3, **nk))
             setattr(self, f"cls_s2_{level}", _ConvBnAct(_CLS_HIDDEN, 3, **nk))
             setattr(self, f"cls_pred_{level}",
@@ -126,7 +115,7 @@ class YoloV8Head(tf.keras.layers.Layer):
                                            name=f"cls_pred_{level}"))
 
             if self.with_polygons:
-                # poly preds: all come directly from cv2feat output (no separate stems)
+                # poly preds come directly from cv2feat output (no separate stems).
                 setattr(self, f"pa_pred_{level}",
                         tf.keras.layers.Conv2D(self.output_poly_size, 1, use_bias=True,
                                                padding="same", dtype="float32",
@@ -141,7 +130,7 @@ class YoloV8Head(tf.keras.layers.Layer):
                                                name=f"pc_pred_{level}"))
 
             if self.with_distance:
-                # ---- dist stem: num_dist_block × Conv(128, 3×3), fixed at all levels ----
+                # dist stem: num_dist_block × Conv(128, 3×3).
                 for bi in range(self.num_dist_block):
                     setattr(self, f"dist_s{bi}_{level}", _ConvBnAct(_DIST_HIDDEN, 3, **nk))
                 setattr(self, f"dist_pred_{level}",
@@ -150,10 +139,6 @@ class YoloV8Head(tf.keras.layers.Layer):
                                                name=f"dist_pred_{level}"))
 
         super().build(input_shape)
-
-    # ------------------------------------------------------------------
-    # Forward pass
-    # ------------------------------------------------------------------
 
     def call(
         self,
@@ -183,7 +168,7 @@ class YoloV8Head(tf.keras.layers.Layer):
         for level in self._levels:
             x = features[level]
 
-            # shared cv2feat — feeds box and all poly branches
+            # shared cv2feat feeds box and all poly branches
             h = getattr(self, f"cv2feat_s1_{level}")(x, training=training)
             h = getattr(self, f"cv2feat_s2_{level}")(h, training=training)
             cv2 = h
@@ -218,10 +203,6 @@ class YoloV8Head(tf.keras.layers.Layer):
             result["dist"] = out_dist
 
         return result
-
-    # ------------------------------------------------------------------
-    # Smart bias initialisation
-    # ------------------------------------------------------------------
 
     def initialize_biases(self, input_size: int = 672) -> None:
         """Set class and box prediction biases after first forward pass.

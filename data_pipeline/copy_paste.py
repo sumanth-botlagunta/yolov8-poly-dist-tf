@@ -1,12 +1,12 @@
 """Copy-Paste augmentation for instance-level data augmentation.
 
-Applied before Mosaic in the pipeline with probability prob_copy_n_paste=0.2.
-Object sources come from a separate RGBA TFDS (cleaner_copy_paste:1.0.0).
-The alpha channel is used as a compositing mask; polygons are transformed
-with the same affine applied to the object crop.
+Applied per tile inside the mosaic stage with probability prob_copy_n_paste.
+Object sources come from a separate RGBA TFDS (cleaner_copy_paste:1.0.0); the
+alpha channel is the compositing mask, and polygon vertices are transformed with
+the same placement applied to the object crop.
 
 Classes:
-    CopyAndPasteModule: Wraps the augmentation as a callable pipeline stage.
+    CopyAndPasteModule: wraps the augmentation as a callable pipeline stage.
 """
 
 from __future__ import annotations
@@ -53,14 +53,12 @@ class CopyAndPasteModule:
     ) -> Dict[str, tf.Tensor]:
         """Gate on the minimum pasted size, then composite.
 
-        Draws the resize ratio, and SKIPS the paste entirely (background returned
+        Draws the resize ratio and skips the paste entirely (background returned
         unchanged) when the pasted object would be smaller than
-        ``min_height × min_width`` pixels at the ORIGINAL background resolution
+        ``min_height × min_width`` pixels at the original background resolution
         (``obj_dims × ratio`` — the scale the composite is geometrically
-        equivalent to; see the resolution-correction note in ``_paste``). Without
-        this gate, arbitrarily tiny/blurry pasted objects entered GT as
-        full-confidence instances (the constructor's min_height/min_width were
-        previously stored but never enforced).
+        equivalent to; see the resolution-correction note in ``_paste``). The gate
+        keeps arbitrarily tiny/blurry pasted objects out of the GT.
         """
         obj_shape = tf.shape(obj_data['image'])
         obj_h_f = tf.cast(obj_shape[0], tf.float32)
@@ -116,15 +114,14 @@ class CopyAndPasteModule:
 
         # Resize object by a ratio applied directly to its own dimensions.
         #
-        # Resolution correction: the background may already have been resized
-        # (the pipeline pre-resizes to the model input size BEFORE copy-paste so
-        # the composite runs on 672² pixels, not full resolution). The object's
-        # target size is defined relative to the ORIGINAL background dims — so
-        # scale it by (current/original) per axis. This commutes exactly with
-        # the background resize: compositing here then is pixel-equivalent in
-        # geometry to compositing at full resolution and resizing afterwards.
-        # When the background is unresized, height/width == current dims and
-        # the correction is 1 (fully backward compatible).
+        # Resolution correction: the background may already have been resized (the
+        # pipeline pre-resizes to the model input size before copy-paste, so the
+        # composite runs on 672² pixels, not full resolution). The object's target
+        # size is defined relative to the original background dims, so scale it by
+        # (current/original) per axis. This commutes with the background resize:
+        # compositing here is geometrically pixel-equivalent to compositing at full
+        # resolution and resizing afterwards. When the background is unresized,
+        # height/width == current dims and the correction is 1.
         orig_h_f = tf.cast(bg_data.get('height', H), tf.float32)
         orig_w_f = tf.cast(bg_data.get('width', W), tf.float32)
         corr_h = H_f / tf.maximum(orig_h_f, 1.0)
@@ -255,10 +252,9 @@ class CopyAndPasteModule:
             y_bg = (paste_y_f + pts[:, 1] * new_h_f) / H_f
             # A valid vertex that lands outside the background image is invalidated
             # (-1 sentinel), UNLIKE mosaic (transform_boxes_polygons / random_perspective)
-            # which CLIPS out-of-frame vertices to the edge for box-GT consistency.
-            # Here clipping would pin the vertex to the edge
-            # and inject a wrong radial distance into the pasted object's GT, so we drop
-            # it instead.
+            # which clips out-of-frame vertices to the edge for box-GT consistency.
+            # Clipping here would pin the vertex to the edge and inject a wrong radial
+            # distance into the pasted object's GT, so it is dropped instead.
             in_bounds = tf.logical_and(
                 tf.logical_and(x_bg >= 0.0, x_bg <= 1.0),
                 tf.logical_and(y_bg >= 0.0, y_bg <= 1.0),
@@ -270,15 +266,14 @@ class CopyAndPasteModule:
 
             new_pts = tf.reshape(tf.stack([x_bg, y_bg], axis=-1), [1, max_v])
 
-            # Fit to the bg polygon column count. The copy-paste source decoder
-            # does NOT resample, so an object can carry far more vertices than the
-            # background's (possibly resampled) width. When it does, EVENLY RESAMPLE
+            # Fit to the bg polygon column count. The copy-paste source decoder does
+            # not resample, so an object can carry far more vertices than the
+            # background's (possibly resampled) width. When it does, evenly resample
             # the valid vertices to the column budget rather than taking the first
-            # n_poly_cols raw vertices — the latter keeps only a contiguous arc of
-            # the contour, which corrupts the PolyYOLO radial target (it discards
-            # the far side of the polygon entirely). resample_polygons preserves the
-            # per-bin max radius to within sampling resolution, identical to the
-            # decode-time resample the rest of the pipeline already relies on.
+            # n_poly_cols raw vertices — the latter keeps only a contiguous arc of the
+            # contour and corrupts the PolyYOLO radial target (it discards the far
+            # side of the polygon). resample_polygons preserves the per-bin max radius
+            # to within sampling resolution.
             from data_pipeline.augmentations import resample_polygons
             n_poly_cols = tf.shape(bg_data['groundtruth_polygons'])[1]
             cur_cols = tf.shape(new_pts)[1]

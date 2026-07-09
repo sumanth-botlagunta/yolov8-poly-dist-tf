@@ -10,19 +10,21 @@
 | `tests/unit/` | pure component unit tests: backbone, decoders, model forward, EMA, sgd_warmup, tal_assigner, coco/distance/polygon evaluators (including crowd/dontcare handling), config loading, viz_utils | no |
 | `tests/integration/` | end-to-end pipeline, checkpoint loading, multi-GPU | no |
 | `tests/smoke/` | training-loop smoke (`TestDrySmoke` on synthetic data, 10 steps) + real-data smoke (`TestRealDataSmoke`, `@pytest.mark.smoke`) | only the marked real-data class |
-| `tests/test_*.py` (top level) | component tests: decoders, parser, copy_paste, mosaic, losses (computation + reference parity + polygon conventions + distance loss), polygon preprocessing, batch shapes | no |
+| `tests/test_*.py` (top level) | component tests: parser, copy_paste (+ resample), mosaic (+ letterbox), losses (computation + reference parity + polygon conventions + distance loss), polygon preprocessing, batch shapes, pipeline doc/sentinel contracts, device-savedmodel export | no |
 
-**Top-level test files (16 files):** `test_batch_color_aug.py` (exact equivalence of the
+**Top-level test files** include `test_batch_color_aug.py` (exact equivalence of the
 batched GPU colour aug vs the per-image `tf.image.adjust_*` reference, mask gating, dtype
-paths), `test_batch_shape_consistency.py`, `test_copy_paste.py` (includes the
-resolution-correction tests for compositing on pre-resized backgrounds),
-`test_decoders.py` (includes encoded-bytes / `SkipDecoding` decoder tests), `test_distance_loss.py`,
-`test_loss_computation.py`, `test_loss_reference_parity.py`,
-`test_mosaic.py` (group semantics: G in → G//R out, R=4 no-reuse, per-output frequency;
-canvas-warp geometry/label/mask-partition tests; warp-scale-bounds distribution test), `test_parser.py`,
-`test_polygon_loss_conventions.py` (pins the all-bins conf convention),
-`test_polygon_preprocessing.py` (includes segment-equivalence tests asserting exact output parity
-of the `unsorted_segment_max` / `segment_min` formulation vs the old one-hot reference).
+paths), `test_batch_shape_consistency.py`, `test_copy_paste.py` / `test_copy_paste_resample.py`
+(resolution correction on pre-resized backgrounds + the even-resample column fit),
+`test_distance_loss.py`, `test_loss_computation.py`, `test_loss_reference_parity.py`,
+`test_mosaic.py` / `test_mosaic_letterbox_changes.py` (group semantics: G in → G//R out, R=4
+no-reuse, per-output frequency; canvas-warp geometry/label/mask-partition; warp-scale-bounds
+distribution), `test_parser.py`, `test_polygon_loss_conventions.py` (pins the all-bins conf
+convention), `test_polygon_negative_canvas_vertex.py` (the `-1.0` sentinel vs slightly-negative
+real vertices), `test_polygon_preprocessing.py` (segment-equivalence parity of the
+`unsorted_segment_max` / `segment_min` formulation vs the one-hot reference), and the
+`test_pipeline_doc_contracts.py` / `test_sentinel_config_contracts.py` contract tests. Decoder
+tests (encoded-bytes / `SkipDecoding`) live in `tests/unit/test_decoders.py`.
 
 **Unit test files (selection):** `test_backbone.py`, `test_bf16_policy.py` (bfloat16 Keras policy
 applied correctly, heads remain float32), `test_coco_crowd_dontcare.py`,

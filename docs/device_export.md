@@ -139,6 +139,6 @@ are numerically byte-identical and do not change training or checkpoints.
 all**, and no `Pack`/`Shape`. The remaining ops are all
 standard SNPE-supported: `Conv2D`, `BiasAdd`, `Relu`, `MaxPool`,
 `ResizeNearestNeighbor`, `Mul`/`Sub`/`Rsqrt`/`AddV2` (folded BatchNorm constants),
-`ConcatV2`, `Reshape`, `StridedSlice`, `Squeeze`, `RealDiv` (the baked `/255`).
+`ConcatV2`, `Reshape`, `Squeeze`, `RealDiv` (the baked `/255`).
 
 Tests: `tests/test_export_device_savedmodel.py`.

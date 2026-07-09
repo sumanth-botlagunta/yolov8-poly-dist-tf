@@ -31,10 +31,10 @@ def _warn_unknown_keys(
 ) -> None:
     """Warn (never raise) about keys the loader does not consume in a section.
 
-    The loader pulls keys with ``.get()``, so a typo (e.g. ``iou_gian`` for
-    ``iou_gain``) silently falls back to the default with no signal. This surfaces
-    such typos in the high-impact flat sections (loss gains, runtime). ``ignored``
-    lists known-vestigial keys that are intentionally unparsed.
+    The loader pulls keys with ``.get()``, so a typo falls back to the default
+    with no signal; this surfaces such typos. ``ignored`` lists keys that are
+    intentionally unparsed. Unknown keys outside the sections passed through here
+    are silently dropped.
     """
     if not isinstance(section, dict):
         return
@@ -433,10 +433,6 @@ def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
         dummy_distance=p.get("dummy_distance", True),
         with_polygons=p.get("with_polygons", True),
         albumentations_frequency=p.get("albumentations_frequency", 1.0),
-        # NOTE: aug_rand_angle / aug_rand_perspective were dead config — parsed but
-        # never forwarded to V8ParserExtended nor applied (geometry lives in the
-        # mosaic-stage random_perspective: degrees/shear/translate). Removed; a stray
-        # key in an old YAML is silently ignored.
         jitter=p.get("jitter", 0.0),
         area_thresh=p.get("area_thresh", 0.1),
         eval_gray_border=p.get("eval_gray_border", False),
@@ -470,7 +466,7 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
     _warn_unknown_keys(t, _TRAINER_KEYS, "trainer")
     opt_raw    = t.get("optimizer_config", {})
     ema_raw    = opt_raw.get("ema", {})
-    # The optimizer/schedule TYPE selects which nested param block to read, e.g.
+    # The optimizer/schedule `type` selects which nested param block to read, e.g.
     # `optimizer: {type: adamw, adamw: {...}}`; defaults are 'sgd' / 'cosine'.
     lr_block   = opt_raw.get("learning_rate", {})
     lr_type    = lr_block.get("type", "cosine")
@@ -478,10 +474,8 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
     opt_block  = opt_raw.get("optimizer", {})
     opt_type   = opt_block.get("type", "sgd")
     sgd_raw    = opt_block.get(opt_type, opt_block)
-    # SGD momentum/bias warmup is driven by OptimizerConfig.warmup_steps; LR
-    # warmup is LrScheduleConfig.warmup_steps.
-    # `name` is a cosmetic label carried in the YAML (e.g. `name: SGD`); `type`
-    # selects the nested block and is consumed one level up — both are ignored here.
+    # `name` is a cosmetic YAML label; `type` selects the nested block one level
+    # up — both are ignored here.
     _warn_unknown_keys(sgd_raw, _OPT_PARAM_KEYS, f"optimizer.{opt_type}",
                        ignored=frozenset({"name", "type"}))
     _warn_unknown_keys(lr_raw, _LR_SCHED_KEYS, f"learning_rate.{lr_type}",

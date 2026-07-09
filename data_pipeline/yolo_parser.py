@@ -1,24 +1,22 @@
 """YOLOv8-specific parser with polygon and distance support (V8ParserExtended).
 
-Training augmentation pipeline order:
+Training augmentation order:
     1. Skip is_crowd annotations (if skip_crowd_during_training=True)
     2. Random horizontal flip (with polygon transformation)
     3. Clip boxes and polygons to image bounds
     4. Preprocess polygons to PolyYOLO format
     5. Build labels dictionary
 
-    The geometric affine (random_perspective: rotate/scale/shear/translate) is NO
-    LONGER applied here — it runs upstream in the mosaic stage (data_pipeline/mosaic.py)
-    for both the 4-image mosaic and non-mosaic single images.
+The geometric affine (random_perspective: rotate/scale/shear/translate) runs
+upstream in the mosaic stage (data_pipeline/mosaic.py) for both the 4-image
+mosaic and non-mosaic singles, so the parser applies none here.
 
-Colour augmentation (normalize /255 → HSV jitter → albumentations) is NO LONGER
-done here. The parser now emits a uint8 image so the whole pipeline carries
-uint8 (4× less host→device memory traffic); the colour pipeline runs once per
-batch on the accelerator inside ``train.task.train_step`` via
+Colour augmentation (normalize /255 → HSV jitter → albumentations) also runs
+elsewhere: the parser emits a uint8 image (the whole pipeline carries uint8 for
+less host→device traffic) and the colour pipeline runs once per batch on the
+accelerator inside ``train.task.train_step`` via
 ``data_pipeline.batch_color_aug.batch_color_augment`` (eval normalizes /255 in
-``validation_step``). This moves ~20 ms·core/img off the CPU-capped tf.data
-workers onto the otherwise-idle GPU, with the identical per-image randomness
-distribution.
+``validation_step``), with the same per-image randomness distribution.
 
 Output labels schema:
     source_id: string [batch]
@@ -116,13 +114,12 @@ class V8ParserExtended(Parser):
             classes  = tf.boolean_mask(classes,  valid)
             polygons = tf.boolean_mask(polygons, valid)
 
-        # Resize to output_size so all images entering augmentation have a fixed shape.
-        # When the image arrives from the mosaic stage it is already exactly
-        # [h_out, w_out, 3] with a static (fully-defined) shape (random_perspective
-        # calls set_shape). In that case skip the cast→resize→cast round trip
-        # entirely. This decision is made at TRACE time via a python `if` on the
-        # static shape — exactly what we want inside dataset.map. Tests that feed
-        # variable-size raw images keep the resize path.
+        # Resize to output_size so all images entering augmentation share a fixed
+        # shape. When the image arrives from the mosaic stage it is already exactly
+        # [h_out, w_out, 3] with a static shape (random_perspective calls set_shape),
+        # so skip the cast→resize→cast round trip. The decision is made at trace time
+        # via a Python `if` on the static shape. Variable-size raw inputs (tests) keep
+        # the resize path.
         h_out, w_out = self._output_size[0], self._output_size[1]
         static_h = image.shape[0]
         static_w = image.shape[1]
@@ -141,11 +138,10 @@ class V8ParserExtended(Parser):
         if self._random_flip:
             image, boxes, polygons = random_horizontal_flip(image, boxes, polygons)
 
-        # 3. Geometric augmentation (rotation/scale/shear/translate) is now done
-        #    upstream in the mosaic stage's random_perspective — for BOTH the mosaic
-        #    and single-image branches — so the parser no longer applies an affine
-        #    here (doing so would double-warp). The image already arrives at
-        #    output_size from that stage.
+        # 3. Geometric augmentation (rotation/scale/shear/translate) runs upstream
+        #    in the mosaic stage's random_perspective for both the mosaic and
+        #    single-image branches, so the parser applies no affine here (doing so
+        #    would double-warp). The image already arrives at output_size.
 
         # 4. Clip boxes; filter degenerate and too-small boxes
         pre_areas = (
@@ -163,10 +159,9 @@ class V8ParserExtended(Parser):
         # Clip polygon coords to [0, 1]
         polygons = clip_polygon_coords(polygons)
 
-        # Colour augmentation (normalize /255 → HSV → albumentations) is now done
-        # once per BATCH on the accelerator in train.task.train_step (see
-        # data_pipeline.batch_color_aug). The image stays uint8 through batching
-        # for 4× less memory traffic.
+        # Colour augmentation (normalize /255 → HSV → albumentations) runs once per
+        # batch on the accelerator in train.task.train_step (see
+        # data_pipeline.batch_color_aug). The image stays uint8 through batching.
 
         n_gt = tf.shape(boxes)[0]
 
@@ -333,10 +328,10 @@ class V8ParserExtended(Parser):
         # Reshape polygons to [N, n_pairs, 2] (x, y); -1 auto-infers n_pairs.
         pts = tf.reshape(polygons, [N, -1, 2])
 
-        # Valid vertices: x > -1.0 — the reserved polygon sentinel is exactly -1.0.
-        # A legitimately-negative canvas coordinate
-        # (mosaic overflow that survived clip-to-edge) is a REAL vertex, not padding,
-        # so it must contribute to the radial target. `>= 0.0` would silently drop it.
+        # Valid vertices key off the -1.0 sentinel (x > -1.0). A slightly-negative
+        # canvas coordinate (mosaic overflow that survived clip-to-edge) is a real
+        # vertex, not padding, and must contribute to the radial target; `>= 0.0`
+        # would drop it.
         valid = pts[:, :, 0] > -1.0  # [N, n_pairs]
 
         # Relative positions from box center
@@ -400,11 +395,11 @@ class V8ParserExtended(Parser):
         angle_bins = angle_bins * conf_bins                                  # [N, n_angles]
 
         # Interleave [dist0, angle0, conf0, dist1, angle1, conf1, ...].
-        # NOTE — channel-order trap: the GT per-bin order here is (dist, angle,
-        # conf), but the PREDICTION tensor from the detection generator stacks
-        # (conf, dist, angle) (models/detection_generator.py, poly_out). The two
-        # conventions are pinned by tests/unit/test_polygon_channel_order.py;
-        # never index one with the other's layout.
+        # Channel-order trap: the GT per-bin order here is (dist, angle, conf), but
+        # the prediction tensor from the detection generator stacks (conf, dist,
+        # angle) (models/detection_generator.py, poly_out). The two conventions are
+        # pinned by tests/unit/test_polygon_channel_order.py; never index one with
+        # the other's layout.
         result = tf.stack([max_dists, angle_bins, conf_bins], axis=-1)  # [N, n_angles, 3]
         return tf.reshape(result, [N, n_angles * 3])                     # [N, n_angles*3]
 

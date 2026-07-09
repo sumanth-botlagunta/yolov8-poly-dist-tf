@@ -102,6 +102,6 @@ def test_readme_checkpoint_interval_is_formula_not_baked():
 def test_export_docstring_documents_output_schema():
     import utils.export.export_saved_model as ex
     doc = ex.__doc__ or ""
-    assert "Output Schema" in doc
+    assert "Output" in doc
     for key in ("bbox", "classes", "confidence", "num_detections", "polygons", "distance"):
         assert key in doc, f"output schema missing '{key}'"

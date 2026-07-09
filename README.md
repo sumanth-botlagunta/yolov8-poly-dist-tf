@@ -136,6 +136,19 @@ to `<run_dir>/val_history.jsonl`; pull any epoch (or the best) back into the ckp
 txt/json/csv with `python -m utils.reports.val_history <run_dir> --epoch N` (or `--best`). See
 [docs/metrics.md](docs/metrics.md) for what each metric means.
 
+For a per-class confusion matrix (where a class's detections leak into other classes or
+background), run `python -m utils.confusion_matrix --config <yaml> --checkpoint <ckpt> --split val`.
+
+---
+
+## Notebooks
+
+`notebooks/` holds three self-contained analysis notebooks (run from the repo root):
+
+- `01_data_pipeline_walkthrough.ipynb` — build the training input pipeline and inspect it stage by stage.
+- `02_tensorboard_analysis.ipynb` — post-run analysis of a run directory's TensorBoard scalars and `val_history.jsonl`.
+- `03_checkpoint_inspection.ipynb` — load a checkpoint/SavedModel, run inference, and inspect raw head statistics.
+
 ---
 
 ## Export
@@ -179,7 +192,8 @@ optimizers/     SGDTorch (momentum warmup) + EMA
 eval/           COCO / polygon / distance evaluators + per-category report + metric metadata
 train/          task, custom trainer loop, run_train entry point + supervisor
 common/         shared library: viz, ckpt loading, runtime setup, progress, run metadata
-utils/          CLIs: eval; export/ (savedmodel, device, inference); reports/; pipeline/
+utils/          CLIs: eval, confusion_matrix; export/ (savedmodel, device, inference); reports/; pipeline/
+notebooks/      data-pipeline walkthrough, TensorBoard/run analysis, checkpoint inspection
 tests/          unit / integration / smoke
 ```
 

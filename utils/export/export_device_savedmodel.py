@@ -1,46 +1,27 @@
-"""Export a trained checkpoint to a SavedModel laid out as a DROP-IN replacement
-for the deployed on-device Qualcomm SNPE DLC.
+"""Export a trained checkpoint to a SavedModel matching the deployed SNPE DLC.
 
-Unlike ``utils/export/export_saved_model.py`` (which bakes NMS into the graph and emits
-the post-processed deploy dict for [0, 1]-normalized input), this tool reproduces
-the *deployed device contract* so the existing SNPE conversion / quantization /
-net-run / result-extraction pipeline keeps working **unchanged** — the new ``.dlc``
-simply replaces the deployed one.
+Drop-in replacement for the deployed on-device Qualcomm SNPE DLC: the exported
+SavedModel feeds the existing snpe-tensorflow-to-dlc conversion / quantization /
+net-run / extraction pipeline unchanged. Unlike export_saved_model.py, it emits
+per-head raw tensors on the device contract (no in-graph NMS) and bakes /255 so
+the device can feed raw [0, 255] pixels; the forward pass runs in float32.
 
-Device contract (reverse-engineered from the on-device tooling — see the
-``snpe-tensorflow-to-dlc`` command and the result-extraction script in
-``docs/device_export.md``):
+Device contract (input node, then one flat [N, C] tensor per head with the FPN
+levels concatenated 3→4→5, channels-last, batch dim dropped):
 
-    Input  node:  ``input_image``   float32  [1, 672, 416, 3]   pixels in [0, 255]
-    Output nodes (one flat tensor per head, levels concatenated 3→4→5, channels-last,
-                  batch dim dropped → [N, C]). ``box`` is DFL-DECODED (the deployed DLC
-                  bakes it in); the rest are RAW (the on-device ``YoloV8LayerModified``
-                  applies sigmoid/softplus/exp + stride/anchor/NMS, and stride/anchor to
-                  box):
+    node         shape                dtype    status
+    input_image  [1, 672, 416, 3]     float32  pixels in [0, 255] (/255 baked in)
+    box          [N, 4]   (5733, 4)   float32  DFL-decoded LTRB, pre-stride
+    cls          [N, 39]  (5733, 39)  float32  raw class logits
+    poly_angle   [N, 24]  (5733, 24)  float32  raw (pre-sigmoid)
+    poly_dist    [N, 24]  (5733, 24)  float32  raw (pre-softplus)
+    poly_conf    [N, 24]  (5733, 24)  float32  raw (pre-sigmoid)
+    dist         [N, 1]   (5733, 1)   float32  raw log-distance
 
-        box         float32 [N, 4]            (= [5733, 4])   DFL-decoded LTRB, pre-stride
-        cls         float32 [N, num_classes]  (= [5733, 39])  raw class logits
-        poly_angle  float32 [N, poly_size]    (= [5733, 24])  raw (pre-sigmoid)
-        poly_dist   float32 [N, poly_size]    (= [5733, 24])  raw (pre-softplus)
-        poly_conf   float32 [N, poly_size]    (= [5733, 24])  raw (pre-sigmoid)
-        dist        float32 [N, 1]            (= [5733,  1])  raw log-distance
-
-    ``box`` decode (matches the deployed DLC and detection_generator._decode_dfl):
-        [N, 64] → reshape [N, 4, 16] → softmax over bins → Σ·[0..15] (1×1 conv) → [N, 4].
-
-    N = total anchors over the 3 FPN levels for the given input size
-        (672×416 → 84·52 + 42·26 + 21·13 = 5733).
-
-Two device-specific transforms vs. the [0,1] export contract:
-  1. ``input_image`` carries raw [0, 255] pixels (the on-device raw-image generator
-     sets ``IMAGE_NROM_FLAG=False``), so this graph divides by 255 internally to
-     feed the model the [0, 1] tensors it was trained on (train.task.normalize_images).
-  2. The forward pass runs in float32 (NOT the training mixed_bfloat16 policy) so the
-     exported GraphDef is a clean float32 graph for the SNPE converter / quantizer.
-
-The per-head concatenation here mirrors ``models/detection_generator.py`` exactly
-(reshape each level [B,H,W,C]→[B,H*W,C] row-major, concat levels 3→4→5 on the anchor
-axis).
+N = total anchors over the 3 FPN levels (672×416 → 84·52 + 42·26 + 21·13 = 5733).
+Only box is decoded in-graph (the deployed DLC bakes it in); every other head is
+raw, with the on-device YoloV8LayerModified applying sigmoid/softplus/exp and the
+stride/anchor/NMS decode.
 
 Usage:
     python utils/export/export_device_savedmodel.py \
@@ -49,8 +30,7 @@ Usage:
         --output_dir /path/to/saved_model \
         --input_size 672,416
 
-Then, exactly as before (drop-in — only the SavedModel path changes):
-    ./snpe-tensorflow-to-dlc --input_network /path/to/saved_model \
+    snpe-tensorflow-to-dlc --input_network /path/to/saved_model \
         --output_path model_pre.dlc --input_dim input_image 1,672,416,3 \
         --out_node cls --out_node box --out_node poly_angle \
         --out_node poly_conf --out_node poly_dist --out_node dist
@@ -126,15 +106,13 @@ def _concat_levels(per_level: dict, channels: int) -> tf.Tensor:
 
 
 def _force_float32_policy() -> None:
-    """Set — and verify — the global Keras policy is float32.
+    """Set and assert the global Keras policy is float32.
 
-    The SNPE device export must be a pure float32 graph. A leaked mixed_bfloat16
-    policy is *silent* here: the prediction heads are pinned float32 (models/head.py)
-    so head outputs still report float32 dtype, but their conv stems would compute in
-    bf16, so the values carry bf16 precision. That surfaces only much later as a
-    ``--verify`` tolerance failure (float32 SavedModel vs bf16-precision reference),
-    with matching shapes/dtypes and no clue to the cause. Re-set + assert here so the
-    contamination fails loudly at the source instead.
+    The SNPE export must be a pure float32 graph. A leaked mixed_bfloat16 policy is
+    silent: the heads are pinned float32 (models/head.py) so head outputs still
+    report float32 dtype, but their conv stems would compute in bf16 and carry bf16
+    precision, surfacing only later as a ``--verify`` tolerance failure. Asserting
+    here fails at the source.
     """
     tf.keras.mixed_precision.set_global_policy('float32')
     compute = tf.keras.mixed_precision.global_policy().compute_dtype
@@ -158,23 +136,18 @@ def main(_):
 
     # Force a clean float32 graph for the SNPE converter. The training
     # mixed_bfloat16 policy (heads pinned float32) is for throughput only; float32
-    # is numerically a superset, restores from the same checkpoint, and avoids
-    # bf16 ops the SNPE TF converter would choke on. (Do NOT call
-    # common.runtime_setup.apply_eval_precision_policy here — that re-enables bf16.)
+    # restores from the same checkpoint and avoids bf16 ops the SNPE converter
+    # rejects. Do not call common.runtime_setup.apply_eval_precision_policy here —
+    # it re-enables bf16.
     tf.keras.mixed_precision.set_global_policy('float32')
 
     config    = load_config(FLAGS.config)
     model_cfg = config.task.model
 
     # Re-assert float32 immediately before building the model. load_config (or an
-    # earlier import in a long-lived session/notebook) can leave a mixed_bfloat16
-    # global policy active — the base poly_dist YAML now trains in bfloat16. If the
-    # model layers are created under that policy their conv STEMS compute in bf16
-    # while the prediction heads stay pinned float32, so head outputs still REPORT
-    # float32 dtype but carry bf16-precision values. The SavedModel (frozen here in
-    # float32) then disagrees with the bf16 reference model by ~60-80% of elements
-    # with matching shapes/dtypes — exactly the cryptic `--verify` tolerance failure
-    # that motivated this guard. Fail fast with an actionable message instead.
+    # earlier import) can leave a mixed_bfloat16 policy active, in which case the
+    # conv stems build in bf16 while the heads stay pinned float32 — the frozen
+    # float32 SavedModel would then silently disagree with the bf16 reference.
     _force_float32_policy()
 
     # Build at the device input size. The model is fully convolutional, so a
@@ -196,8 +169,8 @@ def main(_):
         model.decoder.static_resize = True
     model.build_and_init([H, W, 3])
 
-    # Belt-and-suspenders: confirm nothing inside build_* re-enabled a non-float32
-    # policy while the layers were being created.
+    # Confirm nothing inside build_* re-enabled a non-float32 policy while the
+    # layers were being created.
     _force_float32_policy()
 
     kind = restore_eval_weights(model, FLAGS.checkpoint)
@@ -335,10 +308,9 @@ def _fold_batch_norms(gd):
     Why: a standalone FusedBatchNormV3 left in the graph makes snpe-tensorflow-to-dlc warn
     ``can only merge 1 encoding for src op: .../FusedBatchNormV3 .../Conv2D, but found 0`` and
     keeps a separate BN layer. In float that runs exactly; once QUANTIZED, the BN's per-channel
-    scale (gamma/sqrt(var+eps)) is forced into ONE per-tensor int8 activation encoding, crushing
-    narrow-range channels and cascading downstream (the "BatchNorm layers are the worst-diverged"
-    pattern). Folding the scale into the conv's per-channel WEIGHTS lets SNPE quantize it
-    per-channel correctly — no standalone BN, no bad encoding.
+    scale (gamma/sqrt(var+eps)) is forced into one per-tensor int8 activation encoding, crushing
+    narrow-range channels and cascading downstream. Folding the scale into the conv's per-channel
+    weights lets SNPE quantize it per-channel correctly — no standalone BN, no bad encoding.
 
     Math (BN inference): y = (x - mean) * gamma/sqrt(var+eps) + beta. With ``s = gamma/sqrt(var+eps)``
     and a preceding ``conv(x) [+ bias]``: fold ``W' = W * s`` (per output channel) and

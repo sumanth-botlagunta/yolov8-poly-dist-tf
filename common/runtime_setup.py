@@ -1,16 +1,15 @@
 """Shared runtime setup for offline tools (eval / export).
 
-The trainer (`train/run_train.py:_apply_runtime_config`) activates the global
-Keras mixed-precision policy from the experiment config before building the model.
-The offline tools build the *same* model from the *same* config but historically
-skipped this step, so a bfloat16-trained checkpoint was loaded into a float32
-graph. Weights still restore (dtypes are cast on assign), but the backbone/decoder
-then compute in float32 — a different numerical path than training/serving. This
-helper centralizes the policy application so every tool matches the trainer.
+The offline tools build the same model from the same config as the trainer
+(``train/run_train.py:_apply_runtime_config``), so they must activate the same global
+Keras mixed-precision policy before building it. Otherwise a bfloat16-trained checkpoint
+computes in float32 — a different numerical path than training/serving (the weights
+still restore, since dtypes cast on assign). This helper centralizes that step so every
+tool matches the trainer.
 
-This intentionally only sets the *precision policy* (the part that affects model
-numerics). It does not touch XLA, threading, or distribution strategy, which are
-trainer-loop concerns irrelevant to single-process offline inference.
+It sets only the precision policy (the part that affects model numerics); XLA, threading,
+and distribution strategy are trainer-loop concerns irrelevant to single-process offline
+inference.
 """
 
 from __future__ import annotations
@@ -25,11 +24,10 @@ def apply_eval_precision_policy(config) -> str:
 
     Mirrors the bfloat16/float32 branch of
     ``train/run_train.py:_apply_runtime_config`` so offline model construction
-    matches the trained checkpoint's compute dtype. Returns the normalized
-    precision string actually applied (for logging/tests). float16 is rejected for
-    the same reason the trainer rejects it (no loss scaling), but since these tools
-    are inference-only we simply fall back to the default policy with a warning
-    rather than raising.
+    matches the trained checkpoint's compute dtype. Returns the normalized precision
+    string actually applied (for logging/tests). float16 is rejected as the trainer
+    rejects it (no loss scaling); since these tools are inference-only it falls back to
+    the float32 policy with a warning rather than raising.
     """
     import tensorflow as tf
 

@@ -275,18 +275,18 @@ def test_docs_describe_bias_lr_scale_as_absolute_not_times_base():
 # ---------------------------------------------------------------------------
 
 def test_polygon_loss_docstring_distinguishes_conf_from_angle_dist():
-    """polygon_conf_loss averages BCE over ALL bins (negative signal on empties),
-    while angle/dist mask to valid vertices. The tal_loss._polygon_loss docstring must
-    NOT claim all three average over valid vertices only."""
+    """polygon_conf_loss averages BCE over all bins (negative signal on empties),
+    while angle/dist mask to valid vertices; the docstrings must keep stating that
+    distinction."""
     from losses import polygon_loss as pl
     from losses.tal_loss import TaskAlignedLossExtended
 
     conf_src = inspect.getsource(pl.polygon_conf_loss)
-    assert 'mean over ALL bins' in conf_src, \
-        "polygon_conf_loss no longer averages over all bins (test premise stale)"
+    assert 'mean over all bins' in conf_src.lower(), \
+        "polygon_conf_loss no longer documents averaging over all bins"
 
-    doc = TaskAlignedLossExtended._polygon_loss.__doc__
-    assert 'average over the VALID vertices only\n        (masked by conf)' not in doc, \
-        "tal_loss docstring still claims all three sub-losses are valid-vertex-masked"
-    assert 'ALL bins' in doc, \
-        "tal_loss docstring should note conf averages over ALL bins"
+    doc = TaskAlignedLossExtended._polygon_loss.__doc__.lower()
+    assert 'all bins' in doc, \
+        "tal_loss docstring should note conf averages over all bins"
+    assert 'valid' in doc and 'conf' in doc, \
+        "tal_loss docstring should distinguish valid-vertex-masked angle/dist from conf"

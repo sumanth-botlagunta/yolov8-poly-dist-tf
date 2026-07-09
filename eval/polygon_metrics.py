@@ -8,7 +8,7 @@ Prediction format (from detection_generator output):
     - dist:  radial distance for each of 24 vertices, in **normalized** image units
     - angle: per-bin sub-bin offset in [0, 1) (vertex angle = (i + angle) * step)
     - conf:  per-vertex confidence (sigmoid-activated); bins below ``conf_thresh``
-      are EXCLUDED from rasterization, mirroring the decode/viz gate
+      are excluded from rasterization, mirroring the decode/viz gate
 
 GT format (from yolo_parser._preprocess_polygons_v2):
     gt_polygons: [B, max_gt, 72] = [dist, angle, conf] x 24 interleaved
@@ -42,10 +42,10 @@ log = logging.getLogger(__name__)
 # reconstructs at the right resolution; this is only the PolygonEvaluator default.
 _NUM_VERTICES = 24
 
-# Per-bin confidence gate for PREDICTED polygon vertices. The evaluator and the
-# TensorBoard polygon overlay (common/viz_utils.py) MUST share this threshold so
-# the visualised contour matches the one scored — viz_utils imports this value
-# as its default rather than re-hardcoding 0.4.
+# Per-bin confidence gate for predicted polygon vertices. The evaluator and the
+# TensorBoard polygon overlay (common/viz_utils.py) must share this threshold so the
+# visualised contour matches the one scored; viz_utils imports this value as its
+# default rather than re-hardcoding the constant.
 DEFAULT_POLY_CONF_THRESH = 0.4
 
 
@@ -167,15 +167,12 @@ class PolygonEvaluator:
     """Accumulates prediction/GT polygon pairs and computes mask IoU metrics.
 
     Vertex-validity gating: only bins whose conf channel passes the gate are
-    rasterized — pred bins need ``conf >= conf_thresh`` (the same 0.4 gate the
-    decode/viz path uses), GT bins need ``conf > 0.5`` (the parser writes a
-    binary validity). Empty GT bins encode ``dist = 0``; rasterizing them (the
-    earlier behavior) injected a vertex at the box CENTER per empty bin,
-    turning any polygon that doesn't occupy all 24 bins into a center-spiked
-    star — a 4-vertex GT lost ~90% of its mask area, so poly_mIoU measured
-    star-vs-star similarity rather than the decoded polygons that ship.
-    Matched pairs whose gated GT has < 3 vertices are counted for recall but
-    skipped for mask IoU (no measurable GT mask).
+    rasterized — pred bins need ``conf >= conf_thresh`` (the same gate the
+    decode/viz path uses), GT bins need ``conf > 0.5`` (the parser writes a binary
+    validity). Empty GT bins encode ``dist = 0`` and must be gated out; rasterizing
+    them would place a vertex at the box center per empty bin. Matched pairs whose
+    gated GT has < 3 vertices are counted for recall but skipped for mask IoU (no
+    measurable GT mask).
 
     Args:
         image_size: (H, W) used for rasterizing polygon masks.
@@ -204,10 +201,6 @@ class PolygonEvaluator:
         self._mask_ious:  List[float] = []
         self._n_matched   = 0
         self._n_gt_total  = 0
-
-    # ------------------------------------------------------------------
-    # Accumulation
-    # ------------------------------------------------------------------
 
     def update(
         self,
@@ -301,10 +294,8 @@ class PolygonEvaluator:
                     g_poly = np.asarray(gt_polygons[i, orig_gt])     # [72]
 
                     # Gate bins on the conf channel. Pred uses the decode/viz
-                    # threshold; GT conf is the parser's binary bin validity.
-                    # Empty GT bins encode dist=0 — rasterizing them puts a
-                    # vertex at the box CENTER per empty bin (center-spiked
-                    # star masks; see class docstring).
+                    # threshold; GT conf is the parser's binary bin validity. Empty
+                    # GT bins encode dist=0 and must be gated out (see class docstring).
                     p_keep = np.asarray(p_poly[:, 0]) >= self._conf_thresh  # [24]
                     g_keep = np.asarray(g_poly[2::3]) > 0.5                 # [24]
 
@@ -343,16 +334,12 @@ class PolygonEvaluator:
                     iou   = inter / union if union > 0 else 0.0
                     self._mask_ious.append(float(iou))
 
-    # ------------------------------------------------------------------
-    # Evaluation
-    # ------------------------------------------------------------------
-
     def evaluate(self) -> Dict[str, float]:
         """Compute polygon mIoU and recall@50.
 
         poly_mIoU:     mean mask IoU over all matched (prediction, GT) pairs.
         poly_recall50: fraction of GT objects matched at bbox IoU >= 0.5. This is
-                       recall, NOT average precision — it has no precision term and
+                       recall, not average precision — it has no precision term and
                        no score-threshold sweep, so a prediction-flooding model can
                        inflate it. Use poly_mIoU for mask quality.
 

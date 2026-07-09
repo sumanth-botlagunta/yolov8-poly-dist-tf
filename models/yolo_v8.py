@@ -1,16 +1,10 @@
-"""Top-level YOLOv8 model class assembling backbone, decoder, head, and generator.
+"""Top-level YOLOv8 model assembling backbone, decoder, head, and generator.
 
-During training  → returns raw head outputs (dict of dicts).
-During inference → passes raw outputs through YoloV8Layer for decoded detections.
+Training  → returns raw head outputs (dict of dicts).
+Inference → passes raw outputs through YoloV8Layer for decoded detections.
 
-The deploy flag (experiment_config: deploy=True) switches between the two modes
-so that the same model class handles both cases.
-
-Classes:
-    YoloV8: Full YOLOv8 model with polygon and distance branches.
-
-Factory function:
-    build_yolov8(config) → YoloV8 assembled from a ModelConfig.
+The deploy flag (experiment_config: deploy=True) selects the two modes.
+build_yolov8(config) assembles a YoloV8 from a ModelConfig.
 """
 
 from __future__ import annotations
@@ -30,11 +24,11 @@ from models.head import YoloV8Head
 class YoloV8(tf.keras.Model):
     """YOLOv8 object detector with polygon segmentation and distance estimation.
 
-    Training mode  (deploy=False): returns raw head output dict for loss computation.
-    Inference mode (deploy=True):  returns decoded + NMS-filtered detections.
+    deploy=False: returns raw head output dict for loss computation.
+    deploy=True:  returns decoded + NMS-filtered detections.
 
-    Call build_and_init() once before training to build all sub-layers and
-    run smart bias initialisation.
+    Call build_and_init() once before training to build all sub-layers and run
+    smart bias initialization.
     """
 
     def __init__(
@@ -63,8 +57,7 @@ class YoloV8(tf.keras.Model):
     ) -> Union[Dict[str, Dict[str, tf.Tensor]], Dict[str, tf.Tensor]]:
         """Forward pass.
 
-        Training mode (deploy=False):
-            Returns raw head output dict:
+        deploy=False returns the raw head output dict:
             {
                 'box':        {'3': [B,H3,W3,64], '4': ..., '5': ...},
                 'cls':        {'3': [B,H3,W3,39], ...},
@@ -74,8 +67,7 @@ class YoloV8(tf.keras.Model):
                 'dist':       {...},   # if with_distance
             }
 
-        Inference mode (deploy=True):
-            Returns decoded detections dict from YoloV8Layer.
+        deploy=True returns the decoded detections dict from YoloV8Layer.
         """
         feats      = self.backbone(inputs, training=training)
         decoded    = self.decoder(feats, training=training)
@@ -90,7 +82,7 @@ class YoloV8(tf.keras.Model):
     def build_and_init(self, input_size: Optional[List[int]] = None) -> None:
         """Build all sub-layers and initialize smart biases.
 
-        Call this once after model instantiation and before training.
+        Call once after instantiation, before training.
 
         Args:
             input_size: [H, W, C] or [H, W]. Defaults to [672, 672, 3].
@@ -106,16 +98,11 @@ class YoloV8(tf.keras.Model):
             self._biases_initialized = True
 
 
-# ---------------------------------------------------------------------------
-# Factory
-# ---------------------------------------------------------------------------
-
 def build_yolov8(config: ModelConfig) -> YoloV8:
     """Assemble a YoloV8 from a ModelConfig dataclass.
 
-    Backbone is selected via BACKBONES registry using config.backbone.model_id.
-    Decoder is selected via DECODERS registry using config.decoder.type.
-    Head is always 'yolov8_head' (only one registered).
+    Backbone from the BACKBONES registry (config.backbone.model_id), decoder from
+    DECODERS (config.decoder.type); head is always 'yolov8_head'.
     """
     na = config.norm_activation
 
@@ -133,14 +120,13 @@ def build_yolov8(config: ModelConfig) -> YoloV8:
     )
 
     # --- Decoder ---
-    # Derive input specs (channel counts) from backbone config
     decoder_cls = DECODERS.get(config.decoder.type)
-    # Build backbone + decoder on a dummy input to get output channel counts
+    # Run the backbone on a dummy input to read output channel counts.
     dummy = tf.zeros([1] + config.input_size)
     bb_out = backbone(dummy, training=False)
     input_specs = {k: int(v.shape[-1]) for k, v in bb_out.items()}
 
-    # Determine decoder size variant (s/m/l/x) from config
+    # Decoder size variant (s/m/l/x).
     model_id = getattr(config.decoder, "model_type", "s") or "s"
     dec_activation = na.activation if config.decoder.activation == "same" else config.decoder.activation
 

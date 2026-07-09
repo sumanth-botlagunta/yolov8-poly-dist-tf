@@ -1,24 +1,14 @@
 """CSPDarkNetV8 backbone for YOLOv8.
 
-YOLOv8-S configuration (model_id='cspdarknetv8s'):
-    depth_scale: 0.33   (number of bottleneck repetitions per stage)
-    width_scale: 0.50   (channel multiplier)
+YOLOv8-S (model_id='cspdarknetv8s'): depth_scale 0.33, width_scale 0.50.
 
-Architecture stages:
+Stages:
     Stem: Conv(32, 3x3, s=2) → Conv(64, 3x3, s=2) → C2f(64, n=1)
     P3:   Conv(128, 3x3, s=2) → C2f(128, n=2)          stride 8  → level '3'
     P4:   Conv(256, 3x3, s=2) → C2f(256, n=2)          stride 16 → level '4'
     P5:   Conv(512, 3x3, s=2) → C2f(512, n=1) → SPPF   stride 32 → level '5'
 
-All convolutions use BN + activation (config-driven via norm_activation.activation;
-the experiment YAMLs use relu).
-
-Classes:
-    _ConvBnAct: Conv2D + BatchNormalization + Activation (shared across models/).
-    C2fBottleneck: Single bottleneck block used inside C2f.
-    C2f: Cross-Stage-Partial block with n bottleneck repetitions.
-    SPPF: Spatial Pyramid Pooling - Fast.
-    CSPDarkNetV8: Full backbone returning multi-scale feature maps.
+Convolutions use BN + activation (config-driven via norm_activation.activation).
 """
 
 from __future__ import annotations
@@ -29,8 +19,8 @@ from typing import Dict, Optional
 import tensorflow as tf
 
 
-# Activation names that are NOT built-in Keras strings, mapped to a callable. Everything
-# else (relu, silu/swish, gelu, leaky_relu, mish, tanh, sigmoid, ...) resolves through
+# Activation names that are not built-in Keras strings, mapped to a callable. Every
+# other name (relu, silu/swish, gelu, leaky_relu, mish, ...) resolves through
 # tf.keras.layers.Activation directly.
 _EXTRA_ACTIVATIONS = {
     # MobileNetV3 hard-swish: x * relu6(x + 3) / 6.
@@ -40,12 +30,11 @@ _EXTRA_ACTIVATIONS = {
 
 
 def resolve_activation(name: str) -> tf.keras.layers.Layer:
-    """Return an Activation layer for ``name`` (config-selectable, validated).
+    """Return an Activation layer for ``name``.
 
-    Standard names resolve via Keras (``relu`` — the default — ``silu``/``swish``,
-    ``gelu``, ``leaky_relu``, ``mish``, ...). ``hardswish`` is provided as a callable
-    since it is not a Keras built-in. An unknown name raises a clear error instead of
-    Keras's generic one. ``relu`` returns exactly ``Activation('relu')`` (unchanged).
+    Standard names resolve via Keras (relu, silu/swish, gelu, leaky_relu, mish, ...);
+    hardswish is a callable since it is not a Keras built-in. An unknown name raises
+    a descriptive error.
     """
     if name in _EXTRA_ACTIVATIONS:
         return tf.keras.layers.Activation(_EXTRA_ACTIVATIONS[name], name=name)
@@ -60,9 +49,7 @@ def resolve_activation(name: str) -> tf.keras.layers.Layer:
 from configs.registry import BACKBONES
 
 
-# ---------------------------------------------------------------------------
-# Shared building block (imported by decoder.py and head.py)
-# ---------------------------------------------------------------------------
+# Shared building block (imported by decoder.py and head.py).
 
 class _ConvBnAct(tf.keras.layers.Layer):
     """Conv2D (no bias, SAME padding) + BatchNormalization + Activation."""
@@ -79,20 +66,16 @@ class _ConvBnAct(tf.keras.layers.Layer):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        # Stride>1 convs: make the padding EXPLICIT (ZeroPadding2D + 'valid') instead of
-        # 'same'. TF 'same' for a stride-2 conv pads ASYMMETRICALLY (e.g. k=3 on an even
-        # input -> (0 before, 1 after)); the Qualcomm SNPE converter mishandles that
-        # implicit asymmetric padding (it drops/symmetrizes it), shifting every feature
-        # map by ~half a pixel -> all heads degrade on content while flat regions match.
-        # Explicit ZeroPadding2D emits a real Pad node SNPE converts correctly and
-        # is byte-identical to 'same' for the model's even, /32-divisible input sizes
-        # (training 672x672, export 672x416). Stride-1 'same' is symmetric and converts
-        # fine, so it is left unchanged.
+        # Stride>1 convs use explicit ZeroPadding2D + 'valid' instead of 'same'. TF
+        # 'same' pads a stride-2 conv asymmetrically (k=3 on even input -> 0 before,
+        # 1 after), which the Qualcomm SNPE converter mishandles; an explicit Pad node
+        # converts correctly and is byte-identical to 'same' for the model's even,
+        # /32-divisible input sizes. Stride-1 'same' is symmetric and left unchanged.
         self._pad = None
         if strides > 1 and kernel_size > 1:
-            total = max(kernel_size - strides, 0)          # TF SAME total pad (input // stride)
+            total = max(kernel_size - strides, 0)          # TF SAME total pad
             before = total // 2
-            after = total - before                          # k=3,s=2 -> (before=0, after=1)
+            after = total - before                          # k=3,s=2 -> (0, 1)
             self._pad = tf.keras.layers.ZeroPadding2D(((before, after), (before, after)))
         self.conv = tf.keras.layers.Conv2D(
             filters,
@@ -101,8 +84,7 @@ class _ConvBnAct(tf.keras.layers.Layer):
             padding="valid" if self._pad is not None else "same",
             use_bias=False,
         )
-        # Keras 3 / TF 2.16 removed tf.keras.layers.experimental.SyncBatchNormalization;
-        # synchronized BN is now a flag on BatchNormalization.
+        # Synchronized BN is a flag on BatchNormalization in Keras 3 / TF 2.16.
         self.bn = tf.keras.layers.BatchNormalization(
             momentum=norm_momentum, epsilon=norm_epsilon, synchronized=use_sync_bn
         )
@@ -113,10 +95,6 @@ class _ConvBnAct(tf.keras.layers.Layer):
             x = self._pad(x)
         return self.act(self.bn(self.conv(x), training=training))
 
-
-# ---------------------------------------------------------------------------
-# C2f building blocks
-# ---------------------------------------------------------------------------
 
 class C2fBottleneck(tf.keras.layers.Layer):
     """Single bottleneck block (shortcut + two 3×3 convs)."""
@@ -185,16 +163,12 @@ class C2f(tf.keras.layers.Layer):
     def call(self, x: tf.Tensor, training: bool = False) -> tf.Tensor:
         y = self.cv1(x, training=training)      # [B, H, W, filters]
         c = self._c
-        # Split the channels into two halves using tf.split (emits a Split op), NOT
-        # tensor indexing. ``y[..., :c]`` emits a StridedSlice with ellipsis_mask, and
-        # even explicit ``y[:, :, :, :c]`` emits a StridedSlice — the Qualcomm SNPE
-        # tensorflow-to-dlc converter rejects strided slices ("unsupported masks
-        # ellipsis mask and new axis mask"). tf.split is the canonical channel-split op
-        # SNPE supports, with no StridedSlice at all. cv1 outputs 2*c channels, so a
-        # static [c, total-c] split is byte-identical to the old halves.
+        # Split channels with tf.split, not tensor indexing: slicing emits a
+        # StridedSlice the Qualcomm SNPE tensorflow-to-dlc converter rejects, while
+        # tf.split is a plain Split op it supports.
         total = y.shape[-1]
         if total is not None and int(total) == 2 * c:
-            chunks = list(tf.split(y, 2, axis=-1))                 # even -> basic Split op
+            chunks = list(tf.split(y, 2, axis=-1))                 # even -> Split
         else:                                                      # odd fallback -> SplitV
             size_second = (int(total) - c) if total is not None else c
             chunks = list(tf.split(y, [c, size_second], axis=-1))
@@ -202,10 +176,6 @@ class C2f(tf.keras.layers.Layer):
             chunks.append(bn(chunks[-1], training=training))
         return self.cv2(tf.concat(chunks, axis=-1), training=training)
 
-
-# ---------------------------------------------------------------------------
-# SPPF
-# ---------------------------------------------------------------------------
 
 class SPPF(tf.keras.layers.Layer):
     """Spatial Pyramid Pooling - Fast.
@@ -246,10 +216,7 @@ class SPPF(tf.keras.layers.Layer):
         return self.cv2(tf.concat([x, y1, y2, y3], axis=-1), training=training)
 
 
-# ---------------------------------------------------------------------------
-# Backbone configs — model_id takes precedence over constructor width/depth
-# ---------------------------------------------------------------------------
-
+# Backbone configs — model_id takes precedence over constructor width/depth.
 _BACKBONE_CONFIGS: Dict[str, Dict] = {
     "cspdarknetv8n": {"width": 0.25, "depth": 0.33},
     "cspdarknetv8s": {"width": 0.50, "depth": 0.33},
@@ -276,24 +243,16 @@ def _scale_n(base: int, depth: float) -> int:
     return max(1, round(base * depth))
 
 
-# ---------------------------------------------------------------------------
-# Backbone
-# ---------------------------------------------------------------------------
-
 @BACKBONES.register("cspdarknetv8s")
 class CSPDarkNetV8(tf.keras.Model):
     """CSPDarkNet backbone returning P3/P4/P5 feature maps.
 
-    Returns:
-        dict with keys '3', '4', '5':
-            '3': float32 [batch, H/8,  W/8,  C3]
-            '4': float32 [batch, H/16, W/16, C4]
-            '5': float32 [batch, H/32, W/32, C5]
+    Returns a dict with keys '3', '4', '5':
+        '3': float32 [batch, H/8,  W/8,  C3]
+        '4': float32 [batch, H/16, W/16, C4]
+        '5': float32 [batch, H/32, W/32, C5]
 
-    For cspdarknetv8s with 672×672 input:
-        '3': [B, 84, 84, 128]
-        '4': [B, 42, 42, 256]
-        '5': [B, 21, 21, 512]
+    For cspdarknetv8s at 672×672: '3'=[B,84,84,128], '4'=[B,42,42,256], '5'=[B,21,21,512].
     """
 
     def __init__(
@@ -320,7 +279,6 @@ class CSPDarkNetV8(tf.keras.Model):
         ch = [_scale_ch(c, width) for c in _BASE_CHANNELS]
         ns = [_scale_n(n, depth) for n in _BASE_DEPTHS]
 
-        # Store channel counts for output_specs
         self._c3, self._c4, self._c5 = ch[2], ch[3], ch[4]
         self._min_level = min_level
         self._max_level = max_level

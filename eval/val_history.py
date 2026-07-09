@@ -1,17 +1,14 @@
 """Append-only JSONL store for per-epoch validation reports.
 
-One ``<run>/val_history.jsonl`` per run replaces the previous per-epoch
-``val_metrics/epoch_NNNN.json`` + ``.txt`` pair (hundreds of files). Each
-validation appends exactly **one** line — the full report dict from
-``eval/metrics_report.build_report`` (``mean`` / ``best_conf`` / ``all_conf`` /
-``per_category_ap``) augmented with ``epoch`` / ``step`` / ``checkpoint`` and the
-headline scalar ``metrics`` (mAP / mAP50 / F1score50 / AR100).
+One ``<run>/val_history.jsonl`` per run. Each validation appends one line: the full
+report dict from ``eval/metrics_report.build_report`` (``mean`` / ``best_conf`` /
+``all_conf`` / ``per_category_ap``) augmented with ``epoch`` / ``step`` / ``checkpoint``
+and the headline scalar ``metrics`` (mAP / mAP50 / F1score50 / AR100).
 
-Why JSONL: append is O(line) regardless of file size, so it has zero training-step
-impact; the file is plain text (greppable, tailable, diffable, crash-safe — an
-interrupted run loses at most the last partial line); and a record is a superset of
-what ``metrics_report.write_txt`` consumes, so any epoch round-trips back to the exact
-ckpt-format txt with no schema or SQL.
+Append is O(line) regardless of file size, so it has no training-step impact; the file
+is plain text (greppable, tailable, crash-safe — an interrupted run loses at most the
+last partial line); and a record is a superset of what ``metrics_report.write_txt``
+consumes, so any epoch round-trips back to the ckpt-format txt.
 
 Read/extract with ``utils/reports/val_history.py`` (txt / json / csv, ``--best``, ``--list``).
 """

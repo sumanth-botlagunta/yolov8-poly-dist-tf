@@ -1,6 +1,7 @@
 """Export a trained checkpoint to TensorFlow SavedModel (and optionally TFLite).
 
-Sets model.deploy=True before export so NMS is baked into the forward pass.
+The export sets model.deploy=True so NMS is baked into the forward pass and the
+SavedModel returns post-processed detections.
 
 Usage:
     python utils/export/export_saved_model.py \
@@ -11,26 +12,14 @@ Usage:
     # Also convert to TFLite:
     python utils/export/export_saved_model.py ... --tflite
 
-Flags:
-    --config      Path to experiment YAML.
-    --checkpoint  Checkpoint path prefix.
-    --output_dir  Directory to write SavedModel (and TFLite if requested).
-    --tflite      Also run TFLiteConverter and save a .tflite file.
+Input:
+    images: float32 [batch, H, W, 3], pre-normalized to [0, 1]. The model has no
+    internal /255 (models/yolo_v8.py), so a serving caller must divide uint8
+    [0, 255] frames by 255 first, exactly as train.task.normalize_images does on the
+    train/eval path; feeding raw [0, 255] floats yields silently wrong detections.
 
-Input Schema (CONTRACT — read before serving):
-    images: float32 [batch, H, W, 3], pixels PRE-NORMALIZED to [0, 1].
-
-    The exported SavedModel does NOT normalize internally (the model has no /255
-    layer — see models/yolo_v8.py:YoloV8.call). The training/eval path normalizes
-    via train.task.normalize_images (uint8 [0,255] → float32 [0,1]) BEFORE calling
-    the model; a served caller must do the same. Feeding raw [0,255] floats produces
-    silently wrong detections. This normalization is intentionally left OUT of the
-    serving graph so the contract matches eval.py and is not double-applied;
-    divide camera/OpenCV uint8 frames by 255 before calling.
-
-Output Schema:
-    With model.deploy=True the SavedModel runs NMS in-graph and returns a dict of
-    post-processed detections (see models/detection_generator.py:YoloV8Layer):
+Output:
+    A dict of post-processed detections (see models/detection_generator.py:YoloV8Layer):
 
         bbox:           float32 [batch, max_boxes, 4]      yxyx, normalized [0, 1]
         classes:        int64   [batch, max_boxes]         class id in [0, num_classes)
@@ -104,11 +93,11 @@ def main(_):
     H, W = model_cfg.input_size[0], model_cfg.input_size[1]
 
     @tf.function(input_signature=[
-        # CONTRACT: `images` must be float32 pre-normalized to [0, 1]. The model has
-        # no internal /255 (models/yolo_v8.py); normalization is done by
-        # train.task.normalize_images on every other call path and is intentionally
-        # NOT baked in here, so it can never be double-applied. Feeding [0,255]
-        # floats yields silently wrong detections.
+        # `images` must be float32 pre-normalized to [0, 1]. The model has no
+        # internal /255 (models/yolo_v8.py); normalization is done by
+        # train.task.normalize_images on every other call path and is deliberately
+        # left out here so it can never be double-applied. Feeding [0, 255] floats
+        # yields silently wrong detections.
         tf.TensorSpec(shape=[None, H, W, 3], dtype=tf.float32, name='images_normalized_0_1')
     ])
     def serving_fn(images):

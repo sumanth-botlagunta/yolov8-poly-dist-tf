@@ -1,11 +1,10 @@
-"""Standalone augmentation functions for the YOLOv8 data pipeline.
+"""Standalone augmentation ops for the YOLOv8 data pipeline.
 
-All functions operate on individual examples (not batches).
-These are pure TF-native ops that work in graph mode and tf.function — there is
-no tf.py_function / Albumentations wrapper in this module.
+Each function operates on a single example (not a batch) and is a pure TF op
+(graph-mode / tf.function safe; no tf.py_function or Albumentations).
 
-Polygon format expected here: [N, max_vertices] flat xy-coordinate pairs,
-padded with -1 for missing vertices.  (x, y) interleaved: x0, y0, x1, y1, …
+Polygon format: [N, max_vertices] flat xy pairs (x0, y0, x1, y1, ...), padded
+with the -1.0 sentinel for missing vertices.
 """
 
 from __future__ import annotations
@@ -15,10 +14,6 @@ from typing import List, Optional, Tuple
 
 import tensorflow as tf
 
-
-# ---------------------------------------------------------------------------
-# Augmentation using TF native ops — runs on GPU in graph mode, no GIL
-# ---------------------------------------------------------------------------
 
 def _box_blur_tf(image: tf.Tensor, kernel_size: int) -> tf.Tensor:
     """Separable box blur via depthwise conv2d. Input: float32 [H, W, 3] in [0, 1]."""
@@ -31,13 +26,9 @@ def _box_blur_tf(image: tf.Tensor, kernel_size: int) -> tf.Tensor:
 
 
 def apply_albumentations(image: tf.Tensor, freq: float = 1.0) -> tf.Tensor:
-    """Apply colour/filter augmentations using TF native ops.
+    """Colour/filter augmentations as pure TF ops (albumentations-equivalent).
 
-    Replaces albumentations + tf.py_function with pure TF ops so the pipeline
-    runs on GPU in graph mode — no Python GIL serialization, no per-image
-    Python call overhead.
-
-    Transforms and probabilities match the replaced albumentations config:
+    Transforms and probabilities:
         Blur        3×3 box blur                        p=0.01
         MedianBlur  3×3 box blur (mean≈median at k=3)  p=0.01
         ToGray      rgb_to_grayscale tiled to 3ch       p=0.01
@@ -92,16 +83,11 @@ def apply_albumentations(image: tf.Tensor, freq: float = 1.0) -> tf.Tensor:
     return image
 
 
-# ---------------------------------------------------------------------------
-# Letterbox resize (aspect-preserving, gray-114 pad) — shared by the eval
-# parser and the mosaic-stage pre-resize so the two cannot diverge
-# ---------------------------------------------------------------------------
-
 def letterbox_geometry(h_in, w_in, out_h: int, out_w: int):
     """Return the letterbox placement geometry for an (h_in, w_in) image.
 
     Aspect-preserving fit into (out_h, out_w): the long side is scaled to fit and
-    the content is CENTERED, gray-padded to the output. Returns the scalars every
+    the content is centered, gray-padded to the output. Returns the scalars every
     consumer needs to map coordinates in either direction:
 
         scale = min(out_h/h_in, out_w/w_in)
@@ -136,11 +122,11 @@ def letterbox_resize(
 ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     """Letterbox-resize image to (out_h, out_w) with gray-114 padding.
 
-    Boxes AND polygon vertices are remapped through the SAME scale + pad so they
-    stay aligned in the output normalized space. Invalid polygon vertices (the
-    -1.0 sentinel) are preserved. This is the single source of truth for the
-    letterbox math shared by the eval parser (V8ParserExtended._letterbox_resize)
-    and the mosaic-stage pre-resize (input_reader).
+    Boxes and polygon vertices are remapped through the same scale + pad so they
+    stay aligned in output-normalized space; the -1.0 polygon sentinel is
+    preserved. Single source of the letterbox math shared by the eval parser
+    (V8ParserExtended._letterbox_resize) and the mosaic-stage pre-resize
+    (input_reader), so the two cannot diverge.
 
     Args:
         image:    uint8 or float32 [H, W, 3].
@@ -195,10 +181,6 @@ def letterbox_resize(
     return image, boxes, polygons
 
 
-# ---------------------------------------------------------------------------
-# Horizontal flip
-# ---------------------------------------------------------------------------
-
 def random_horizontal_flip(
     image: tf.Tensor,
     boxes: tf.Tensor,
@@ -247,10 +229,6 @@ def random_horizontal_flip(
     return image, boxes, polygons
 
 
-# ---------------------------------------------------------------------------
-# Random perspective (full affine: rotation + scale + shear + translate)
-# ---------------------------------------------------------------------------
-
 def _transform_points_px(xy_px: tf.Tensor, M: tf.Tensor) -> tf.Tensor:
     """Apply a 3x3 (input->output) matrix to [..., 2] (x, y) pixel points.
 
@@ -291,19 +269,15 @@ def make_perspective_matrix(
         h_in, w_in: INPUT image dims (scalar tensors or python ints).
         target_h, target_w: OUTPUT size.
         degrees / translate / scale / shear / perspective: augmentation params.
-        scale_min / scale_max: EXPLICIT scale-gain bounds; when both are given
+        scale_min / scale_max: explicit scale-gain bounds; when both are given
             the gain is drawn from [scale_min, scale_max] and ``scale`` is
-            ignored. Use these for asymmetric config bounds like [0.4, 1.9] —
-            the symmetric ``scale`` magnitude form would widen them to
-            [1−max(0.9, 0.6), 1.9] = [0.1, 1.9], shrinking some images to 1%
-            area (mostly-gray frames).
-        rotate_prob: probability that rotation is applied at all. With
-            probability ``1 - rotate_prob`` the rotation angle is forced to 0 so
-            the output stays upright; otherwise the angle is drawn from
-            [-degrees, degrees]. Default 1.0 = always rotate (single
-            unconditional draw, exact RNG order). Mosaic passes a small value (e.g.
-            0.10) so most outputs are upright with rare ± rotation — matching the
-            real YOLO mosaic, where ``degrees`` defaults to 0.
+            ignored. Required for asymmetric config bounds (e.g. [0.4, 1.9]),
+            which the symmetric ``scale`` magnitude form cannot represent.
+        rotate_prob: probability rotation is applied at all. With probability
+            ``1 - rotate_prob`` the angle is forced to 0 (upright output);
+            otherwise it is drawn from [-degrees, degrees]. Default 1.0 always
+            rotates via a single unconditional draw. Mosaic passes a small value
+            so most outputs stay upright with rare ± rotation.
 
     Returns:
         float32 [3, 3] input→output affine/perspective matrix M.
@@ -330,10 +304,9 @@ def make_perspective_matrix(
     P = _mat([one, zero, zero,
               zero, one, zero,
               px,  py,  one])
-    # Rotation + scale (combined). Rotation is gated by rotate_prob: with
-    # probability (1 - rotate_prob) the angle is forced to 0 so the output stays
-    # upright. rotate_prob >= 1.0 keeps the single unconditional draw exactly
-    # (used by any caller that wants always-on rotation).
+    # Rotation + scale (combined). rotate_prob gates rotation: with probability
+    # (1 - rotate_prob) the angle is forced to 0 (upright). rotate_prob >= 1.0
+    # keeps the single unconditional draw.
     ang = tf.random.uniform([], -degrees, degrees)
     if rotate_prob < 1.0:
         ang = tf.where(tf.random.uniform([]) < rotate_prob, ang, tf.zeros([]))
@@ -464,13 +437,10 @@ def transform_boxes_polygons(
     N = tf.shape(polygons)[0]
     max_v = tf.shape(polygons)[1]
     pts = tf.reshape(polygons, [N, max_v // 2, 2])           # [N, P, (x, y)]
-    # Source validity: -1.0 is the reserved polygon sentinel. A vertex with x
-    # strictly > -1.0 is a REAL vertex even if it is
-    # negative — mosaic-canvas overflow can legitimately place an in-view object's
-    # vertex at a slightly-negative input-normalized coordinate. Using `> -1.0`
-    # (not `>= 0.0`) transforms + clips-to-edge those vertices instead of dropping
-    # them, keeping polygon GT consistent with the box GT (boxes are clipped, not
-    # dropped, for the same overflow case).
+    # Source validity keys off the -1.0 sentinel: any vertex with x > -1.0 is a
+    # real vertex, including a slightly-negative coordinate from mosaic-canvas
+    # overflow. `> -1.0` (not `>= 0.0`) transforms + clips those to the edge
+    # instead of dropping them, keeping polygon GT consistent with the box GT.
     valid = pts[:, :, 0] > -1.0                             # source validity
     pts_px = tf.stack([pts[:, :, 0] * w_in, pts[:, :, 1] * h_in], axis=-1)
     pts_out = _transform_points_px(pts_px, M)                # [N, P, 2] output px
@@ -557,10 +527,8 @@ def random_perspective(
     return image_out, boxes_clip, keep, polygons_out
 
 
-# ---------------------------------------------------------------------------
-# Random affine (scale + translate letterbox) — superseded by
-# random_perspective; retained for existing callers
-# ---------------------------------------------------------------------------
+# Random affine (scale + translate); superseded by random_perspective, kept for
+# existing callers.
 
 def random_affine(
     image: tf.Tensor,
@@ -659,10 +627,6 @@ def random_affine(
     return image_out, boxes_out, polygons_out
 
 
-# ---------------------------------------------------------------------------
-# Clip boxes (after affine some boxes may extend outside [0, 1])
-# ---------------------------------------------------------------------------
-
 def clip_boxes(
     boxes: tf.Tensor,
     min_side: float = 0.003,
@@ -692,11 +656,9 @@ def clip_polygon_coords(polygons: tf.Tensor) -> tf.Tensor:
     Returns:
         float32 [N, max_vertices].
     """
-    # Validity keys off the reserved -1.0 padding sentinel, NOT >= 0.0. A real
-    # vertex can be slightly negative (mosaic overflow near an image edge, e.g.
-    # -0.05) — those are > -1.0 and must be clipped into [0, 1]. The old >= 0.0
-    # check left such vertices at their negative value, where downstream stages
-    # then misread them as padding. -1.0 itself is not > -1.0, so padding is kept.
+    # Validity keys off the -1.0 sentinel (`> -1.0`, not `>= 0.0`): a real vertex
+    # can be slightly negative (mosaic overflow near an edge) and must be clipped
+    # into [0, 1], while the exact -1.0 padding is left untouched.
     valid = polygons > -1.0
     clipped = tf.clip_by_value(polygons, 0.0, 1.0)
     return tf.where(valid, clipped, polygons)
@@ -707,49 +669,39 @@ def resample_polygons(
 ) -> tf.Tensor:
     """Resample each polygon to a fixed ``max_points`` vertices (flat xy pairs).
 
-    Apply this at DECODE time (before any augmentation), where the valid vertices
-    of each polygon are a contiguous prefix and the rest are -1 padding. Shrinking
+    Intended for decode time (before augmentation), where the valid vertices of
+    each polygon are a contiguous prefix and the rest are -1 padding. Shrinking
     the polygon width here makes every downstream op (copy-paste, mosaic,
-    random_perspective, the parser) process a much smaller tensor — the raw stored
-    width (often thousands of vertices) is far more than the 24-bin PolyYOLO target
-    needs.
+    random_perspective, the parser) process a much smaller tensor than the raw
+    stored width.
 
-    Algorithm — UNIFORM ARC-LENGTH RESAMPLING along the CLOSED contour (fully
-    vectorized, graph-mode safe). The valid vertices ``v_0..v_{c-1}`` (a contiguous
-    prefix after the optional ``compact`` pre-step) are treated as a closed polygon
-    with wraparound edge ``v_{c-1}→v_0``. We walk the perimeter ``L`` and place ``K``
-    samples at arc positions ``t_k = k·L/K`` (k=0..K-1; ``t_0 = 0`` keeps the first
-    original vertex exactly), INTERPOLATING new points on the edges via
-    ``tf.searchsorted`` over the cumulative segment lengths + linear interpolation.
+    Uniform arc-length resampling along the closed contour (fully vectorized,
+    graph-safe): the valid vertices form a closed loop (wraparound edge
+    ``v_{c-1}→v_0``); ``K`` samples are placed at arc positions ``t_k = k·L/K``
+    (``t_0 = 0`` keeps the first vertex), interpolating along edges via
+    ``tf.searchsorted`` over cumulative segment lengths. Because samples land on
+    edges, long edges spanning several angular bins populate those bins — so the
+    24-bin radial target is well-formed even for sparse-vertex polygons (a
+    4-corner rectangle no longer collapses to a diamond). This alters the radial
+    target for sparse polygons; for dense contours it is within sampling
+    tolerance of plain index-subsampling.
 
-    This DIFFERS from the previous index-subsampling: that approach only ever
-    *selected* existing vertices, so a rectangle annotated with 4 corners stayed 4
-    points and the 24-bin radial target (``yolo_parser._preprocess_polygons_v2``)
-    occupied ≤4 bins → a diamond, not the rectangle. Arc-length resampling creates
-    points ALONG edges, so long edges crossing several angular bins now populate
-    those bins. The radial target therefore CHANGES for sparse-vertex polygons (that
-    is the fix); for dense uniform contours it is within sampling tolerance of the
-    old index-subsampling behavior.
+    Degenerate rows:
       - c == 0 valid vertices → all -1.
-      - c == 1                → that point repeated K times (degenerate, no NaN).
-      - c >= 2                → K points uniformly spaced by arc length around the
-                                closed loop; every output point lies ON an input edge.
+      - c == 1                → that point repeated K times (no NaN).
+      - c >= 2                → K points spaced by arc length around the loop,
+                                each lying on an input edge.
 
-    The sampling assumes the valid vertices are a contiguous PREFIX. When
-    ``compact=True`` the function first compacts scattered sentinels to a prefix via
-    a stable argsort; pass it ONLY from callers that can hand interior -1 holes
-    (the copy-paste path, which invalidates out-of-bounds vertices in place). At
-    decode time the TFDS contract already guarantees a prefix, so the default
-    ``compact=False`` skips the O(P log P) sort — on the decode-time shape
-    (``P``≈5470) that sort dominates and is pure overhead (it is a no-op there:
-    sorting an all-False-then-all-True key preserves order). See the copy-paste
-    caller for the corruption the sort prevents when sentinels ARE scattered.
+    The sampling assumes valid vertices are a contiguous prefix. ``compact=True``
+    first compacts scattered sentinels to a prefix via a stable argsort; pass it
+    only from callers that can produce interior -1 holes (copy-paste, which
+    invalidates out-of-bounds vertices in place). At decode time the prefix is
+    guaranteed, so the default ``compact=False`` skips the O(P log P) sort.
 
     Args:
         polygons:   float32 [N, F] flat xy pairs, -1 padded (valid = prefix).
         max_points: target vertex count K; output width is 2*K.
-        compact:    if True, compact scattered sentinels to a prefix first (needed
-                    only when valid vertices may be interleaved with -1 holes).
+        compact:    if True, compact scattered sentinels to a prefix first.
 
     Returns:
         float32 [N, 2*max_points].
@@ -761,14 +713,11 @@ def resample_polygons(
     P = tf.shape(pts)[1]
     valid = pts[:, :, 0] > -1.0                                      # [N, P] — reserved sentinel is exactly -1.0
 
-    # Compact the valid vertices to a contiguous prefix before sampling. Only the
-    # copy-paste path (compact=True) needs this: it invalidates out-of-bounds
-    # vertices in place via tf.where(keep, ...), leaving -1 holes interleaved with
-    # valid vertices. Without compaction the prefix assumption below is violated and
-    # interior -1 holes are treated as real vertices (sentinel coords poison the
-    # interpolation). At decode time the vertices are ALREADY a prefix (TFDS
-    # contract), so the sort is a no-op and is skipped (compact=False) to avoid its
-    # O(P log P) cost. See the copy-paste caller for the corruption it prevents.
+    # Compact valid vertices to a contiguous prefix. Only copy-paste (compact=True)
+    # needs it: invalidating out-of-bounds vertices in place leaves -1 holes
+    # interleaved with valid vertices, which would violate the prefix assumption
+    # below and poison the interpolation with sentinel coords. At decode time the
+    # vertices are already a prefix, so the sort is skipped.
     if compact:
         order = tf.argsort(tf.cast(~valid, tf.int32), axis=1, stable=True)  # valid first
         pts = tf.gather(pts, order, batch_dims=1)                   # [N, P, 2] compacted
@@ -840,10 +789,6 @@ def resample_polygons(
     return tf.reshape(out, [N, K * 2])
 
 
-# ---------------------------------------------------------------------------
-# HSV augmentation
-# ---------------------------------------------------------------------------
-
 def hsv_augment(
     image: tf.Tensor,
     hue: float = 0.015,
@@ -864,9 +809,9 @@ def hsv_augment(
     if hue > 0.0:
         image = tf.image.random_hue(image, hue)
     if sat > 0.0:
-        # Ultralytics convention: gain ∈ [1−sat, 1+sat], allowing strong desaturation.
-        # Must match distance_parser._augment_color so both streams see the same
-        # saturation distribution for the same config value.
+        # Ultralytics convention: gain ∈ [1−sat, 1+sat]. Kept equal to the
+        # per-batch HSV path (batch_color_aug) so both streams see the same
+        # saturation distribution for one config value.
         sat_lower = max(0.0, 1.0 - sat)
         sat_upper = 1.0 + sat
         image = tf.image.random_saturation(image, sat_lower, sat_upper)

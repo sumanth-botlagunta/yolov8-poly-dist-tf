@@ -1,20 +1,17 @@
 """YOLOv8 FPN-PAN decoder with C2f stacks.
 
 Takes backbone features {3, 4, 5} and produces enriched multi-scale feature
-maps via top-down FPN and bottom-up PAN paths, each step using C2f blocks.
+maps via top-down FPN and bottom-up PAN paths, each using C2f blocks.
 
 Channel flow for cspdarknetv8s (c3=128, c4=256, c5=512):
 
   FPN top-down:
-    P5(512) → upsample → concat(P4=256) → C2f(256) → P4'(256)   [C2f cv1: 768→256]
-    P4'(256)→ upsample → concat(P3=128) → C2f(128) → P3'(128)   [C2f cv1: 384→128]
+    P5(512) → upsample → concat(P4=256) → C2f(256) → P4'(256)
+    P4'(256)→ upsample → concat(P3=128) → C2f(128) → P3'(128)
 
   PAN bottom-up:
     P3'(128)→ conv(s=2,128) → concat(P4'=256)  → C2f(256) → P4''(256)
     P4''(256)→ conv(s=2,256) → concat(P5=512)  → C2f(512) → P5''(512)
-
-Classes:
-    YoloDecoder: FPN-PAN decoder returning the same {3, 4, 5} key schema.
 """
 
 from __future__ import annotations
@@ -66,7 +63,7 @@ class YoloDecoder(tf.keras.Model):
     ):
         super().__init__(**kwargs)
 
-        # Extract channel counts — accept both int and TensorShape values
+        # Channel counts — accept both int and TensorShape values.
         def _ch(v: Union[int, tf.TensorShape]) -> int:
             return int(v) if isinstance(v, int) else int(v[-1])
 
@@ -74,7 +71,7 @@ class YoloDecoder(tf.keras.Model):
         c4 = _ch(input_specs["4"])   # e.g. 256
         c5 = _ch(input_specs["5"])   # e.g. 512
 
-        # Number of C2f bottleneck repetitions in the neck
+        # C2f bottleneck repetitions in the neck.
         size_key = model_id.replace("v8", "").lstrip("_") or "s"
         n = _DECODER_DEPTH.get(size_key, 1)
 
@@ -85,31 +82,22 @@ class YoloDecoder(tf.keras.Model):
             use_sync_bn=use_sync_bn,
         )
 
-        # ---- FPN top-down ----
-        # P5(c5) upsample and concat directly with P4(c4) → c5+c4 channels into C2f
+        # FPN top-down: concat(P5↑, P4) → C2f → c4; concat(P4'↑, P3) → C2f → c3.
         self.fpn_c2f_p4 = C2f(c4, n=n, shortcut=False, **norm_kw, name="fpn_c2f_p4")
-        # P4'(c4) upsample and concat directly with P3(c3) → c4+c3 channels into C2f
         self.fpn_c2f_p3 = C2f(c3, n=n, shortcut=False, **norm_kw, name="fpn_c2f_p3")
 
-        # ---- PAN bottom-up ----
-        # Stride-2 conv to downsample P3'
+        # PAN bottom-up: stride-2 downsample → concat → C2f, twice.
         self.pan_down_p3 = _ConvBnAct(c3, 3, strides=2, **norm_kw, name="pan_down_p3")
-        # After concat: c3 + c4 → C2f → c4
         self.pan_c2f_p4 = C2f(c4, n=n, shortcut=False, **norm_kw, name="pan_c2f_p4")
 
-        # Stride-2 conv to downsample P4''
         self.pan_down_p4 = _ConvBnAct(c4, 3, strides=2, **norm_kw, name="pan_down_p4")
-        # After concat: c4 + c5 → C2f → c5
         self.pan_c2f_p5 = C2f(c5, n=n, shortcut=False, **norm_kw, name="pan_c2f_p5")
 
-        # FPN upsample mode. Default DYNAMIC (tf.image.resize to the target level's
-        # runtime size): robust — it can never disagree with the level it concatenates
-        # to, at any input size or build-vs-run mismatch. The device exporter flips this
-        # to True so the upsample size is a compile-time constant (the export is a fixed
-        # input size), which removes the Shape→StridedSlice the dynamic form emits — that
-        # subgraph is what the SNPE converter's StridedSliceLayerBuilder rejects. The two
-        # are numerically identical whenever the static size is the true runtime size,
-        # which it is for the fixed-size export.
+        # Upsample mode. Default dynamic (tf.image.resize to the target level's runtime
+        # size) can never disagree with the level it concatenates to. The device
+        # exporter sets static_resize=True at a fixed input size so the upsample size is
+        # a compile-time constant, dropping the Shape→StridedSlice the SNPE converter
+        # rejects; numerically identical when the static size is the runtime size.
         self.static_resize = False
 
     # ------------------------------------------------------------------
@@ -117,11 +105,10 @@ class YoloDecoder(tf.keras.Model):
     def _upsample(self, src: tf.Tensor, ref: tf.Tensor) -> tf.Tensor:
         """Nearest upsample ``src`` to ``ref``'s spatial size.
 
-        Dynamic by default (size read from the runtime ``ref`` → robust to any input
-        size / build-vs-run mismatch). When ``static_resize`` is set (device export at a
-        fixed input size) the size is a compile-time constant, so the graph carries no
-        Shape→StridedSlice for the SNPE converter to reject. Identical output when the
-        static size equals the runtime size, which holds for the fixed-size export.
+        Dynamic by default (size read from the runtime ``ref``). When ``static_resize``
+        is set (device export at a fixed input size) the size is a compile-time constant,
+        so the graph carries no Shape→StridedSlice; identical output when the static size
+        equals the runtime size.
         """
         s = ref.shape
         if self.static_resize and s.rank == 4 and s[1] is not None and s[2] is not None:

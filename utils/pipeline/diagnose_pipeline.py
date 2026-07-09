@@ -1,20 +1,15 @@
 """Stage-by-stage data-pipeline throughput attribution (CPU only, no model).
 
-Builds the training pipeline CUMULATIVELY — read, +decode, +copy-paste, +mosaic,
-+parser, +batch, full merged stream — and measures each stage's samples/sec, so
-the bottleneck stage is identified directly instead of guessed from the
-end-to-end number. Also prints TFDS dataset sizes and stored image encodings
-(PNG decode is several times more expensive than JPEG — this matters).
+Builds the training pipeline cumulatively — read, +decode, +copy-paste, +mosaic,
++parser, +batch, full merged stream — and reports each stage's samples/sec so the
+bottleneck is identified directly. Also prints TFDS dataset sizes and stored image
+encodings. Rates only decrease down the table; the first big drop is the
+bottleneck stage.
 
 Usage:
     python utils/pipeline/diagnose_pipeline.py \
         --config configs/experiments/yolo/yolov8_poly_dist.yaml \
         [--samples 768] [--batches 10] [--threadpool-sweep 0,13,26]
-
-Interpretation: stages are cumulative, so the first stage whose rate drops well
-below the target (~290 imgs/sec for a 20-min 2388-step epoch) is the bottleneck.
-Rates can only decrease down the table; a small drop means the added stage is
-cheap (it overlaps with upstream parallelism), a large drop means it dominates.
 """
 
 from __future__ import annotations

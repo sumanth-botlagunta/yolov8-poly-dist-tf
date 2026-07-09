@@ -59,6 +59,26 @@ python -m utils.eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --a
 python -m utils.eval --config configs/experiments/yolo/yolov8_poly_dist.yaml --watch --watch_dir /run --interval 300
 ```
 
+### `python -m utils.confusion_matrix` — per-class detection confusion matrix
+Runs a split through a checkpoint **or** a SavedModel and accumulates a
+`(num_classes + 1) × (num_classes + 1)` matrix (the extra row/column is `background`), oriented
+`matrix[predicted, ground_truth]`: the diagonal is correct classifications, off-diagonal is
+cross-class confusion, the background row holds false negatives and the background column false
+positives. Matching is greedy, highest-score-first, class-agnostic on IoU so cross-class
+confusion is visible; crowd / don't-care GT follow the `eval/coco_metrics.py` policy.
+- `--config` (req) — YAML; always builds the eval dataset (required in both model modes).
+- `--checkpoint` **or** `--saved_model` — model source (EMA weights preferred for a checkpoint).
+- `--split` — `val` (default) / `test` / `train`.
+- `--conf` — min detection confidence applied before matching (default 0.25).
+- `--iou` — IoU threshold for a positive match (default 0.5).
+- `--output_csv` — write the raw integer matrix (with labels) here.
+- `--output_png` — write a row-normalized heat map here (needs matplotlib).
+- `--top` — number of top confusions to print in the summary (default 20).
+```bash
+python -m utils.confusion_matrix --config configs/experiments/yolo/yolov8_poly_dist.yaml \
+    --checkpoint /run/ckpt-100000 --split val --output_csv /tmp/cm.csv --output_png /tmp/cm.png
+```
+
 ### `python -m utils.export.inference_saved_model` — folder inference: predictions JSON + visuals
 Loads a checkpoint **or** a SavedModel and runs over a folder of images, emitting a COCO-style
 predictions JSON and/or annotated images, in the model-input or original-image coordinate space.
@@ -135,11 +155,20 @@ python -m utils.reports.val_history /run --best --format xlsx -o best.xlsx      
 python -m utils.reports.val_history /run --format parquet -o /tmp/run.parquet     # whole run -> parquet
 ```
 
+## Notebooks
+
+Under `notebooks/` — run with Jupyter/VS Code from the repo root (they import the package
+modules directly). Each is self-contained and points at the `yolov8_poly_dist` tier by default.
+
+| Notebook | Covers |
+|----------|--------|
+| `01_data_pipeline_walkthrough.ipynb` | Builds the training input pipeline and inspects it one stage at a time — weighted multi-TFDS detection stream + distance stream, letterbox pre-resize, mosaic with per-tile copy-paste, and the parser's PolyYOLO radial targets. |
+| `02_tensorboard_analysis.ipynb` | Post-run analysis of a training directory: reads `<run>/tb_events/` scalars/images and `<run>/val_history.jsonl` for loss curves, per-class metric trends, and image summaries. |
+| `03_checkpoint_inspection.ipynb` | Loads a checkpoint (`common.ckpt_loading.restore_eval_weights`, EMA preferred) or a SavedModel, runs inference on a folder, draws box/polygon/distance overlays, and inspects raw head statistics. |
+
 ## Future / recommended additions
 
 - **Distance validation.** The distance head is trained but never scored at validation time
   (the shipped distance dataset is training-only). A future change would add a distance
   validation stream and wire `eval/distance_metrics.py` into the val loop. This is a
   training-semantics change (needs a held-out distance split), not a pure tooling add.
-- **Metrics dashboard.** `val_history --format parquet` already emits parquet; a small notebook over the
-  aggregated parquet would give per-category F1 trends across runs.

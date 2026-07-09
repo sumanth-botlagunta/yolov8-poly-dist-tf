@@ -253,11 +253,11 @@ class InputReader:
 
             ds = ds.map(_pre_resize_for_mosaic, num_parallel_calls=_AUTOTUNE)
 
-        # Copy-Paste source: zip with the CNP dataset and RIDE its fields into the
-        # group under 'cnp_*' prefix keys (no paste here). The paste itself now runs
-        # INSIDE the mosaic stage, per tile, on the tile's own cnp candidate — so
-        # only mosaic tiles receive pastes (single/non-mosaic images do not, which
-        # matches the legacy pipeline). The mosaic module owns the copy-paste module.
+        # Copy-Paste source: zip with the CNP dataset and ride its fields into the
+        # group under 'cnp_*' prefix keys (no paste here). The paste runs inside the
+        # mosaic stage, per tile, on the tile's own cnp candidate, so only mosaic
+        # tiles receive pastes; single/non-mosaic images do not. The mosaic module
+        # owns the copy-paste module.
         cnp_active = self._copy_paste_module is not None and bool(self._cnp_tfds_name)
         if cnp_active:
             cnp_ds = self._load_cnp_dataset()
@@ -284,15 +284,14 @@ class InputReader:
         # Mosaic: padded_batch(group_size) → combine (G in → G//R out) → unbatch.
         if self._mosaic_module is not None:
             mosaic_fn = self._mosaic_module.mosaic_fn(is_training=True)
-            # Explicit padding_values for EVERY key in the decoder element spec
+            # Explicit padding_values for every key in the decoder element spec
             # (PolygonDecoder/ServingBot output, preserved by copy-paste). Without
-            # this, padded_batch pads every numeric field with 0, which is WRONG
-            # for groundtruth_polygons: 0.0 is a valid (top-left) vertex coordinate,
-            # so 0-padded rows would read as real vertices instead of the reserved
-            # -1.0 sentinel and corrupt the
-            # PolyYOLO radial target. We pin -1.0 for polygons and the natural empty
-            # value for every other field. Keyed by name so it survives spec
-            # reordering; dtypes match the decoder exactly.
+            # this, padded_batch pads every numeric field with 0, which is wrong for
+            # groundtruth_polygons: 0.0 is a valid (top-left) vertex coordinate, so
+            # 0-padded rows would read as real vertices instead of the -1.0 sentinel
+            # and corrupt the PolyYOLO radial target. Pin -1.0 for polygons and the
+            # natural empty value for every other field. Keyed by name so it survives
+            # spec reordering; dtypes match the decoder exactly.
             _padding_values = {
                 'image': tf.constant(0, tf.uint8),
                 'source_id': tf.constant('', tf.string),
@@ -323,15 +322,13 @@ class InputReader:
                 })
             group_size = self._mosaic_module._group_size
             # Disperse each group's outputs across many training batches: at R<4
-            # every source image recurs in 4/R outputs of its group (Sidon-shift
-            # draw in mosaic.py caps any two outputs at ONE shared source image),
-            # and this buffer is what spreads those recurrences apart in time —
-            # 3072 decoded outputs (~4.3 GB host RAM at 672²) puts the 4 reuses
-            # of an image ~24 batches-of-128 apart, making same-batch reuse rare
-            # (per-item mosaic loaders spread reuses across the whole epoch; a
-            # streaming pipeline buys distance with buffer RAM). Never below 32
-            # groups' worth of outputs so huge group configs still disperse.
-            # Cost is RAM + initial fill only — per-step time is unaffected.
+            # every source image recurs in 4/R outputs of its group (the Sidon-shift
+            # draw in mosaic.py caps any two outputs at one shared source image), and
+            # this buffer spreads those recurrences apart in time — 3072 decoded
+            # outputs (~4.3 GB host RAM at 672²) puts the 4 reuses of an image ~24
+            # batches-of-128 apart, making same-batch reuse rare. Never below 32
+            # groups' worth of outputs so large group configs still disperse. Cost is
+            # RAM + initial fill only; per-step time is unaffected.
             outputs_per_group = group_size // self._mosaic_module._decodes_per_output
             shuffle_buffer = max(3072, 32 * outputs_per_group)
             ds = (
@@ -630,9 +627,9 @@ def build_input_reader_from_config(
             single_translate=parser_cfg.aug_rand_translate,
             single_area_thresh=parser_cfg.area_thresh,
             random_flip=parser_cfg.random_flip,
-            # Rotation parity: the mosaic path never rotates (legacy hard-disabled
-            # mosaic rotation). Optional single-path pre-warp rotation is the only
-            # rotation, gated by the parser-level rotate / rotate_degrees.
+            # The mosaic path never rotates; the optional single-path pre-warp
+            # rotation is the only rotation, gated by the parser-level
+            # rotate / rotate_degrees.
             single_rotate=parser_cfg.rotate,
             single_rotate_degrees=parser_cfg.rotate_degrees,
             # Copy-paste runs per tile inside the mosaic; the single path ignores it.

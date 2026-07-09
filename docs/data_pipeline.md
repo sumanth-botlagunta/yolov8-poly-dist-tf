@@ -102,7 +102,7 @@ training step; each sub-stream also prefetches internally.
 
 | Stage | Format | Notes |
 |-------|--------|-------|
-| TFDS input | `[N, max_vertices+2]` flat xy, normalized, **-1 padded** | both x and y are -1 for an invalid/padded pair |
+| TFDS input | `[N, P]` flat interleaved xy, normalized, **-1 padded** | `P` is the dataset's stored polygon width (e.g. 3972 for `cleaner_polygon2026`, 10940 for `servingbot_polygon`), not the parser's `max_vertices`; both x and y are -1 for an invalid/padded pair |
 | PolyYOLO target (loss) | `[N, 72] = [dist, angle, conf] × 24` interleaved | `tal_loss.py:_polygon_loss` reads `0::3`=dist, `1::3`=sub-bin angle offset, `2::3`=conf |
 | Cartesian (transient, per matched pair) | `[K, 2]` pixel `(x, y)` | reconstructed from the radial format only at IoU time (`eval/polygon_metrics.py:_radial_to_cartesian`), conf-gated to `K ≤ 24` occupied bins; never persisted |
 | Eval GT | `[N, 72]` radial (same as training GT) | GT is **not** converted to Cartesian — it stays in the radial format through eval |

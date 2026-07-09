@@ -171,7 +171,7 @@ configs/
   yaml_loader.py       # YAML → dataclasses (hand-rolled mapping; no dacite)
   registry.py
   class_map.py         # DETECTION_CLASSES list (39 class names, index = category_id)
-  data/ model/ optimizer/ experiments/yolo/   # composable YAML fragments
+  experiments/yolo/    # self-contained experiment YAMLs (bbox / poly / poly_dist / poly_dist_bf16)
 utils/                 # runnable CLIs
   eval.py              # standalone evaluation over one or many checkpoints
   export/              # model export + inference
@@ -182,6 +182,8 @@ utils/                 # runnable CLIs
     val_history.py       # inspect/extract/export val_history.jsonl (txt/json/csv/xlsx/parquet)
   pipeline/            # data-pipeline diagnostics
     benchmark_pipeline.py diagnose_pipeline.py cloud_diagnose.sh
+  confusion_matrix.py  # per-class detection confusion matrix (ckpt or SavedModel)
+notebooks/             # 01 data-pipeline walkthrough / 02 TensorBoard analysis / 03 checkpoint inspection
 tests/                 # unit/ integration/ smoke/ + component tests
 ```
 

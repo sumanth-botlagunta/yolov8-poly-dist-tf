@@ -26,7 +26,7 @@ Step-by-step procedures for the core flows. The reference docs below are the dee
 | [losses.md](losses.md) | TAL assignment, CIoU/DFL/cls, polygon and distance losses, the gains, and the normalization conventions (incl. the documented deviations). |
 | [training.md](training.md) | Configs, the optimizer/EMA, the training loop, checkpoints, mixed precision/XLA, and distributed training. |
 | [configuration.md](configuration.md) | Every config section/field explained: how YAMLs load, the dataclass layout, defaults, and validated invariants. |
-| [scripts.md](scripts.md) | Every runnable script: purpose, inputs explained, and a copy-paste command. |
+| [scripts.md](scripts.md) | Every runnable script and analysis notebook: purpose, inputs explained, and a copy-paste command. |
 | [metrics.md](metrics.md) | Glossary of every metric `eval` prints (mAP/F1, polygon, distance). |
 | [device_export.md](device_export.md) | On-device (Qualcomm SNPE/DLC) export workflow and the box channel-order contract. |
 | [troubleshooting.md](troubleshooting.md) | Common training/eval/export failures and what to check. |

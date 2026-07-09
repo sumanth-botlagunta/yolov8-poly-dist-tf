@@ -1,29 +1,14 @@
 """Self-contained, dependency-free progress bar for long-running tasks.
 
 An Ultralytics-style live progress bar (header columns + bar + rate + ETA + a live
-status field for losses/metrics) that is **TTY-aware** — critical because training on
-the cloud pipes stdout to a log file via ``train_supervisor.sh``, where a naive
-carriage-return bar would spam the file with thousands of fragments:
+status field for losses/metrics) that is TTY-aware:
 
-  * **Interactive terminal** (`stdout.isatty()`): a live in-place bar updated with ``\\r``.
-  * **Non-TTY** (redirected to a file / cron): a clean one-line summary printed at a
-    coarse interval (``file_interval`` seconds) and once at the end — no ``\\r`` spam.
+  * Interactive terminal (``stdout.isatty()``): a live in-place bar updated with ``\\r``.
+  * Non-TTY (redirected to a file / cron): a one-line summary printed at a coarse
+    interval (``file_interval`` seconds) and once at the end, with no ``\\r``.
 
-No dependency (no tqdm). Used across train/val and the batch tools (eval, re-encode,
-export, infer) for a consistent look.
-
-Typical use::
-
-    from common.progress import Progress
-    with Progress(total=len(items), desc='Encoding', unit='img') as p:
-        for it in items:
-            ...
-            p.update(1, status=f'loss={loss:.3f}')
-
-    # or wrap an iterable:
-    from common.progress import progress
-    for it in progress(items, desc='Encoding', unit='img'):
-        ...
+Used across train/val and the batch tools (eval, re-encode, export, infer). The
+``progress`` helper wraps an iterable; the ``Progress`` class is a context manager.
 """
 
 from __future__ import annotations
@@ -89,14 +74,12 @@ class Progress:
         except Exception:
             self._is_tty = False
 
-    # ------------------------------------------------------------------
     def __enter__(self) -> "Progress":
         return self
 
     def __exit__(self, *exc) -> None:
         self.close()
 
-    # ------------------------------------------------------------------
     def update(self, n: int = 1, desc: Optional[str] = None,
                status: Optional[str] = None) -> None:
         """Advance by ``n`` steps; optionally update the left label / right status."""
@@ -124,7 +107,6 @@ class Progress:
     def set_status(self, status: str) -> None:
         self._status = status
 
-    # ------------------------------------------------------------------
     def _bar_str(self, width: int) -> str:
         if self.total is None or self.total <= 0:
             return ""

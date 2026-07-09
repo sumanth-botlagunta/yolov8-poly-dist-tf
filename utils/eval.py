@@ -1,48 +1,21 @@
 """Standalone evaluation for the YOLOv8 polygon + distance model.
 
-Loads a trained checkpoint (EMA weights preferred), runs inference over the
-validation or test split, computes the metric table, and optionally writes a
-COCO-format results JSON.
+Loads a trained checkpoint (EMA weights preferred), runs inference over a split,
+prints the metric table, and optionally writes a COCO-format results JSON. Three
+modes share one evaluation path:
 
-Three modes share one evaluation code path (`evaluate_checkpoint`):
-
-  * single   (default, ``--checkpoint <ckpt>``): evaluate one checkpoint and print
-    the metric table, with the full single-checkpoint reporting (``--split``,
-    ``--per_category``, ``--output_json``, ``--output_dir``).
-  * all      (``--all --watch_dir <dir>``): evaluate every checkpoint already in
-    ``<dir>`` once, appending each result as a JSON line to
-    ``<dir>/eval_log.jsonl``.
-  * watch    (``--watch --watch_dir <dir>``): poll ``<dir>`` and evaluate each new
-    checkpoint as it appears, appending to ``<dir>/eval_log.jsonl`` (``--interval``,
-    ``--max_evals``).
+  * single (default): evaluate one --checkpoint and print the metric table, with
+    --split / --per_category / --output_json / --output_dir reporting.
+  * all (--all --watch_dir <dir>): evaluate every checkpoint in <dir> once,
+    appending each result to <dir>/eval_log.jsonl.
+  * watch (--watch --watch_dir <dir>): poll <dir> and evaluate each new checkpoint
+    as it appears, appending to <dir>/eval_log.jsonl.
 
 Usage:
-    # one checkpoint
-    python -m utils.eval \
-        --config  configs/experiments/yolo/yolov8_poly_dist.yaml \
-        --checkpoint /path/to/ckpt-step \
-        --split val \
-        --output_json /tmp/results.json
-
-    # every existing checkpoint in a run directory, once
+    python -m utils.eval --config <cfg> --checkpoint /run/ckpt-1000 \
+        --split val --output_json /tmp/results.json
     python -m utils.eval --config <cfg> --all   --watch_dir /run
-
-    # keep watching for new checkpoints
     python -m utils.eval --config <cfg> --watch --watch_dir /run --interval 300
-
-Flags:
-    --config        Path to experiment YAML.
-    --checkpoint    Checkpoint path prefix (single mode; e.g. /output/ckpt-1000).
-    --split         Dataset split to evaluate: 'val' or 'test'.
-    --output_json   Path to write COCO-format detection results JSON (single mode).
-    --per_category  Print per-category AP50/AP/AP75/AR100 table (single mode).
-    --output_dir    If set, write metrics.json (and per_category_metrics.json) here
-                    (single mode).
-    --all           Evaluate every existing checkpoint in --watch_dir once.
-    --watch         Poll --watch_dir and evaluate each new checkpoint.
-    --watch_dir     Run directory to scan (required for --all / --watch).
-    --interval      Seconds between polls in --watch mode.
-    --max_evals     Stop after this many evaluations in --watch mode (0 = unlimited).
 """
 
 import json
@@ -132,10 +105,10 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
     val_ds = task.build_inputs(data_cfg)
 
     img_size = tuple(task_cfg.model.input_size[:2])
-    # Pass the SAME crowd/dontcare flags the trainer's evaluator uses
-    # (train/task.py:_build_eval_state) — building on hardcoded defaults made
-    # this tool silently diverge from val_history.jsonl the day a config
-    # changed those flags.
+    # Pass the same crowd/dontcare flags the trainer's evaluator uses
+    # (train/task.py:_build_eval_state) so this tool's numbers match
+    # val_history.jsonl; hardcoded defaults would diverge when a config changes
+    # those flags.
     coco_ev = COCOEvaluator(
         num_classes=task_cfg.num_classes,
         image_size=img_size,

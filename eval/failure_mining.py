@@ -1,19 +1,19 @@
-"""Failure-case mining for evaluation — surface *why* a class is weak, not just the number.
+"""Failure-case mining for evaluation: records why a class is weak, not just its score.
 
 During eval, ``FailureCollector`` greedily matches detections to GT per class (COCO-style)
 and records three failure kinds, keeping the worst-K per class:
 
-  * **FP**  — a confident detection with no GT match (sorted by score; the worst are the
-              high-confidence false positives).
-  * **FN**  — a GT object no detection matched (a miss; sorted by GT area).
-  * **low-IoU** — a correct-class match that is poorly localized (sorted by lowest IoU).
+  * FP — a confident detection with no GT match (sorted by score; the worst are the
+    high-confidence false positives).
+  * FN — a GT object no detection matched (a miss; sorted by GT area).
+  * low-IoU — a correct-class match that is poorly localized (sorted by lowest IoU).
 
 ``write()`` renders each kept case as an annotated image under
 ``<out_dir>/<NN_name>/<kind>_<rank>_*.png`` (GT green, the failing box red/orange, with the
-class/score/IoU labelled), so you can open a weak class and look at its actual mistakes.
+class/score/IoU labelled).
 
-Memory: only the worst-K records per (class, kind) are retained; an evicted record's image
-is dropped. Pairs with the ``per_class/`` TensorBoard metrics (which weak class → look here).
+Only the worst-K records per (class, kind) are retained; an evicted record's image is
+dropped. Complements the ``per_class/`` TensorBoard metrics.
 """
 
 from __future__ import annotations

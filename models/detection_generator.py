@@ -4,16 +4,13 @@ Converts raw head outputs to final detections:
     1. Decode DFL box distributions to (l, t, r, b) offsets.
     2. Apply per-level anchor grids to produce xyxy boxes.
     3. Normalize to [0, 1] in yxyx format.
-    4. Apply sigmoid to class logits.
-    5. Apply top-1 class masking (each anchor keeps only its highest-scoring class).
-    6. Run greedy NMS (score_threshold=0.05, iou_threshold=0.65) — either
-       independently per class or once class-agnostically (``nms_class_mode``).
+    4. Sigmoid the class logits.
+    5. Top-1 class masking (each anchor keeps only its highest-scoring class).
+    6. Greedy NMS (score_threshold=0.05, iou_threshold=0.65), either per class
+       or once class-agnostically (``nms_class_mode``).
     7. Merge survivors, sort by score, keep top-max_boxes.
-    8. Apply polygon activations: softplus(dist), sigmoid(angle), sigmoid(conf).
-    9. Decode distance: exp(log_dist), clamped to [min_distance, max_distance].
-
-Classes:
-    YoloV8Layer: Wraps post-processing as a callable layer.
+    8. Polygon activations: softplus(dist), sigmoid(angle), sigmoid(conf).
+    9. Distance: exp(log_dist), clamped to [min_distance, max_distance].
 """
 
 from __future__ import annotations
@@ -29,15 +26,14 @@ _LEVEL_STRIDES = {"3": 8, "4": 16, "5": 32}
 class YoloV8Layer:
     """Post-processing layer converting raw head output to detections.
 
-    Top-1 class masking zeroes out all classes except the argmax per anchor;
-    score_threshold=0.05 filters boxes before NMS. The suppression scope is
-    selected by ``nms_class_mode``:
+    Top-1 class masking zeroes all classes except the argmax per anchor;
+    score_threshold=0.05 filters boxes before NMS. Suppression scope is set by
+    ``nms_class_mode``:
 
-    - ``per_class``: NMS runs independently per class — two overlapping boxes
-      with different argmax classes never suppress each other.
-    - ``agnostic``: ONE NMS over all boxes regardless of class — at each
-      location only the highest-scored box survives, so cross-class
-      duplicates are removed.
+    - ``per_class``: NMS independently per class — overlapping boxes with
+      different argmax classes never suppress each other.
+    - ``agnostic``: one NMS over all boxes; at each location only the
+      highest-scored box survives, removing cross-class duplicates.
 
     Output predictions schema:
         bbox:           float32 [batch, max_boxes, 4]     yxyx normalized [0,1]
@@ -147,7 +143,7 @@ class YoloV8Layer:
         scores_masked = scores * one_hot                                    # [N, nc]
 
         if self.nms_class_mode == "agnostic":
-            # ONE NMS over all boxes: each anchor competes with its argmax-class
+            # One NMS over all boxes: each anchor competes with its argmax-class
             # score; overlapping boxes suppress each other regardless of class.
             cs      = tf.reduce_max(scores_masked, axis=-1)   # [N] argmax-class score
             nms_idx = tf.image.non_max_suppression(
@@ -226,12 +222,10 @@ class YoloV8Layer:
         # Distance: exp + clamp, then pad
         if distance is not None:
             m_di     = tf.concat(c_di, axis=0)
-            # Clamp in LOG space *before* exp. The head emits log-distance; a few
-            # very large logits would overflow exp() to +inf, and clip(inf, ...)
-            # silently yields max_distance with no NaN/inf signal. Clamping the log
-            # first bounds the exp input to [log(min), log(max)] — identical result
-            # for in-range values, but no transient inf. min/max_distance are
-            # guaranteed positive (range [0.5, 10.0]), so the logs are finite.
+            # Clamp in log space before exp: the head emits log-distance, and large
+            # logits would overflow exp() to +inf before the clip. Bounding the exp
+            # input to [log(min), log(max)] is identical for in-range values with no
+            # transient inf; min/max_distance are positive so the logs are finite.
             log_di   = tf.clip_by_value(
                 tf.gather(m_di, top),
                 math.log(self.min_distance),
@@ -270,10 +264,8 @@ class YoloV8Layer:
 
         for level in ["3", "4", "5"]:
             stride = _LEVEL_STRIDES[level]
-            # Cast to float32 up front: under a mixed_bfloat16 policy the head
-            # emits bfloat16, which would otherwise clash with the float32
-            # constants/grids below and the float32 fn_output_signature. No-op
-            # under the default float32 policy.
+            # Cast to float32: under mixed_bfloat16 the head emits bfloat16, which
+            # would clash with the float32 grids/constants and fn_output_signature.
             box_raw = tf.cast(raw_outputs["box"][level], tf.float32)  # [B, H, W, 4*reg_max]
             cls_raw = tf.cast(raw_outputs["cls"][level], tf.float32)  # [B, H, W, num_classes]
 
@@ -355,18 +347,14 @@ class YoloV8Layer:
             ),
         )
 
-        # Stack polygon channels: (conf, dist, angle) — all activated
-        # NOTE — channel-order trap: predictions stack (conf, dist, angle) per
-        # bin, but the GT radial target interleaves (dist, angle, conf)
-        # (data_pipeline/yolo_parser.py, _preprocess_polygons_v2). Both layouts
-        # are pinned by tests/unit/test_polygon_channel_order.py; never index
-        # one with the other's layout.
+        # Predictions stack (conf, dist, angle) per bin, but the GT radial target
+        # interleaves (dist, angle, conf) (data_pipeline/yolo_parser.py,
+        # _preprocess_polygons_v2). Both layouts are pinned by
+        # tests/unit/test_polygon_channel_order.py; never index one with the other.
         poly_out = tf.stack([out_pc, out_pd, out_pa], axis=-1)   # [B, max_boxes, 24, 3]
 
-        # Clip final boxes to the image: the DFL decode can place edges beyond
-        # the borders (cx − l < 0 etc.), which draws boxes outside the frame in
-        # overlays and slightly penalizes IoU against edge-clipped GT in eval.
-        # Clipping after NMS (here) leaves suppression behavior unchanged.
+        # Clip final boxes to the image: the DFL decode can place edges beyond the
+        # borders (cx − l < 0 etc.). Clipping after NMS leaves suppression unchanged.
         out_boxes = tf.clip_by_value(out_boxes, 0.0, 1.0)
 
         return {

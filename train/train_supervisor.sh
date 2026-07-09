@@ -1,28 +1,23 @@
 #!/usr/bin/env bash
 # Training supervisor: keeps run_train.py alive across crashes/OOM-kills and
-# resumes automatically — no manual babysitting.
+# resumes automatically. Run under nohup/tmux so an SSH disconnect cannot stall
+# or kill it.
 #
 #   nohup bash train/train_supervisor.sh \
 #       --config configs/experiments/yolo/yolov8_poly_dist.yaml \
 #       --output_dir /path/to/run_dir \
 #       >> /path/to/run_dir/supervisor.log 2>&1 &
 #
-# (nohup/tmux matters: running training in a bare VS Code remote terminal ties
-#  it to the SSH session — a disconnect can stall stdout and freeze the run for
-#  hours, or kill it outright. Under nohup the process never sees the hangup.)
-#
 # Behavior:
-#   * Restarts training whenever it exits abnormally (e.g. kernel OOM "Killed"
-#     = exit 137). Resume is automatic: the trainer restores the newest of the
-#     epoch-boundary checkpoints and resume/ interruption checkpoints, then
-#     runs exactly the remaining steps of the interrupted epoch.
-#   * STOPPING ON PURPOSE: `touch <output_dir>/STOP` — the supervisor exits
-#     after the current attempt ends instead of restarting. (Also: Ctrl-C /
-#     SIGTERM to the supervisor forwards the signal to training so it writes a
-#     resume checkpoint, then exits without restarting.)
+#   * Restarts training on abnormal exit (e.g. kernel OOM "Killed" = exit 137).
+#     Resume is automatic: the trainer restores the newest of the epoch-boundary
+#     and resume/ checkpoints, then runs the remaining steps of that epoch.
+#   * `touch <output_dir>/STOP` exits after the current attempt instead of
+#     restarting. Ctrl-C / SIGTERM to the supervisor forwards the signal to
+#     training for a resume checkpoint, then exits without restarting.
 #   * Exit code 0 from training (run completed) ends the supervisor.
-#   * Crash-loop guard: 5 consecutive exits within 120s abort the supervisor —
-#     that is a real bug, not an OOM blip; check train.log.
+#   * Crash-loop guard: 5 consecutive exits within 120s abort the supervisor
+#     (a real bug, not an OOM blip; check train.log).
 set -u
 
 CONFIG=""; OUTPUT_DIR=""

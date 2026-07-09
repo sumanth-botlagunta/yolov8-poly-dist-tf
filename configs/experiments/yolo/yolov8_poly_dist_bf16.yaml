@@ -1,17 +1,15 @@
 # Experiment: yolov8_poly_dist_bf16
 #
-# NOTE: the base config (yolov8_poly_dist.yaml) now runs bfloat16 by default.
-# This overlay ONLY adds XLA auto-clustering (tf.config.optimizer.set_jit) on
-# top — a global, best-effort graph-clustering mechanism that tolerates the
-# dynamic M_eff shapes in the TAL loss (clusters fall back where they can't
-# compile). Use it as an A/B experiment against the base config; measured win
-# is typically modest. Do NOT combine with per-function jit_compile if that is
-# ever added to the trainer — pick one mechanism.
+# The base config (yolov8_poly_dist.yaml) already runs bfloat16. This overlay
+# adds XLA auto-clustering (tf.config.optimizer.set_jit) on top — a global,
+# best-effort graph-clustering mechanism that tolerates the dynamic M_eff shapes
+# in the TAL loss (clusters fall back where they can't compile). Run it as an A/B
+# against the base config; the measured win is typically modest. Do not combine
+# with per-function jit_compile — pick one mechanism.
 #
-# Validation procedure before trusting this config for a full run:
+# Validation before a full run:
 #   1. /train this config for a few hundred steps.
-#   2. Confirm no NaN/Inf in the loss and that box/cls/dfl curves track the
-#      base config.
+#   2. Confirm no NaN/Inf in the loss and that box/cls/dfl curves track the base.
 #   3. /benchmark to record the throughput gain (if any).
 
 base: yolov8_poly_dist.yaml
