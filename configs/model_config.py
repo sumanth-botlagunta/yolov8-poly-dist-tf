@@ -167,13 +167,13 @@ class MosaicConfig:
     # Mosaic image diversity (see data_pipeline/mosaic.py). A group of `group_size`
     # decoded images maps to `group_size // decodes_per_output` outputs; each
     # mosaic draws 4 source images from the group. `decodes_per_output` (R) is the
-    # decode multiplier: R=4 is stock-YOLO (4 distinct images per mosaic, no
-    # reuse). At R<4 each image recurs in 4/R outputs, but Sidon-shift source
-    # selection caps any two outputs at one shared source, so an epoch consumes
-    # R/4 as many distinct images without near-duplicate samples. group_size must
-    # be a multiple of decodes_per_output and >= 4.
+    # decode multiplier. R=1 (default) reuses each decoded image in 4 outputs;
+    # Sidon-shift source selection caps any two outputs at one shared source, so
+    # the cost is distinct-image volume per epoch, not correlation. R=4 is
+    # stock-YOLO (4 distinct images per mosaic, no reuse) at 4x the decode work.
+    # group_size must be a multiple of decodes_per_output and >= 4.
     group_size: int = 32
-    decodes_per_output: int = 4
+    decodes_per_output: int = 1
     # random_perspective params applied after mosaic assembly and to non-mosaic
     # singles. shear in degrees; translate as a fraction of output size;
     # perspective coefficient (0 disables); scale gain from aug_scale_min/max.

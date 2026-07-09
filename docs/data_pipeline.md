@@ -16,7 +16,8 @@ tfds.load (SkipDecoding: images stay ENCODED bytes through shuffle)
    → padded_batch(group_size, padding_values=…)  ← polygons pad with -1.0
                            (sentinel), not 0.0 (a valid vertex coord); every key explicit
    → Mosaic                (mosaic.py): G in → G // R out (G = group_size 32,
-                           R = decodes_per_output 4 → 8 outputs). Each output
+                           R = decodes_per_output, default 1 → 32 outputs). Each
+                           output
                            independently flips mosaic_frequency (per-output, not
                            per-group); a mosaic draws 4 source images from one
                            per-group random permutation at Sidon-set shifts —
@@ -154,8 +155,9 @@ learns to collapse non-existent vertices (intended PolyYOLO behavior). Decode us
   caps tf.data's worker count on cgroup-capped machines; `yolov8_poly_dist.yaml` sets it to 13.
 - The post-unbatch `shuffle` (buffer ≥ 256, scaled with `outputs_per_group` =
   `group_size // decodes_per_output`) disperses each mosaic group's outputs before the final
-  `batch(global_batch_size)` — at R<4 a group emits more, mutually-correlated outputs, so the
-  buffer scales with the output count, not the pool size.
+  `batch(global_batch_size)` — at R<4 a group emits more outputs (Sidon selection keeps any
+  two of them at ≤1 shared source), so the buffer scales with the output count, not the pool
+  size.
 - **Three pipeline changes target the dominant CPU bottlenecks** (measured on the
   13-core-capped cloud host): pre-resizing before copy-paste (~18 ms·core/img at full-res),
   the mosaic **canvas formulation** (one `random_perspective` warp per output — 4 cheap

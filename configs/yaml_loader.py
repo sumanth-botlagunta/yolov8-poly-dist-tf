@@ -409,7 +409,7 @@ def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
         area_thresh=mosaic_raw.get("area_thresh", 0.5),
         jitter=mosaic_raw.get("jitter", 0.0),
         group_size=mosaic_raw.get("group_size", 32),
-        decodes_per_output=mosaic_raw.get("decodes_per_output", 4),
+        decodes_per_output=mosaic_raw.get("decodes_per_output", 1),
         shear=mosaic_raw.get("shear", 0.0),
         perspective=mosaic_raw.get("perspective", 0.0),
         translate=mosaic_raw.get("translate", 0.1),

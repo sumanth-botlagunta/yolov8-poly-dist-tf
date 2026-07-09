@@ -43,12 +43,14 @@ class TestEvalPrecisionPolicy(unittest.TestCase):
         applied = apply_eval_precision_policy(_cfg(None))
         self.assertEqual(applied, "float32")
 
-    def test_live_config_yaml_is_bfloat16(self):
-        # The live training config trains in bfloat16; eval must match it.
+    def test_live_config_precision_reaches_eval(self):
+        # Eval must apply whatever precision the config trains with: float32
+        # for the base tier, bfloat16 for the _bf16 overlay.
         from configs.yaml_loader import load_config
-        cfg = load_config("configs/experiments/yolo/yolov8_poly_dist.yaml")
-        applied = apply_eval_precision_policy(cfg)
-        self.assertEqual(applied, "bfloat16")
+        base = load_config("configs/experiments/yolo/yolov8_poly_dist.yaml")
+        self.assertEqual(apply_eval_precision_policy(base), "float32")
+        bf16 = load_config("configs/experiments/yolo/yolov8_poly_dist_bf16.yaml")
+        self.assertEqual(apply_eval_precision_policy(bf16), "bfloat16")
 
 
 if __name__ == "__main__":

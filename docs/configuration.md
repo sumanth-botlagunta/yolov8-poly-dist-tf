@@ -42,7 +42,7 @@ Applied in `train/run_train.py:_apply_runtime_config` before any TF op runs.
 | Field | Default | Notes |
 |-------|---------|-------|
 | `distribution_strategy` | `mirrored` | `one_device` for single GPU (poly_dist uses one_device). |
-| `mixed_precision_dtype` | `float32` | `mixed_bfloat16` for the bf16 tier (heads pinned float32, no loss scaling). |
+| `mixed_precision_dtype` | `float32` | All tiers run float32; the `_bf16` overlay opts into `bfloat16` (heads stay float32-pinned, no loss scaling). |
 | `enable_xla` | `false` | `tf.config.optimizer.set_jit`. |
 | `inter_op_threads` / `intra_op_threads` | `0` | CPU thread-pool caps (0 = TF default). Set to the real core quota on cgroup-capped hosts to avoid oversubscription. |
 
@@ -116,7 +116,7 @@ for both mosaic and single images (the parser no longer applies a separate affin
 | `shear` / `translate` / `perspective` | 0 / 0.1 / 0 | `random_perspective` strength (degrees; translate as a fraction; perspective 0 disables). |
 | `close_mosaic_epochs` | `0` | Disable mosaic + mixup for the final N epochs (Ultralytics close_mosaic; 0 = off). |
 | `group_size` | `32` | Mosaic source pool per group. **Invariant:** multiple of `decodes_per_output`, ≥ 4. |
-| `decodes_per_output` | `4` | **R** — decodes per emitted sample. 4 = stock YOLO: each mosaic draws 4 distinct images with no cross-output reuse (~4× decode work). R<4 trades diversity for throughput (each image recurs in 4/R outputs) and hurts accuracy; `run_train` warns. See [data_pipeline.md](data_pipeline.md). |
+| `decodes_per_output` | `1` | **R** — decodes per emitted sample. 1 (default) reuses each decoded image in 4 outputs; Sidon selection keeps any two outputs sharing at most one source, so the trade-off is distinct-image volume per epoch, not correlation. 4 = stock YOLO (no reuse) at 4× the decode cost. See [data_pipeline.md](data_pipeline.md). |
 
 ## `trainer` — `TrainerConfig`
 

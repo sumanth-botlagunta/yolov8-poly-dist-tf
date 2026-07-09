@@ -102,9 +102,8 @@ interruption saves, rotated, max 2) — whichever has the higher global step.
 
 ### Mixed precision & XLA
 
-The `yolov8_bbox` / `yolov8_poly` tiers run in `float32`; `yolov8_poly_dist` runs in `bfloat16`
-(heads pinned to float32), both with XLA off. To also enable XLA on Tensor-Core GPUs, use the
-`bfloat16` + XLA variant:
+All tiers run in `float32` with XLA off. To opt into `bfloat16` (heads stay pinned to
+float32) plus XLA on Tensor-Core GPUs, use the performance variant:
 
 ```bash
 nohup bash train/train_supervisor.sh \
@@ -112,9 +111,10 @@ nohup bash train/train_supervisor.sh \
     --output_dir /path/to/run_dir >> /path/to/run_dir/supervisor.log 2>&1 &
 ```
 
-That config is a thin override — it inherits everything from `yolov8_poly_dist.yaml` (already
-`bfloat16`) via a top-level `base:` key and only flips `runtime.enable_xla: true`. `bfloat16`
-needs no loss scaling (unlike `float16`). Validate on a few hundred steps (loss finite) before a
+That config is a thin override — it inherits everything from `yolov8_poly_dist.yaml` via a
+top-level `base:` key and sets only `mixed_precision_dtype: bfloat16` and
+`runtime.enable_xla: true`. `bfloat16` needs no loss scaling (unlike `float16`).
+Validate on a few hundred steps (loss finite) before a
 full run, and use `python -m utils.pipeline.benchmark_pipeline` to record the throughput delta. Any config
 can inherit from another with `base: <relative-path.yaml>` — see
 [docs/configuration.md](docs/configuration.md).

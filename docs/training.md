@@ -23,8 +23,8 @@ Three experiment tiers under `configs/experiments/yolo/` share the same code:
 
 ### Config inheritance (`base:`)
 A config may set a top-level `base: <relative path>` to inherit from another and deep-merge its
-own keys on top (override wins; dicts merge). Example — `yolov8_poly_dist_bf16.yaml` is now just
-an XLA A/B overlay (the base config already runs `mixed_bfloat16`):
+own keys on top (override wins; dicts merge). Example — `yolov8_poly_dist_bf16.yaml` is a
+bfloat16 + XLA performance overlay on the float32 base:
 
 ```yaml
 base: yolov8_poly_dist.yaml
@@ -90,10 +90,10 @@ TensorBoard events to `output_dir/tb_events/`.
 ## Mixed precision & XLA
 Applied in `run_train.py:_apply_runtime_config` from `RuntimeConfig`: XLA via
 `tf.config.optimizer.set_jit`, mixed precision via the global Keras policy, and
-`inter_op_threads`/`intra_op_threads` (applied before any op). **`yolov8_poly_dist.yaml` now
-defaults to `mixed_bfloat16`** (prediction heads are pinned float32 in `models/head.py`; loss
-runs float32; no loss scaling needed). `yolov8_poly_dist_bf16.yaml` is now just an
-`enable_xla: true` A/B overlay on top of the base config. Prefer `bfloat16` over `float16`.
+`inter_op_threads`/`intra_op_threads` (applied before any op). All tiers run `float32`;
+`yolov8_poly_dist_bf16.yaml` opts into `bfloat16` + XLA (prediction heads are pinned float32
+in `models/head.py`; loss runs float32; no loss scaling needed). Prefer `bfloat16` over
+`float16`.
 Validate on a few hundred steps (loss finite, curves tracking a float32 baseline) before a full
 run; benchmark with `/benchmark`.
 

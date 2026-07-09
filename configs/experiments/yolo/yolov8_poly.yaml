@@ -139,7 +139,7 @@ task:
         area_thresh: 0.5
         jitter: 0.0
         group_size: 32
-        decodes_per_output: 4   # R: 4 = stock-YOLO (no reuse); lower = more reuse, less decode
+        decodes_per_output: 1   # R: 1 = each decode reused in 4 outputs (Sidon, <=1 shared source); 4 = stock-YOLO no-reuse at 4x decode cost
         # random_perspective strength applied after mosaic assembly and to
         # non-mosaic single images. The mosaic path never rotates (wired to no
         # rotation in code); single-image rotation is the parser-level rotate /
@@ -189,7 +189,7 @@ task:
         area_thresh: 0.1
         jitter: 0.0
         group_size: 32
-        decodes_per_output: 4   # R: 4 = stock-YOLO (no reuse); lower = more reuse, less decode
+        decodes_per_output: 1   # R: 1 = each decode reused in 4 outputs (Sidon, <=1 shared source); 4 = stock-YOLO no-reuse at 4x decode cost
 
 trainer:
   train_epochs: 300

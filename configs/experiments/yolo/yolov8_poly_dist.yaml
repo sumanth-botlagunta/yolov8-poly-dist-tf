@@ -230,7 +230,7 @@ task:
         area_thresh: 0.1
         jitter: 0.0
         group_size: 32
-        decodes_per_output: 4   # R: 4 = stock-YOLO (no reuse); lower = more reuse, less decode
+        decodes_per_output: 1   # R: 1 = each decode reused in 4 outputs (Sidon, <=1 shared source); 4 = stock-YOLO no-reuse at 4x decode cost
 
 trainer:
   train_epochs: 300
@@ -274,9 +274,9 @@ runtime:
   # Single H100: one_device avoids MirroredStrategy variable wrapping overhead.
   distribution_strategy: one_device
   num_gpus: 1
-  # bfloat16 on H100 Tensor Cores; prediction heads stay float32 (pinned in
-  # models/head.py) and the loss runs in float32 — no loss scaling needed.
-  mixed_precision_dtype: bfloat16
+  # float32 end to end — the reference precision for all runs. The bf16 + XLA
+  # performance variant is the yolov8_poly_dist_bf16.yaml overlay.
+  mixed_precision_dtype: float32
   run_eagerly: false
   enable_xla: false
   # Host CPU is cgroup-capped at ~13 cores while 128 are visible; cap TF's pools
