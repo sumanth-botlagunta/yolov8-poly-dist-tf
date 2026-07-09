@@ -99,8 +99,10 @@ A.transform_boxes_polygons = _instrumented
 from data_pipeline import mosaic as mosaic_mod
 mosaic_mod.transform_boxes_polygons = _instrumented
 
-m = mosaic_mod.Mosaic(
-    output_size=[H, W], mosaic_frequency=1.0,
+def run_pass(freq, label):
+    counts.clear(); sizes.clear()
+    m = mosaic_mod.Mosaic(
+    output_size=[H, W], mosaic_frequency=freq,
     mosaic_center=mc.mosaic_center,
     aug_scale_min=mc.aug_scale_min, aug_scale_max=mc.aug_scale_max,
     area_thresh=mc.area_thresh, with_polygons=pc.with_polygons,
@@ -108,8 +110,20 @@ m = mosaic_mod.Mosaic(
     tile_scale_min=mc.tile_scale_min, tile_scale_max=mc.tile_scale_max,
     group_size=mc.group_size, decodes_per_output=mc.decodes_per_output,
     single_scale_min=pc.aug_scale_min, single_scale_max=pc.aug_scale_max,
-    single_translate=pc.aug_rand_translate, random_flip=True)
-fn = m.mosaic_fn(True)
+    single_translate=pc.aug_rand_translate,
+    single_area_thresh=pc.area_thresh, random_flip=True)
+    fn = m.mosaic_fn(True)
+
+    ds = _build_ds()
+    print(f'\n===== {label} (mosaic_frequency={freq}) =====')
+    for gi, batch in enumerate(ds):
+        if gi >= N_GROUPS:
+            break
+        fn(batch)
+        if (gi + 1) % 10 == 0:
+            print(f'  ... {gi + 1}/{N_GROUPS} groups')
+    _report()
+
 
 import tensorflow_datasets as tfds
 name = os.environ.get('EP_TFDS', td.tfds_name.split(',')[0].strip())
@@ -118,9 +132,15 @@ decoder = tfds_decoders.PolygonDecoder(
     num_classes=cfg.task.num_classes,
     class_remap_json_path=td.class_remap_json_path,
     resample_points=pc.resample_points)
-ds = tfds.load(name, split=split, data_dir=os.environ.get('EP_DATA_DIR', td.tfds_data_dir),
-               decoders={'image': tfds.decode.SkipDecoding()})
-ds = ds.map(decoder.decode)
+def _build_ds():
+    ds = tfds.load(name, split=split,
+                   data_dir=os.environ.get('EP_DATA_DIR', td.tfds_data_dir),
+                   decoders={'image': tfds.decode.SkipDecoding()})
+    ds = ds.map(decoder.decode)
+    ds = ds.map(_pre_resize)
+    if int(os.environ.get('EP_REPEAT', '0')):
+        ds = ds.repeat(int(os.environ['EP_REPEAT']))
+    return ds.padded_batch(mc.group_size, drop_remainder=True)
 
 
 def _pre_resize(ex):
@@ -129,31 +149,24 @@ def _pre_resize(ex):
     return ex
 
 
-ds = ds.map(_pre_resize)
-if int(os.environ.get('EP_REPEAT', '0')):
-    ds = ds.repeat(int(os.environ['EP_REPEAT']))
-ds = ds.padded_batch(mc.group_size, drop_remainder=True)
+def _report():
+    wcalls = counts.pop('_wrapper_calls', 0)
+    total = counts.pop('boxes_total', 0)
+    print(f'warp calls instrumented: {wcalls}')
+    print(f'boxes fed to the warp: {total}')
+    for k, v in counts.most_common():
+        print(f'  {k:48s} {v:8d}  ({100 * v / max(total, 1):5.1f}%)')
+    print('size of boxes the OLD 0.5 rule deleted (min side, px at 672):')
+    for k in ('<=8px', '<=16px', '<=32px', '<=64px', '<=128px', '<=256px', '>256px'):
+        if sizes.get(k):
+            print(f'  {k:>8s}: {sizes[k]}')
+
 
 print(f'config={CONFIG}\nsource={name}[{split}]  groups={N_GROUPS} '
-      f'(x{mc.group_size} images)\n')
-for gi, batch in enumerate(ds):
-    if gi >= N_GROUPS:
-        break
-    fn(batch)
-    if (gi + 1) % 10 == 0:
-        print(f'  ... {gi + 1}/{N_GROUPS} groups')
-
-wcalls = counts.pop('_wrapper_calls', 0)
-total = counts.pop('boxes_total', 0)
-print(f'warp calls instrumented: {wcalls}')
-print(f'\nboxes fed to the warp: {total}')
-for k, v in counts.most_common():
-    print(f'  {k:48s} {v:8d}  ({100 * v / max(total, 1):5.1f}%)')
-print('\nsize of boxes the OLD 0.5 rule deleted (min side, px at 672):')
-for k in ('<=8px', '<=16px', '<=32px', '<=64px', '<=128px', '<=256px', '>256px'):
-    if sizes.get(k):
-        print(f'  {k:>8s}: {sizes[k]}')
+      f'(x{mc.group_size} images)')
+run_pass(1.0, 'MOSAIC path')
+run_pass(0.0, 'SINGLE-image path (the one the old shared 0.5 hit vs legacy)')
 print('\nReading: "area 0.1-0.5" is the population the old config trained AS '
       'BACKGROUND while visible; "ar>=20" is what the old config trained as '
-      'positives but legacy/new drop. If "area 0.1-0.5" dominates, the F1 gap '
-      'driver is the area rule, not aspect ratio.')
+      'positives but legacy/new drop. Judge each path against its own table; '
+      'the SINGLE path is where the old config diverged from legacy.')
