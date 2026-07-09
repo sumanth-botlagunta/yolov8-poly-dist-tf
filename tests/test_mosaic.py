@@ -934,10 +934,9 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def test_mosaic_area_thresh_is_reference_value():
-    """The mosaic keep-filter must stay at the reference 0.1: a box that keeps
-    40% of its area after clipping SURVIVES (at 0.5 it was deleted while its
-    pixels stayed visible, training the model to suppress partial objects)."""
+def test_candidate_filter_legacy_parity():
+    """Legacy-parity candidate filter: mosaic path culls at 0.5, single path
+    keeps boxes down to 10% visible area + 2px sides + aspect ratio < 20."""
     import tensorflow as tf
     from configs.yaml_loader import load_config
     from data_pipeline.augmentations import transform_boxes_polygons
@@ -945,8 +944,13 @@ def test_mosaic_area_thresh_is_reference_value():
 
     for tier in ('yolov8_bbox', 'yolov8_poly', 'yolov8_poly_dist'):
         cfg = load_config(f'configs/experiments/yolo/{tier}.yaml')
-        assert cfg.task.train_data.parser.mosaic.area_thresh == 0.1, tier
-    assert Mosaic([64, 64])._area_thresh == 0.1
+        # legacy parity: mosaic path culls at 0.5; the single-image path uses
+        # the permissive parser-level reference value
+        assert cfg.task.train_data.parser.mosaic.area_thresh == 0.5, tier
+        assert cfg.task.train_data.parser.area_thresh == 0.1, tier
+    m = Mosaic([64, 64], single_area_thresh=0.1)
+    assert m._area_thresh == 0.5 and m._single_area_thresh == 0.1
+    assert Mosaic([64, 64])._single_area_thresh == 0.5  # fallback: no split
 
     # identity warp, box half outside the frame -> ~50% visible: kept at 0.1
     M = tf.eye(3)

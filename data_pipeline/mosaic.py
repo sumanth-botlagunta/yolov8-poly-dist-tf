@@ -274,7 +274,7 @@ class Mosaic:
         mosaic_center: float = 0.25,
         aug_scale_min: float = 0.5,
         aug_scale_max: float = 1.5,
-        area_thresh: float = 0.1,
+        area_thresh: float = 0.5,
         with_polygons: bool = True,
         degrees: float = 10.0,
         shear: float = 0.0,
@@ -288,6 +288,7 @@ class Mosaic:
         single_scale_min: Optional[float] = None,
         single_scale_max: Optional[float] = None,
         single_translate: Optional[float] = None,
+        single_area_thresh: Optional[float] = None,
         random_flip: bool = False,
     ):
         self._H = output_size[0]
@@ -331,6 +332,11 @@ class Mosaic:
             single_scale_max if single_scale_max is not None else aug_scale_max)
         self._single_translate = (
             single_translate if single_translate is not None else translate)
+        # Legacy parity: the mosaic warp culls at area_thresh (0.5 in the tier
+        # YAMLs, as in the legacy source); the single-image warp uses the
+        # permissive reference filter (parser-level area_thresh, 0.1).
+        self._single_area_thresh = (
+            single_area_thresh if single_area_thresh is not None else area_thresh)
         # Flip ownership: when True, this module flips — each mosaic TILE
         # independently (tiles flip before placement, the assembled canvas
         # is never mirrored) and each single
@@ -476,6 +482,7 @@ class Mosaic:
         scale_min: Optional[float] = None,
         scale_max: Optional[float] = None,
         translate: Optional[float] = None,
+        area_thresh: Optional[float] = None,
     ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """random_perspective with this module's configured params → output size.
 
@@ -495,7 +502,8 @@ class Mosaic:
             scale_max=self._scale_max if scale_max is None else scale_max,
             shear=self._shear,
             perspective=self._perspective,
-            area_thresh=self._area_thresh,
+            area_thresh=(self._area_thresh if area_thresh is None
+                         else area_thresh),
             rotate_prob=self._rotate_prob,
         )
 
@@ -551,6 +559,7 @@ class Mosaic:
             scale_min=self._single_scale_min,
             scale_max=self._single_scale_max,
             translate=self._single_translate,
+            area_thresh=self._single_area_thresh,
         )
         anns = self._filtered_anns(ex, boxes_out, polys_out, keep)
         anns['image']  = img_out

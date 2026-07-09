@@ -576,6 +576,7 @@ def build_input_reader_from_config(
             single_scale_min=parser_cfg.aug_scale_min,
             single_scale_max=parser_cfg.aug_scale_max,
             single_translate=parser_cfg.aug_rand_translate,
+            single_area_thresh=parser_cfg.area_thresh,
             random_flip=parser_cfg.random_flip,
         )
 
