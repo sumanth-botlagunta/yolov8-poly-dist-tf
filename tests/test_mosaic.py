@@ -932,3 +932,29 @@ class TestMixUp(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_mosaic_area_thresh_is_reference_value():
+    """The mosaic keep-filter must stay at the reference 0.1: a box that keeps
+    40% of its area after clipping SURVIVES (at 0.5 it was deleted while its
+    pixels stayed visible, training the model to suppress partial objects)."""
+    import tensorflow as tf
+    from configs.yaml_loader import load_config
+    from data_pipeline.augmentations import transform_boxes_polygons
+    from data_pipeline.mosaic import Mosaic
+
+    for tier in ('yolov8_bbox', 'yolov8_poly', 'yolov8_poly_dist'):
+        cfg = load_config(f'configs/experiments/yolo/{tier}.yaml')
+        assert cfg.task.train_data.parser.mosaic.area_thresh == 0.1, tier
+    assert Mosaic([64, 64])._area_thresh == 0.1
+
+    # identity warp, box half outside the frame -> ~50% visible: kept at 0.1
+    M = tf.eye(3)
+    boxes = tf.constant([[0.25, -0.25, 0.75, 0.25]], tf.float32)   # yxyx, 50% off-frame
+    polys = tf.fill([1, 8], -1.0)
+    _, keep, _ = transform_boxes_polygons(boxes, polys, M, 64, 64, 64, 64,
+                                          area_thresh=0.1)
+    assert bool(keep[0]), "40-50%-visible box must survive the reference filter"
+    _, keep_strict, _ = transform_boxes_polygons(boxes, polys, M, 64, 64, 64, 64,
+                                                 area_thresh=0.6)
+    assert not bool(keep_strict[0])

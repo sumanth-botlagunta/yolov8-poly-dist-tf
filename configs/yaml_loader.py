@@ -371,7 +371,7 @@ def _build_parser_config(p: Dict[str, Any]) -> ParserConfig:
         tile_scale_min=mosaic_raw.get("tile_scale_min", 0.0),
         tile_scale_max=mosaic_raw.get("tile_scale_max", 0.0),
         mosaic_crop_mode=mosaic_raw.get("mosaic_crop_mode", "scale"),
-        area_thresh=mosaic_raw.get("area_thresh", 0.5),
+        area_thresh=mosaic_raw.get("area_thresh", 0.1),
         jitter=mosaic_raw.get("jitter", 0.0),
         group_size=mosaic_raw.get("group_size", 32),
         decodes_per_output=mosaic_raw.get("decodes_per_output", 4),

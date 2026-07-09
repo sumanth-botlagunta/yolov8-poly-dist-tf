@@ -67,7 +67,10 @@ Configuration (parser.mosaic in the experiment YAML):
     shear: 0.0               (shear ±, degrees; 0 = no shear, the default)
     perspective: 0.0         (perspective coefficient ±; 0 disables)
     translate: 0.1           (translation ± as a fraction of output size)
-    area_thresh: 0.5         (min visible box-area fraction to keep)
+    area_thresh: 0.1         (min visible box-area fraction to keep; the
+                              reference recipe value — stricter values delete
+                              clipped objects whose pixels remain visible and
+                              train the model to suppress partial objects)
 
 Classes:
     Mosaic: Manages both Mosaic and MixUp augmentations.
@@ -271,7 +274,7 @@ class Mosaic:
         mosaic_center: float = 0.25,
         aug_scale_min: float = 0.5,
         aug_scale_max: float = 1.5,
-        area_thresh: float = 0.5,
+        area_thresh: float = 0.1,
         with_polygons: bool = True,
         degrees: float = 10.0,
         shear: float = 0.0,

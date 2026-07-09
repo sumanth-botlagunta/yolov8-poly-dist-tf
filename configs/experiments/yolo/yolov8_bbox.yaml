@@ -136,7 +136,10 @@ task:
         aug_scale_min: 0.5
         aug_scale_max: 1.5
         mosaic_crop_mode: scale
-        area_thresh: 0.5
+        # keep boxes down to 10% visible area (reference recipe); 0.5
+        # deleted clipped objects whose pixels stay visible -> the model
+        # was trained to suppress partially visible objects
+        area_thresh: 0.1
         jitter: 0.0
         group_size: 32
         decodes_per_output: 4   # R: 4 = stock-YOLO (no reuse); lower = more reuse, less decode

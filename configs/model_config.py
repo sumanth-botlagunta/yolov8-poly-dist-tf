@@ -169,7 +169,7 @@ class MosaicConfig:
     tile_scale_min: float = 0.0
     tile_scale_max: float = 0.0
     mosaic_crop_mode: str = "scale"
-    area_thresh: float = 0.5
+    area_thresh: float = 0.1
     jitter: float = 0.0
     # Mosaic image diversity (see data_pipeline/mosaic.py). A group of `group_size`
     # decoded images is mapped to `group_size // decodes_per_output` outputs; each
