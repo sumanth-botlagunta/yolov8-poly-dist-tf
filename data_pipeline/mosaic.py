@@ -718,7 +718,7 @@ class Mosaic:
             boxes_all, polys_all, M,
             h_in=H2, w_in=W2,
             target_h=H, target_w=W,
-            area_thresh=self._area_thresh, min_side=0.005,
+            area_thresh=self._area_thresh, min_side=0.003,
         )
 
         anns = self._filtered_anns(merged_src, boxes_out, polys_out, keep)

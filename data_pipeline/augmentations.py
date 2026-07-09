@@ -306,13 +306,17 @@ def transform_boxes_polygons(
     target_h: int,
     target_w: int,
     area_thresh: float = 0.1,
-    min_side: float = 0.005,
+    min_side: float = 0.003,
+    max_aspect_ratio: float = 20.0,
 ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     """Transform boxes/polygons (INPUT-normalized) by ``M`` to OUTPUT-normalized.
 
-    Boxes: transform 4 corners, re-fit AABB, clip to edge, keep by visible-area
-    fraction + min side. Polygons: transform vertices, clip to [0,1], keep -1
-    padding.
+    Boxes: transform 4 corners, re-fit AABB, clip to edge, keep by the reference
+    candidate filter: visible-area fraction >= area_thresh, both sides >=
+    min_side (0.003 ~ 2px at 672 — the reference wh threshold), and aspect
+    ratio max(h/w, w/h) < max_aspect_ratio (drops degenerate clipped slivers
+    while keeping genuine partials). Polygons: transform vertices, clip to
+    [0,1], keep -1 padding.
 
     Returns:
         (boxes_clip [N,4] normalized to OUTPUT, keep_mask [N] bool,
@@ -341,9 +345,16 @@ def transform_boxes_polygons(
     h_c = boxes_clip[:, 2] - boxes_clip[:, 0]
     w_c = boxes_clip[:, 3] - boxes_clip[:, 1]
     area_after = h_c * w_c
+    # Aspect ratio on the clipped box; output is square in all configs, so the
+    # normalized ratio equals the pixel ratio. eps guards the h_c/w_c=0 case
+    # (those rows are already dropped by the min_side term).
+    ar = tf.maximum(h_c / (w_c + 1e-9), w_c / (h_c + 1e-9))
     keep = tf.logical_and(
         tf.logical_and(area_before > 1e-9, area_after >= area_thresh * area_before),
-        tf.logical_and(h_c >= min_side, w_c >= min_side),
+        tf.logical_and(
+            tf.logical_and(h_c >= min_side, w_c >= min_side),
+            ar < max_aspect_ratio,
+        ),
     )
 
     # ---- Polygons: transform vertices, clip to edge (keep -1 padding) ----
@@ -382,7 +393,7 @@ def random_perspective(
     shear: float = 2.0,
     perspective: float = 0.0,
     area_thresh: float = 0.1,
-    min_side: float = 0.005,
+    min_side: float = 0.003,
     scale_min: Optional[float] = None,
     scale_max: Optional[float] = None,
     rotate_prob: float = 1.0,
@@ -551,13 +562,13 @@ def random_affine(
 
 def clip_boxes(
     boxes: tf.Tensor,
-    min_side: float = 0.005,
+    min_side: float = 0.003,
 ) -> Tuple[tf.Tensor, tf.Tensor]:
     """Clip boxes to [0, 1] and return a validity mask.
 
     Args:
         boxes:    float32 [N, 4] yxyx.
-        min_side: minimum side length (normalised) to keep a box.
+        min_side: minimum side length (normalised) to keep a box (0.003 ~ 2px at 672).
 
     Returns:
         (clipped_boxes [N, 4], keep_mask [N] bool)

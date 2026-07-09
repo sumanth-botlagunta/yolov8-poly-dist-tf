@@ -154,8 +154,11 @@ class TestMidEpochCheckpointUnaffected:
         trainer._epoch_var.assign(1)
         trainer._sync_completed_epochs(python_step=_SPL + 2, steps_per_loop=_SPL)
         assert int(trainer._epoch_var) == 1
+        # Boundary save happens BEFORE validation: the epoch is recorded as
+        # trained-but-unvalidated (count = trained - 1); the post-validation
+        # epoch-end re-save writes the true count.
         trainer._sync_completed_epochs(python_step=2 * _SPL, steps_per_loop=_SPL)
-        assert int(trainer._epoch_var) == 2
+        assert int(trainer._epoch_var) == 1
         # Data-driven mode (spl == 0) never syncs.
         trainer._epoch_var.assign(1)
         trainer._sync_completed_epochs(python_step=6, steps_per_loop=0)

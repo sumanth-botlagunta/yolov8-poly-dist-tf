@@ -958,3 +958,14 @@ def test_mosaic_area_thresh_is_reference_value():
     _, keep_strict, _ = transform_boxes_polygons(boxes, polys, M, 64, 64, 64, 64,
                                                  area_thresh=0.6)
     assert not bool(keep_strict[0])
+
+    # reference candidate filter: degenerate slivers (aspect ratio >= 20) are
+    # dropped; genuine partials with sane aspect stay
+    sliver = tf.constant([[0.10, 0.10, 0.11, 0.60]], tf.float32)   # 1x50 units -> AR 50
+    _, keep_ar, _ = transform_boxes_polygons(sliver, tf.fill([1, 8], -1.0),
+                                             M, 672, 672, 672, 672)
+    assert not bool(keep_ar[0]), "AR>20 sliver must be dropped"
+    ok2px = tf.constant([[0.10, 0.10, 0.1035, 0.1035]], tf.float32)  # 0.0035 > 0.003
+    _, keep_2px, _ = transform_boxes_polygons(ok2px, tf.fill([1, 8], -1.0),
+                                              M, 672, 672, 672, 672)
+    assert bool(keep_2px[0]), "a ~2.4px box must survive the 2px reference floor"
