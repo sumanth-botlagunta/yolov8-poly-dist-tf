@@ -41,7 +41,9 @@ H, W = cfg.task.model.input_size[:2]
 
 _orig = A.transform_boxes_polygons
 counts = Counter()
-sizes = Counter()     # size bucket of boxes deleted ONLY by the old 0.5 rule
+sizes = Counter()
+cls_in = Counter()
+cls_kept = Counter()     # size bucket of boxes deleted ONLY by the old 0.5 rule
 
 
 def _bucket(side_px):
@@ -99,8 +101,8 @@ A.transform_boxes_polygons = _instrumented
 from data_pipeline import mosaic as mosaic_mod
 mosaic_mod.transform_boxes_polygons = _instrumented
 
-def run_pass(freq, label):
-    counts.clear(); sizes.clear()
+def run_pass(freq, label, per_class=False):
+    counts.clear(); sizes.clear(); cls_in.clear(); cls_kept.clear()
     m = mosaic_mod.Mosaic(
     output_size=[H, W], mosaic_frequency=freq,
     mosaic_center=mc.mosaic_center,
@@ -119,10 +121,20 @@ def run_pass(freq, label):
     for gi, batch in enumerate(ds):
         if gi >= N_GROUPS:
             break
-        fn(batch)
+        bx = batch['groundtruth_boxes'].numpy()
+        cl = batch['groundtruth_classes'].numpy()
+        valid = (bx[..., 2] - bx[..., 0]) * (bx[..., 3] - bx[..., 1]) > 0
+        for c in cl[valid]:
+            cls_in[int(c)] += 1
+        out = fn(batch)
+        oc = out['groundtruth_classes'].numpy()
+        ob = out['groundtruth_boxes'].numpy()
+        ov = (ob[..., 2] - ob[..., 0]) * (ob[..., 3] - ob[..., 1]) > 0
+        for c in oc[ov]:
+            cls_kept[int(c)] += 1
         if (gi + 1) % 10 == 0:
             print(f'  ... {gi + 1}/{N_GROUPS} groups')
-    _report()
+    _report(per_class)
 
 
 import tensorflow_datasets as tfds
@@ -149,7 +161,7 @@ def _pre_resize(ex):
     return ex
 
 
-def _report():
+def _report(per_class=False):
     wcalls = counts.pop('_wrapper_calls', 0)
     total = counts.pop('boxes_total', 0)
     print(f'warp calls instrumented: {wcalls}')
@@ -160,12 +172,29 @@ def _report():
     for k in ('<=8px', '<=16px', '<=32px', '<=64px', '<=128px', '<=256px', '>256px'):
         if sizes.get(k):
             print(f'  {k:>8s}: {sizes[k]}')
+    if not per_class:
+        return
+    try:
+        from configs.class_map import DETECTION_CLASSES
+        names = {i: DETECTION_CLASSES[i] for i in sorted(DETECTION_CLASSES)} \
+            if isinstance(DETECTION_CLASSES, dict) else dict(enumerate(DETECTION_CLASSES))
+    except Exception:
+        names = {}
+    rows = []
+    for c, n_in in cls_in.items():
+        kept = cls_kept.get(c, 0)
+        rows.append((kept / max(n_in, 1), c, n_in, kept))
+    if rows:
+        print('per-class retention into training targets (lowest first):')
+        for r, c, n_in, kept in sorted(rows)[:15]:
+            print(f'  {c:3d} {names.get(c, "?"):22s} in={n_in:7d} kept={kept:7d} '
+                  f'retention={100*r:5.1f}%')
 
 
 print(f'config={CONFIG}\nsource={name}[{split}]  groups={N_GROUPS} '
       f'(x{mc.group_size} images)')
 run_pass(1.0, 'MOSAIC path')
-run_pass(0.0, 'SINGLE-image path (the one the old shared 0.5 hit vs legacy)')
+run_pass(0.0, 'SINGLE-image path (the one the old shared 0.5 hit vs legacy)', per_class=True)
 print('\nReading: "area 0.1-0.5" is the population the old config trained AS '
       'BACKGROUND while visible; "ar>=20" is what the old config trained as '
       'positives but legacy/new drop. Judge each path against its own table; '
