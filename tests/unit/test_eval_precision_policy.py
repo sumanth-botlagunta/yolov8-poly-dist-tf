@@ -1,9 +1,8 @@
 """Pinning test: offline tools apply the trainer's mixed-precision policy.
 
-The offline eval / export tools historically built the model without setting the
-global Keras precision policy, so a bfloat16-trained checkpoint computed in
-float32 (a different numerical path than training/serving). common/runtime_setup
-centralizes the policy application; this pins that:
+A bfloat16-trained checkpoint evaluated under a float32 global policy computes a
+different numerical path than training/serving, so the offline tools must apply
+the trainer's policy. common/runtime_setup centralizes this; the tests pin that:
   * a bfloat16 runtime config activates the mixed_bfloat16 global policy;
   * float32 leaves the default policy;
   * the helper restores nothing destructive (tests reset policy afterward).

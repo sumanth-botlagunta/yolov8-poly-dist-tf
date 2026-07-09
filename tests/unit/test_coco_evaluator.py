@@ -369,10 +369,10 @@ class TestCustomEvalRouting(unittest.TestCase):
 
 
 class TestRawSweepConsistency(unittest.TestCase):
-    """The report's all-conf table now reads the RAW confidence-sweep grid stored by
+    """The report's all-conf table reads the raw confidence-sweep grid stored by
     COCOevalCustom.accumulate (sweep_f1/precision/recall), so it agrees byte-for-byte
-    with the best-conf table / F1score50 (previously it read COCO's interpolated
-    envelope precision and could disagree at the same class+threshold)."""
+    with the best-conf table / F1score50; the interpolated COCO envelope is opt-in
+    and can disagree at the same class+threshold."""
 
     @staticmethod
     def _evaluator(num_classes=3, seed=0, n=6):

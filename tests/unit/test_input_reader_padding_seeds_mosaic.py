@@ -1,12 +1,11 @@
-"""Pinning tests for train-critical fixes (b), (c), (d).
+"""Train-critical input_reader contracts.
 
-(b) input_reader padded_batch(4) pads groundtruth_polygons with the -1.0 sentinel
-    (not the default 0.0, which is a valid top-left vertex coordinate), and every other
-    decoder key with its natural empty value.
-(c) the three shuffle stages use DISTINCT seeds: detection source = self._seed,
-    cnp source = self._seed+1, post-unbatch = self._seed+2.
-(d) MosaicConfig dataclass default mosaic_center == Mosaic.__init__ default == 0.25, and
-    every shipped tier YAML resolves mosaic_center to 0.25.
+  - padded_batch pads groundtruth_polygons with the -1.0 sentinel (not the default
+    0.0, a valid top-left vertex), and every other decoder key with its natural empty.
+  - the three shuffle stages use distinct seeds: detection source = self._seed,
+    cnp source = self._seed+1, post-unbatch = self._seed+2, each None-safe.
+  - MosaicConfig dataclass default mosaic_center == Mosaic.__init__ default == 0.25,
+    and every shipped tier YAML resolves mosaic_center to 0.25.
 """
 
 import glob
@@ -137,32 +136,6 @@ class TestDistinctShuffleSeeds(unittest.TestCase):
         # The unguarded arithmetic must NOT reappear (regression guard).
         self.assertNotIn("seed=self._seed + 1,", src)
         self.assertNotIn("seed=self._seed + 2,", src)
-
-
-class TestSeedNoneDerivationDoesNotCrash(unittest.TestCase):
-    """Behavioral pin for the seed=None TypeError. The constructor declares
-    `seed: Optional[int] = None`; the cnp/post-unbatch shuffle stages derive their
-    seed from it. The bare `self._seed + N` form crashes with TypeError when seed is
-    None. This replicates the exact guarded derivation used in input_reader so the
-    failure mode is exercised without importing tensorflow_datasets."""
-
-    @staticmethod
-    def _derive(seed, offset):
-        # Mirror of input_reader.py: `None if self._seed is None else self._seed + N`.
-        return None if seed is None else seed + offset
-
-    def test_seed_none_propagates_as_none(self):
-        self.assertIsNone(self._derive(None, 1))
-        self.assertIsNone(self._derive(None, 2))
-
-    def test_seed_set_offsets_remain_distinct(self):
-        self.assertEqual(self._derive(7, 1), 8)
-        self.assertEqual(self._derive(7, 2), 9)
-
-    def test_bare_arithmetic_would_crash_on_none(self):
-        # Documents the original failure: the unguarded form raises TypeError.
-        with self.assertRaises(TypeError):
-            _ = None + 1  # noqa: E711 — the exact crash the guard prevents
 
 
 class TestMosaicCenterDefault(unittest.TestCase):

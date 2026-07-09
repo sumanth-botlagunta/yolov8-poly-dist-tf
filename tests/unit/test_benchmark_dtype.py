@@ -1,9 +1,9 @@
 """Pinning test: the pipeline benchmark validates image dtype (uint8).
 
-The training pipeline emits uint8 images (normalization is the model's job). The
-benchmark previously accepted any dtype silently, so a float32 cast upstream would
-4x the measured memory/workload without any signal. _run_benchmark now asserts
-uint8 and surfaces the observed dtype/shape in its stats.
+The training pipeline emits uint8 images (normalization is the model's job). An
+upstream float32 cast would 4x the measured memory/workload without any signal,
+so _run_benchmark asserts uint8 and surfaces the observed dtype/shape in its
+stats.
 """
 
 import unittest

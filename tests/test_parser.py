@@ -92,9 +92,8 @@ class TestV8ParserExtended(unittest.TestCase):
 class TestLetterboxPolygonTransform(unittest.TestCase):
     """Eval-path letterbox must transform polygons with the same scale+pad as boxes.
 
-    Regression guard: previously _letterbox_resize moved boxes but left polygons in
-    pre-letterbox space, so for non-square inputs the radial GT was computed from
-    misaligned coordinates.
+    Polygons left in pre-letterbox space would misalign the radial GT for
+    non-square inputs.
     """
 
     def test_polygon_vertex_tracks_box_edge(self):
@@ -121,10 +120,9 @@ class TestLetterboxPolygonTransform(unittest.TestCase):
 class TestEvalParseWithoutDontcare(unittest.TestCase):
     """Eval parse must survive a decoder that omits groundtruth_dontcare.
 
-    Regression guard: the fallback used to be zeros_like(classes), but by that
-    point `classes` was already padded to max_num_instances — _pad_bool would
-    then pad the pre-padded default a second time and crash on the reshape.
-    The default must be built from an UNPADDED per-object tensor.
+    The default must be built from an unpadded per-object tensor; one built
+    from `classes` (already padded to max_num_instances) gets padded a second
+    time by _pad_bool and crashes on the reshape.
     """
 
     def test_missing_dontcare_defaults_to_all_false(self):

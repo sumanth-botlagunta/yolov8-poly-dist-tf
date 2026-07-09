@@ -113,8 +113,8 @@ class TestCopyAndPasteModule(unittest.TestCase):
 
         The gate compares obj_dims × resize_ratio (the full-resolution pasted
         size) against the minimum. A too-small object leaves the background
-        unchanged (no extra GT row); a large-enough one is pasted. Regression
-        guard: min_height/min_width were previously stored but never enforced.
+        unchanged (no extra GT row); a large-enough one is pasted. Guards that
+        min_height/min_width are enforced, not just stored.
         """
         # 40×40 object at ratio 1.0 < 60×100 minimum → skipped.
         mod = CopyAndPasteModule(prob=1.0, min_height=60, min_width=100,

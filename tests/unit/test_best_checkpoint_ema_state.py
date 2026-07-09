@@ -33,6 +33,9 @@ def _flat(vs):
 
 
 def test_best_checkpoint_stores_raw_weights_and_ema_shadows(tmp_path):
+    # Seed so the Dense init and gradient trajectory (hence the raw/shadow
+    # divergence the precondition needs) are independent of suite ordering.
+    tf.random.set_seed(0)
     cfg = _make_config()
     trainer = _make_trainer(tmp_path, cfg)
 

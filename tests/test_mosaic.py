@@ -861,8 +861,7 @@ class TestFilteredAnnsMissingFields(unittest.TestCase):
 
 class TestMixUp(unittest.TestCase):
     """MixUp (mosaic.py): the augmentation must actually fire when
-    mixup_frequency > 0 (it was previously implemented but never wired into
-    mosaic_fn, so the knob was a no-op)."""
+    mixup_frequency > 0 — the knob must not be a no-op."""
 
     @staticmethod
     def _proc(val, nbox):

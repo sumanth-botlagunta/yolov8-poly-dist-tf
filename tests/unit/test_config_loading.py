@@ -49,9 +49,9 @@ class TestConfigLoading(unittest.TestCase):
     def test_validation_batch_size_consistent_across_tiers(self):
         """All three tiers must use the same validation batch size.
 
-        bbox/poly previously shipped validation_data.global_batch_size=2 while
-        poly_dist used 64, so the lower tiers ran ~32x more validation forward
-        passes per epoch over the same val set — a large, silent per-epoch tax.
+        A tier with a smaller validation batch size runs proportionally more
+        validation forward passes per epoch over the same val set — a silent
+        per-epoch tax.
         """
         sizes = {
             tier: load_config(
@@ -83,7 +83,7 @@ class TestConfigLoading(unittest.TestCase):
 
     def test_detection_generator_score_thresh_and_distance_wired(self):
         """score_thresh and the task distance range must reach the generator
-        config (regression: both were previously dropped by the loader)."""
+        config (guards the loader wiring)."""
         from configs.yaml_loader import _build_model_config
 
         m = {"detection_generator": {"score_thresh": 0.3}}

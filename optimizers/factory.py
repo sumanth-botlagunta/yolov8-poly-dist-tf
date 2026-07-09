@@ -1,7 +1,7 @@
 """Config-selectable optimizers and LR schedules (registry-backed).
 
 A ``type`` key selects the optimizer and LR schedule; the defaults are
-byte-identical to the previously hardcoded SGDTorch + CosineDecay path.
+byte-identical to the SGDTorch + CosineDecay path.
 
     optimizers:    sgd (default), adamw, adam
     lr schedules:  cosine (default), linear, step, polynomial, constant

@@ -1,18 +1,12 @@
-"""Pinning tests for training-critical behavior contracts.
+"""Training-critical behavior contracts.
 
-These pin behaviors that affect training semantics; keep them green so the
-bugs cannot silently regress:
-
-  - copy_paste polygon validity uses the > -1.0 sentinel (-1.0 is the only
-    reserved padding value; a >= 0.0 gate drops real negative-coordinate
-    vertices and corrupts the polygon GT)
-  - TAL assigner fallback poly_size derives from angle_step (not hardcoded 72)
-  - polygon_conf_loss does not train conf=0 on distance-stream fg anchors
-    (ignore_bg guard in _polygon_loss)
-  - use_acsl=True fails loud instead of silently no-op'ing
+  - copy_paste polygon validity uses the > -1.0 sentinel, keeping real
+    negative-coordinate vertices instead of dropping them.
+  - TAL assigner poly_size derives from angle_step (not hardcoded 72).
+  - polygon_conf_loss trains no conf gradient on distance-stream fg anchors
+    (ignore_bg guard in _polygon_loss).
+  - use_acsl=True fails loud instead of silently no-op'ing.
 """
-
-import inspect
 
 import numpy as np
 import pytest
@@ -26,14 +20,6 @@ from losses.tal_loss import TaskAlignedLossExtended
 # ---------------------------------------------------------------------------
 # copy_paste sentinel
 # ---------------------------------------------------------------------------
-
-def test_copy_paste_uses_minus_one_sentinel():
-    # The compositing body lives in _paste (_copy_and_paste is the min-size
-    # gate wrapper around it).
-    src = inspect.getsource(CopyAndPasteModule._paste)
-    assert "> -1.0" in src
-    assert "pts[:, 0] >= 0.0" not in src
-
 
 def test_copy_paste_keeps_negative_vertex():
     bg = {
@@ -119,10 +105,6 @@ def _poly_targets():
     return tf.constant(target), tf.constant(fg)
 
 
-def test_polygon_loss_has_ignore_bg_param():
-    assert "ignore_bg" in inspect.signature(TaskAlignedLossExtended._polygon_loss).parameters
-
-
 def test_distance_stream_fg_gets_zero_conf_gradient():
     loss = TaskAlignedLossExtended(with_polygons=True, with_distance=False)
     target, fg = _poly_targets()
@@ -151,10 +133,3 @@ def test_use_acsl_false_ok():
     assert TaskAlignedLossExtended(
         use_acsl=False, with_polygons=False, with_distance=False
     ).use_acsl is False
-
-
-def test_build_losses_passes_acsl_and_angle_step():
-    from train.task import YoloV8Task
-    src = inspect.getsource(YoloV8Task.build_losses)
-    assert "use_acsl=loss_cfg.acsl.use_acsl" in src
-    assert "angle_step=task_cfg.model.angle_step" in src

@@ -222,18 +222,23 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('path', help='run dir / val_history.jsonl, or a single report JSON')
-    ap.add_argument('--list', action='store_true')
-    ap.add_argument('--sort', default='epoch')
-    ap.add_argument('--epoch', type=int)
-    ap.add_argument('--step', type=int)
-    ap.add_argument('--checkpoint')
-    ap.add_argument('--best', action='store_true')
-    ap.add_argument('--metric', default='F1score50')
+    ap.add_argument('--list', action='store_true',
+                    help='print the per-epoch trend table and exit')
+    ap.add_argument('--sort', default='epoch',
+                    help='trend-table sort column (epoch, step, or a metric name)')
+    ap.add_argument('--epoch', type=int, help='select the record for this epoch')
+    ap.add_argument('--step', type=int, help='select the record for this global step')
+    ap.add_argument('--checkpoint', help='select the record for this checkpoint name')
+    ap.add_argument('--best', action='store_true',
+                    help='select the best record by --metric')
+    ap.add_argument('--metric', default='F1score50',
+                    help='metric used by --best and the trend table')
     ap.add_argument('--format', choices=['txt', 'json', 'csv', 'xlsx', 'parquet'],
-                    default='txt')
-    ap.add_argument('--best-only', action='store_true')
-    ap.add_argument('-o', '--out')
-    ap.add_argument('--export-csv')
+                    default='txt', help='output format for the selected record(s)')
+    ap.add_argument('--best-only', action='store_true',
+                    help='restrict xlsx/parquet export to the best-confidence rows')
+    ap.add_argument('-o', '--out', help='output file path (default: derived from input)')
+    ap.add_argument('--export-csv', help='also write the selected record as CSV here')
     ap.add_argument('--raw', action='store_true',
                     help='do not collapse re-validated epochs (show every appended line)')
     a = ap.parse_args()

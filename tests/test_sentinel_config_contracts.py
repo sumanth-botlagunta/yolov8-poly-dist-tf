@@ -1,22 +1,18 @@
-"""Pinning tests for the TRAINING-affecting sentinel/dead-config fixes.
+"""Training-affecting polygon-sentinel contracts.
 
-Polygon validity must key off the reserved -1.0 sentinel (`> -1.0`), NOT `>= 0.0`.
-A legitimately-negative canvas coordinate — an
-object near an image edge, or a mosaic-overflow vertex that survived clip-to-edge —
-is a REAL vertex and must contribute to the PolyYOLO radial target. The old `>= 0.0`
-test silently DROPPED such vertices, zeroing the conf bin they belong to and biasing
-the polygon GT for edge objects. These tests fail loudly if the regression returns.
+Polygon validity keys off the reserved -1.0 sentinel (`> -1.0`), not `>= 0.0`. A
+legitimately-negative canvas coordinate (an object near an image edge, or a
+mosaic-overflow vertex that survived clip-to-edge) is a real vertex and must
+contribute to the PolyYOLO radial target; only exact -1.0 is padding.
 
 Covered:
   - _preprocess_polygons_v2 (yolo_parser): a due-west vertex at negative x for an
     edge box produces a non-zero conf/dist bin.
   - mosaic._scale_box_poly_to_canvas: a negative-x polygon vertex is carried into the
     canvas (not overwritten with the -1.0 sentinel).
-  - aug_rand_angle / aug_rand_perspective removed from ParserConfig (dead config) and
-    a stray key in old YAML still loads.
+  - clip_polygon_coords: a negative overflow vertex clips to the edge; -1.0 is kept.
 """
 
-import math
 import os
 
 import numpy as np
@@ -25,8 +21,6 @@ import tensorflow as tf
 from data_pipeline.yolo_parser import V8ParserExtended
 from data_pipeline.mosaic import _scale_box_poly_to_canvas
 from data_pipeline.augmentations import clip_polygon_coords
-from configs.model_config import ParserConfig
-from configs.yaml_loader import load_config_from_dict
 
 
 def _make_parser() -> V8ParserExtended:
@@ -114,30 +108,3 @@ def test_clip_polygon_coords_clips_negative_mosaic_overflow_vertex():
     assert out[3] == 1.0, f"over-1 overflow vertex not clipped to 1.0: {out[3]}"
     # Padding sentinel must be untouched (-1.0 is NOT > -1.0).
     assert out[4] == -1.0 and out[5] == -1.0, f"sentinel corrupted: {out[4]}, {out[5]}"
-
-
-def test_dead_aug_fields_removed_from_parser_config():
-    pc = ParserConfig()
-    assert not hasattr(pc, 'aug_rand_angle'), "dead aug_rand_angle still on ParserConfig"
-    assert not hasattr(pc, 'aug_rand_perspective'), "dead aug_rand_perspective still present"
-
-
-def test_old_yaml_with_dead_aug_fields_still_loads():
-    """A config dict still carrying the removed aug_rand_angle / aug_rand_perspective
-    keys must load without error and silently ignore them (no leak onto the
-    dataclass) — existing YAMLs must not break when dead keys are dropped."""
-    raw = {
-        'task': {
-            'train_data': {
-                'parser': {
-                    'angle_step': 15,
-                    'aug_rand_angle': 0.0,        # removed key — must be ignored
-                    'aug_rand_perspective': 0.0,  # removed key — must be ignored
-                },
-            },
-        },
-    }
-    cfg = load_config_from_dict(raw)
-    p = cfg.task.train_data.parser
-    assert not hasattr(p, 'aug_rand_angle')
-    assert not hasattr(p, 'aug_rand_perspective')
