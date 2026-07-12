@@ -25,13 +25,18 @@ Pure (stop-gradient) label assignment per the Ultralytics YOLOv8 recipe:
   `losses.box_iou_type` (`_bbox_iou_loss`): `ciou` (default) · `giou` · `diou` · `eiou` · `siou`.
 - **DFL**: LTRB targets in feature-map units, clipped to `[0, reg_max−1.001]`, floor/ceil
   log-softmax interpolation, mean over the 4 sides.
-- Both are **weighted per-anchor by `sum(target_scores, -1)`** and divided by
-  `target_scores_sum = max(sum(target_scores), 1)` — so well-aligned anchors dominate the box
-  gradient (reference behavior).
+- Weighting is selected by `losses.weighting`. `soft`: weighted per-anchor by
+  `sum(target_scores, -1)` and divided by `target_scores_sum = max(sum(target_scores), 1)`
+  — well-aligned anchors dominate the box gradient (Ultralytics reference). `legacy_hard`
+  (the tier YAMLs): binary foreground weight divided by `num_objs` — every object
+  contributes equally regardless of its current alignment.
 
 ## Classification — `tal_loss.py:_class_loss`
-BCE-with-logits summed over classes, divided by `target_scores_sum`. `ignore_bg=1` (distance-only
-samples) masks the class loss to foreground anchors only. Config-selectable via
+BCE-with-logits summed over classes. `losses.weighting` selects the target/normalizer pair:
+`soft` trains positives toward the alignment-scaled soft targets and divides by
+`target_scores_sum`; `legacy_hard` (the tier YAMLs) trains every positive toward its one-hot
+1.0 and divides by `num_objs` — the recall-biased scheme the production gains were tuned for.
+`ignore_bg=1` (distance-only samples) masks the class loss to foreground anchors only. Config-selectable via
 `losses.cls_loss_type`: `bce` (default) · `focal` · `varifocal`; `losses.label_smoothing`
 (default 0) softens the BCE targets. Defaults reproduce the previous BCE exactly.
 
@@ -67,8 +72,8 @@ heads:
 
 | Term | Denominator | Vertex reduction |
 |------|-------------|------------------|
-| box CIoU / DFL | `target_scores_sum`, per-anchor weighted | — |
-| cls | `target_scores_sum` | — |
+| box CIoU / DFL | `soft`: `target_scores_sum`, per-anchor weighted · `legacy_hard`: `num_objs`, binary fg | — |
+| cls | `soft`: `target_scores_sum` · `legacy_hard`: `num_objs` | — |
 | distance | `num_objs` (total batch GT count) | — |
 | polygon angle | `num_objs` | **mean over valid vertices** |
 | polygon dist | `num_objs` | **mean over valid vertices** |

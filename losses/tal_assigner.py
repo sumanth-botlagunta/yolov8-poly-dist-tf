@@ -164,7 +164,12 @@ class TaskAlignedAssigner:
         k = tf.minimum(self.topk, A)
         topk_vals, _ = tf.math.top_k(align_t, k=k)        # [B, M, k]
         topk_thresh  = topk_vals[:, :, -1:]                # [B, M, 1]
-        topk_mask    = align_t >= topk_thresh              # [B, M, A]
+        # The > eps term guards the degenerate GT: with fewer than k anchors at
+        # positive alignment the k-th value is 0.0 and a bare >= comparison
+        # marks EVERY in-box anchor foreground (thousands for a large object,
+        # all tie-broken onto GT slot 0). Reference behavior (Ultralytics
+        # select_topk_candidates) gives such a GT no positives at all.
+        topk_mask    = (align_t >= topk_thresh) & (align_t > self.eps)  # [B, M, A]
         topk_mask    = tf.transpose(topk_mask, [0, 2, 1]) # [B, A, M]
 
         # ── 6. Combined candidate mask + duplicate resolution ────────────

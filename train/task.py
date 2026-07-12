@@ -277,6 +277,7 @@ class YoloV8Task:
             use_acsl=loss_cfg.acsl.use_acsl,
             box_iou_type=loss_cfg.box_iou_type,
             cls_loss_type=loss_cfg.cls_loss_type,
+            weighting=loss_cfg.weighting,
             label_smoothing=loss_cfg.label_smoothing,
             focal_gamma=loss_cfg.focal_gamma,
             focal_alpha=loss_cfg.focal_alpha,

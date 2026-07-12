@@ -200,5 +200,55 @@ class TestCIoUOverlaps(unittest.TestCase):
                         f"expected all class 1, got {fg_labels.numpy()}")
 
 
+class TestTopkGuard(unittest.TestCase):
+    """A GT with no positive-alignment candidate gets ZERO positives.
+
+    Without the guard, the k-th top value for such a GT is exactly 0.0 and the
+    >= comparison marks every in-box anchor foreground (thousands for a large
+    object), all tie-broken onto GT slot 0. Reference behavior (Ultralytics
+    select_topk_candidates) selects nothing for a hopeless GT.
+    """
+
+    def _grid_anchors(self):
+        # 5x5 grid inside [0, 100]^2
+        c = tf.linspace(10.0, 90.0, 5)
+        xx, yy = tf.meshgrid(c, c)
+        return tf.stack([tf.reshape(xx, [-1]), tf.reshape(yy, [-1])], -1)  # [25, 2]
+
+    def test_hopeless_gt_gets_no_positives(self):
+        anc = self._grid_anchors()
+        A = 25
+        # Zero-area predictions at the anchor points: CIoU clamps to 0 for the
+        # box-sized GT, so its alignment underflows to exactly 0 everywhere.
+        pd_bboxes = tf.concat([anc, anc], -1)[tf.newaxis]          # [1, A, 4]
+        pd_scores = tf.fill([1, A, 3], 0.05)
+        gt_bboxes = tf.constant([[[0., 0., 100., 100.]]])          # covers all anchors
+        gt_labels = tf.constant([[1]], dtype=tf.int64)
+        mask_gt   = tf.constant([[True]])
+        assigner  = TaskAlignedAssigner(topk=10)
+        _, _, _, _, _, fg_mask = assigner(
+            pd_scores, pd_bboxes, anc, gt_labels, gt_bboxes, mask_gt)
+        self.assertEqual(int(tf.reduce_sum(tf.cast(fg_mask, tf.int32))), 0)
+
+    def test_partial_candidates_select_only_the_positive_ones(self):
+        anc = self._grid_anchors()
+        A = 25
+        pd_boxes = tf.concat([anc, anc], -1).numpy()               # zero-area
+        # Give exactly 3 anchors a decent overlapping prediction (< topk=10).
+        for i in (12, 13, 17):
+            pd_boxes[i] = [20.0, 20.0, 80.0, 80.0]
+        pd_bboxes = tf.constant(pd_boxes[None], tf.float32)
+        pd_scores = tf.fill([1, A, 3], 0.05)
+        gt_bboxes = tf.constant([[[0., 0., 100., 100.]]])
+        gt_labels = tf.constant([[1]], dtype=tf.int64)
+        mask_gt   = tf.constant([[True]])
+        assigner  = TaskAlignedAssigner(topk=10)
+        _, _, _, _, _, fg_mask = assigner(
+            pd_scores, pd_bboxes, anc, gt_labels, gt_bboxes, mask_gt)
+        fg = fg_mask.numpy()[0]
+        self.assertEqual(fg.sum(), 3)
+        self.assertTrue(all(fg[i] for i in (12, 13, 17)))
+
+
 if __name__ == "__main__":
     unittest.main()

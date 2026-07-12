@@ -59,6 +59,10 @@ task:
       score_thresh: 0.05
 
   losses:
+    # Positive weighting scheme: legacy_hard = one-hot cls targets, binary fg
+    # weighting, num_objs normalizer (the recipe the production gains were
+    # tuned for). soft = per-anchor target_scores weighting / target_scores_sum.
+    weighting: legacy_hard
     iou_gain: 7.5
     cls_gain: 0.5
     dfl_gain: 1.5
@@ -147,9 +151,9 @@ task:
         tile_crop_min: 0.0
         tile_crop_max: 0.0
         mosaic_crop_mode: scale
-        # the mosaic path uses 0.5; the single-image path uses the parser-level
-        # area_thresh (0.1) wired via single_area_thresh
-        area_thresh: 0.5
+        # reference candidate-filter value; the single-image path uses the
+        # parser-level area_thresh wired via single_area_thresh
+        area_thresh: 0.1
         jitter: 0.0
         group_size: 32
         # R=1: each decoded image recurs in 4 outputs of its group (Sidon-shift

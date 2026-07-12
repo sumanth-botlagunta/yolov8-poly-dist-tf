@@ -187,13 +187,18 @@ class TaskAlignedLossExtended:
         use_acsl: bool = False,
         box_iou_type: str = "ciou",
         cls_loss_type: str = "bce",
+        weighting: str = "soft",
         label_smoothing: float = 0.0,
         focal_gamma: float = 1.5,
         focal_alpha: float = 0.25,
     ):
+        if weighting not in ("soft", "legacy_hard"):
+            raise ValueError(
+                f"losses.weighting must be 'soft' or 'legacy_hard', got {weighting!r}")
         self.num_classes    = num_classes
         self.box_iou_type   = box_iou_type
         self.cls_loss_type  = cls_loss_type
+        self.weighting      = weighting
         self.label_smoothing = label_smoothing
         self.focal_gamma    = focal_gamma
         self.focal_alpha    = focal_alpha
@@ -272,6 +277,7 @@ class TaskAlignedLossExtended:
         pd_box_raw: tf.Tensor,
         anc_strides: tf.Tensor,     # [A, 1]  — added for DFL target normalisation
         anc_points: tf.Tensor,      # [A, 2]  — added to build LTRB targets
+        num_objs: Optional[tf.Tensor] = None,   # required for weighting=legacy_hard
     ) -> Tuple[tf.Tensor, tf.Tensor]:
         """CIoU loss + DFL loss for foreground anchors.
 
@@ -283,11 +289,18 @@ class TaskAlignedLossExtended:
             (ciou_loss, dfl_loss) both scalar tensors.
         """
         fg_float = tf.cast(fg_mask, tf.float32)           # [B, A]
-        weight   = tf.reduce_sum(target_scores, axis=-1)  # [B, A]
+        if self.weighting == "legacy_hard":
+            # Binary weight, per-object normalizer: every foreground anchor
+            # contributes equally regardless of its current alignment score.
+            weight = fg_float
+            denom  = num_objs
+        else:
+            weight = tf.reduce_sum(target_scores, axis=-1)  # [B, A]
+            denom  = target_scores_sum
 
         # ── Box IoU loss (ciou by default; giou/diou/eiou/siou selectable) ──
         ciou = _bbox_iou_loss(pd_bboxes, target_bboxes, self.box_iou_type)   # [B, A]
-        ciou_loss = tf.reduce_sum(ciou * weight * fg_float) / target_scores_sum
+        ciou_loss = tf.reduce_sum(ciou * weight * fg_float) / denom
 
         # ── DFL ───────────────────────────────────────────────────────
         # Target LTRB offsets in feature-map units
@@ -324,7 +337,7 @@ class TaskAlignedLossExtended:
 
         dfl_raw  = -(weight_left * log_p_fl + weight_right * log_p_cl)   # [B, A, 4]
         dfl_mean = tf.reduce_mean(dfl_raw, axis=-1)                       # [B, A]
-        dfl_loss = tf.reduce_sum(dfl_mean * weight * fg_float) / target_scores_sum
+        dfl_loss = tf.reduce_sum(dfl_mean * weight * fg_float) / denom
 
         return ciou_loss, dfl_loss
 
@@ -337,15 +350,27 @@ class TaskAlignedLossExtended:
         target_scores_sum: tf.Tensor,
         fg_mask: tf.Tensor,
         ignore_bg: tf.Tensor,
+        target_labels: Optional[tf.Tensor] = None,   # required for legacy_hard
+        num_objs: Optional[tf.Tensor] = None,        # required for legacy_hard
     ) -> tf.Tensor:
         """Classification loss, with ignore_bg masking.
 
         ``cls_loss_type`` selects the per-element loss (default ``bce``): ``focal``
         adds the focal modulating factor, ``varifocal`` (VFL) weights positives by
         their soft target and negatives by ``alpha · p^gamma``. ``label_smoothing``
-        (0 = off) softens the BCE targets.
+        (0 = off) softens the BCE targets. ``weighting == legacy_hard`` replaces
+        the soft alignment-scaled targets with one-hot targets (positives pushed
+        toward score 1.0 regardless of current box quality) and normalizes by
+        ``num_objs`` instead of ``target_scores_sum``.
         """
-        target = target_scores
+        if self.weighting == "legacy_hard":
+            fg_f = tf.cast(fg_mask, tf.float32)
+            target = (
+                tf.one_hot(target_labels, self.num_classes, dtype=tf.float32)
+                * fg_f[:, :, tf.newaxis]
+            )
+        else:
+            target = target_scores
         if self.label_smoothing > 0.0:
             target = target * (1.0 - self.label_smoothing) + 0.5 * self.label_smoothing
 
@@ -376,7 +401,8 @@ class TaskAlignedLossExtended:
             ignore_bg_f[:, tf.newaxis] * fg_float
         )  # [B, A]
 
-        return tf.reduce_sum(bce_sum * mask) / target_scores_sum
+        denom = num_objs if self.weighting == "legacy_hard" else target_scores_sum
+        return tf.reduce_sum(bce_sum * mask) / denom
 
     # ------------------------------------------------------------------
 
@@ -629,12 +655,13 @@ class TaskAlignedLossExtended:
         # ── 5. Component losses ────────────────────────────────────────
         ciou_loss, dfl_loss = self._box_loss(
             pd_bboxes, target_bboxes, target_scores, target_scores_sum, fg_mask,
-            pd_box_raw, anc_strides, anc_points,
+            pd_box_raw, anc_strides, anc_points, num_objs=num_objs,
         )
 
         ignore_bg = batch.get("ignore_bg", tf.zeros([B_val], dtype=tf.int64))
         cls_loss = self._class_loss(
             pd_cls, target_scores, target_scores_sum, fg_mask, ignore_bg,
+            target_labels=target_labels, num_objs=num_objs,
         )
 
         dist_loss_val = tf.constant(0.0)

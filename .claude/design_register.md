@@ -54,7 +54,8 @@ merged batch: `num_objs` is the total GT object count over both streams, and `ta
 computed over the full assembled batch (`losses/tal_loss.py`, `losses/polygon_loss.py`).
 Distance-only samples (carrying `ignore_bg=1`) contribute to these denominators. The distance rows
 are real batch elements, so counting them keeps per-object loss scaling consistent across the merged
-batch.
+batch. Under `losses.weighting: legacy_hard` (the tier YAMLs) the detection losses normalize by
+`num_objs` as well, so the whole loss shares one merged-batch object-count denominator.
 
 ## 6. Polygon **conf** loss = BCE over all 24 bins
 

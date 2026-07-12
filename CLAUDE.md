@@ -80,9 +80,13 @@ All heads operate per-pixel across 3 FPN levels (strides 8, 16, 32):
 ### Loss (TAL)
 
 Task-Aligned assignment (`losses/tal_assigner.py`): alignment metric = `score^0.5 × CIoU^6.0` (Complete IoU clamped at 0 — the reference recipe's `bbox_iou(..., CIoU=True).clamp_(0)`, mirrored byte-exactly from `losses/tal_loss._bbox_iou_loss("ciou")` via `_pairwise_ciou`),
-top-k=10, spatial (anchor-center-in-box) constraint, max-IoU duplicate resolution. Soft
-classification targets follow the Ultralytics recipe: `one_hot × (align_norm × pos_overlaps)`
-where `pos_overlaps` is the per-GT max IoU.
+top-k=10 (guarded: a GT with no positive-alignment candidate gets zero positives — a bare
+`>=` k-th-value compare would flood every in-box anchor of an underfit large object into the
+foreground), spatial (anchor-center-in-box) constraint, max-IoU duplicate resolution.
+`losses.weighting` selects the positive scheme: `soft` = Ultralytics recipe (cls targets
+`one_hot × (align_norm × pos_overlaps)`, box/DFL weighted by `sum(target_scores, -1)`,
+normalizer `target_scores_sum`); `legacy_hard` (set in all tier YAMLs — the recipe the gains
+were tuned for) = one-hot cls targets, binary fg weight, normalizer `num_objs`.
 
 Loss gains from config: iou=7.5, cls=0.5, dfl=1.5, dist=1.0, poly_dist=0.45, poly_angle=0.4,
 poly_conf=0.2, with an overall `poly_gain` multiplier (default 0.5) applied to the summed
@@ -90,12 +94,15 @@ polygon loss.
 
 The box and cls losses are **config-selectable** (`losses/tal_loss.py`): `losses.box_iou_type`
 = `ciou` (default) / `giou` / `diou` / `eiou` / `siou`; `losses.cls_loss_type` = `bce` (default) /
-`focal` / `varifocal`; `losses.label_smoothing` (default 0). Defaults reproduce the CIoU+BCE path
-byte-identically. Polygon/distance losses are unchanged.
+`focal` / `varifocal`; `losses.label_smoothing` (default 0); `losses.weighting` = `soft`
+(dataclass default) / `legacy_hard` (tier YAMLs). Code defaults reproduce the CIoU+BCE soft
+path byte-identically. Polygon/distance losses are unchanged by `weighting`.
 
 **Loss normalization conventions** (`losses/tal_loss.py`, `losses/polygon_loss.py`):
-- Box CIoU, DFL, and cls divide by `target_scores_sum = max(sum(target_scores), 1)`; box and
-  DFL are additionally weighted per-anchor by `sum(target_scores, -1)`.
+- Box CIoU, DFL, and cls: under `weighting: soft` they divide by
+  `target_scores_sum = max(sum(target_scores), 1)` with box/DFL additionally weighted
+  per-anchor by `sum(target_scores, -1)`; under `legacy_hard` (tier YAMLs) all three divide
+  by `num_objs` with binary foreground weighting and one-hot cls targets.
 - Distance L1 divides by `num_objs` (total GT object count in the batch, both detection and
   distance streams). The valid-sentinel mask (`gt_distance > -10.0`) is applied to the
   numerator inside `distance_l1_loss`; detection-stream GTs contribute zero to the numerator.

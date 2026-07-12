@@ -247,7 +247,7 @@ class Mosaic:
         mosaic_center: float = 0.25,
         aug_scale_min: float = 0.5,
         aug_scale_max: float = 1.5,
-        area_thresh: float = 0.5,
+        area_thresh: float = 0.1,
         with_polygons: bool = True,
         degrees: float = 0.0,
         shear: float = 0.0,
@@ -320,8 +320,9 @@ class Mosaic:
             single_scale_max if single_scale_max is not None else aug_scale_max)
         self._single_translate = (
             single_translate if single_translate is not None else translate)
-        # The mosaic warp culls at area_thresh (0.5 in the tier YAMLs); the
-        # single-image warp uses the permissive parser-level area_thresh (0.1).
+        # Both warps cull at the reference candidate-filter value (0.1); the
+        # single-image warp reads the parser-level area_thresh so the two
+        # paths remain independently configurable.
         self._single_area_thresh = (
             single_area_thresh if single_area_thresh is not None else area_thresh)
         # Flip ownership: when True, this module flips — each mosaic tile

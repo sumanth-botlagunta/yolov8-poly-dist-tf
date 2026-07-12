@@ -87,3 +87,70 @@ def test_focal_gamma_and_alpha_affect_focal_loss():
     assert abs(loss_g15 - loss_g30) > 1e-6, (
         "focal_gamma=1.5 and focal_gamma=3.0 must produce different loss values"
     )
+
+
+# ---- weighting=legacy_hard (one-hot targets, binary fg weight, num_objs) ----
+
+def test_legacy_hard_cls_matches_hand_formula():
+    g = tf.random.Generator.from_seed(7)
+    B, A, C = 2, 16, 39
+    pred = g.uniform([B, A, C], -4.0, 4.0)
+    soft_target = g.uniform([B, A, C], 0.0, 1.0)
+    tl = tf.cast(g.uniform([B, A], 0, C, dtype=tf.int32), tf.int64)
+    fg = g.uniform([B, A]) > 0.5
+    ig = tf.constant([0, 1], tf.int64)
+    num_objs = tf.constant(5.0)
+
+    loss = TaskAlignedLossExtended(num_classes=C, weighting="legacy_hard")._class_loss(
+        pred, soft_target, tf.constant(123.0), fg, ig,
+        target_labels=tl, num_objs=num_objs)
+
+    fg_f = tf.cast(fg, tf.float32)
+    hard = tf.one_hot(tl, C) * fg_f[:, :, tf.newaxis]
+    bce = tf.reduce_sum(
+        tf.nn.sigmoid_cross_entropy_with_logits(labels=hard, logits=pred), -1)
+    ig_f = tf.cast(ig, tf.float32)[:, tf.newaxis]
+    mask = (1.0 - ig_f) + ig_f * fg_f
+    want = tf.reduce_sum(bce * mask) / num_objs
+    assert abs(float(loss) - float(want)) < 1e-5
+    # the soft-path normalizer (123.0) must be ignored entirely in legacy mode
+    loss2 = TaskAlignedLossExtended(num_classes=C, weighting="legacy_hard")._class_loss(
+        pred, soft_target, tf.constant(9999.0), fg, ig,
+        target_labels=tl, num_objs=num_objs)
+    assert abs(float(loss) - float(loss2)) < 1e-6
+
+
+def test_legacy_hard_box_is_score_invariant_and_num_objs_normalized():
+    g = tf.random.Generator.from_seed(8)
+    B, A = 2, 16
+    pd = tf.concat([g.uniform([B, A, 2], 0, 300), g.uniform([B, A, 2], 300, 660)], -1)
+    tgt = tf.concat([g.uniform([B, A, 2], 0, 300), g.uniform([B, A, 2], 300, 660)], -1)
+    ts = g.uniform([B, A, 39], 0.0, 1.0)
+    fg = g.uniform([B, A]) > 0.5
+    raw = g.uniform([B, A, 64], -2.0, 2.0)
+    strides = tf.ones([A, 1]) * 8.0
+    anc = g.uniform([A, 2], 0, 660)
+
+    def run(w, scores, tss, no):
+        L = TaskAlignedLossExtended(weighting=w)
+        return L._box_loss(pd, tgt, scores, tss, fg, raw, strides, anc, num_objs=no)
+
+    c1, d1 = run("legacy_hard", ts, tf.constant(50.0), tf.constant(4.0))
+    c2, d2 = run("legacy_hard", 2.0 * ts, tf.constant(50.0), tf.constant(4.0))
+    # binary weighting: doubling the soft scores must not move the legacy loss
+    assert abs(float(c1) - float(c2)) < 1e-5 and abs(float(d1) - float(d2)) < 1e-5
+    # num_objs is the normalizer: doubling it halves the loss
+    c4, d4 = run("legacy_hard", ts, tf.constant(50.0), tf.constant(8.0))
+    assert abs(float(c4) - float(c1) / 2.0) < 1e-5
+    assert abs(float(d4) - float(d1) / 2.0) < 1e-5
+    # the soft default DOES respond to score scaling (guards against the two
+    # modes silently collapsing into one)
+    s1, _ = run("soft", ts, tf.constant(50.0), tf.constant(4.0))
+    s2, _ = run("soft", 2.0 * ts, tf.constant(50.0), tf.constant(4.0))
+    assert abs(float(s1) - float(s2)) > 1e-6
+
+
+def test_unknown_weighting_rejected_at_construction():
+    import pytest
+    with pytest.raises(ValueError, match="weighting"):
+        TaskAlignedLossExtended(weighting="hard")

@@ -140,6 +140,10 @@ class LossConfig:
     box_iou_type: str = "ciou"
     # Cls loss variant: bce (default) | focal | varifocal; label_smoothing 0 = off.
     cls_loss_type: str = "bce"
+    # Positive weighting scheme for box/DFL/cls: soft (default — per-anchor
+    # target_scores weight, target_scores_sum normalizer) | legacy_hard
+    # (one-hot cls targets, binary fg weight, num_objs normalizer).
+    weighting: str = "soft"
     label_smoothing: float = 0.0
     focal_gamma: float = 1.5
     focal_alpha: float = 0.25
@@ -162,7 +166,11 @@ class MosaicConfig:
     tile_crop_min: float = 0.0
     tile_crop_max: float = 0.0
     mosaic_crop_mode: str = "scale"
-    area_thresh: float = 0.5
+    # Reference candidate-filter value. Stricter values delete warped-out
+    # objects whose pixels remain visible — for near-full-frame objects a 0.5
+    # threshold removes the label from most mosaic appearances, training the
+    # model to suppress large partially-visible objects.
+    area_thresh: float = 0.1
     jitter: float = 0.0
     # Mosaic image diversity (see data_pipeline/mosaic.py). A group of `group_size`
     # decoded images maps to `group_size // decodes_per_output` outputs; each

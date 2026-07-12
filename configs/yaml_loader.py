@@ -281,6 +281,7 @@ _LOSS_KEYS = frozenset({
     "poly_conf_gain", "poly_angle_gain", "poly_gain", "tal_alpha", "tal_beta",
     "topk", "acsl",
     "box_iou_type", "cls_loss_type", "label_smoothing", "focal_gamma", "focal_alpha",
+    "weighting",
 })
 
 
@@ -311,6 +312,7 @@ def _build_loss_config(l: Dict[str, Any]) -> LossConfig:
         topk=l.get("topk", 10),
         box_iou_type=l.get("box_iou_type", "ciou"),
         cls_loss_type=l.get("cls_loss_type", "bce"),
+        weighting=l.get("weighting", "soft"),
         label_smoothing=l.get("label_smoothing", 0.0),
         focal_gamma=l.get("focal_gamma", 1.5),
         focal_alpha=l.get("focal_alpha", 0.25),

@@ -935,13 +935,14 @@ def test_candidate_filter_legacy_parity():
 
     for tier in ('yolov8_bbox', 'yolov8_poly', 'yolov8_poly_dist'):
         cfg = load_config(f'configs/experiments/yolo/{tier}.yaml')
-        # legacy parity: mosaic path culls at 0.5; the single-image path uses
-        # the permissive parser-level reference value
-        assert cfg.task.train_data.parser.mosaic.area_thresh == 0.5, tier
+        # Both paths cull at the reference candidate-filter value: a stricter
+        # mosaic threshold deletes labels of large objects whose pixels stay
+        # visible, training the model to suppress partially-visible objects.
+        assert cfg.task.train_data.parser.mosaic.area_thresh == 0.1, tier
         assert cfg.task.train_data.parser.area_thresh == 0.1, tier
-    m = Mosaic([64, 64], single_area_thresh=0.1)
-    assert m._area_thresh == 0.5 and m._single_area_thresh == 0.1
-    assert Mosaic([64, 64])._single_area_thresh == 0.5  # fallback: no split
+    m = Mosaic([64, 64], area_thresh=0.4, single_area_thresh=0.1)
+    assert m._area_thresh == 0.4 and m._single_area_thresh == 0.1
+    assert Mosaic([64, 64])._single_area_thresh == 0.1  # fallback: no split
 
     # identity warp, box half outside the frame -> ~50% visible: kept at 0.1
     M = tf.eye(3)
