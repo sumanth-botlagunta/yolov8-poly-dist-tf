@@ -76,9 +76,10 @@ def _draw_polygon(canvas, cxn, cyn, poly_conf, poly_dist, poly_angle=None,
         off = float(poly_angle[i]) if poly_angle is not None else 0.0
         angle_rad = (i + off) * bin_w
         d = max(0.0, float(poly_dist[i]))
-        # dx/dy in normalized image space → pixels
-        px = int(cx_px + d * math.cos(angle_rad) * W)
-        py = int(cy_px + d * math.sin(angle_rad) * H)
+        # Reference convention: radial vector is origin − vertex, so the
+        # vertex is center MINUS r·(cos, sin), in normalized space → pixels.
+        px = int(cx_px - d * math.cos(angle_rad) * W)
+        py = int(cy_px - d * math.sin(angle_rad) * H)
         pts.append([px, py])
 
     if len(pts) >= 3:

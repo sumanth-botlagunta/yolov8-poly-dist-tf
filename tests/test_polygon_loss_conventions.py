@@ -7,9 +7,11 @@ These lock the current (old-codebase-matching) per-vertex reduction behavior:
       only (masked by vertex_mask), normalized by num_objs.
     - polygon_angle_loss applies BCE on the sub-bin offset target and AVERAGES
       over the VALID vertices only (masked), normalized by num_objs.
-    - polygon_conf_loss  AVERAGES BCE over ALL bins (occupied → 1, empty → 0 —
-      conf is the decode gate and must see negatives; the masked
-      form is preserved in its docstring), normalized by num_objs.
+    - polygon_conf_loss  SUMS BCE over ALL bins (occupied → 1, empty → 0 — conf
+      is the decode gate and must see negatives; the masked form is preserved
+      in its docstring) and divides by the anchor's VALID vertex count
+      (divide_no_nan; zero-valid anchors contribute zero), normalized by
+      num_objs.
 
 All three normalize by num_objs; angle/dist ignore invalid (empty) bins, and an
 anchor with no valid vertex contributes 0 (no NaN).
@@ -90,26 +92,30 @@ class TestPolygonLossConventions(unittest.TestCase):
         self.assertAlmostEqual(l2, l1 / 2.0, places=5)
 
     # ---- conf: masked BCE over valid vertices only ----
-    def test_conf_averages_over_all_bins_including_empty(self):
+    def test_conf_sums_over_all_bins_normalized_by_valid_count(self):
         """Conf is the decode gate: empty bins MUST contribute (target 0).
 
-        The previous masked form averaged over valid bins
-        only, so empty bins never received gradient — their conf output drifted
-        above the decode/viz threshold while their dist stayed untrained,
-        producing star/spiky polygon artifacts in val overlays. The masked form
-        is preserved in polygon_conf_loss's docstring for reference.
+        The per-anchor term is sum(BCE over all 24 bins) / valid_vertex_count
+        (divide_no_nan), NOT a mean over all 24 bins — an object with few
+        vertices weighs its conf bins more strongly than a plain /24 mean
+        would. The masked form (valid-bins-only, no negatives) is preserved
+        in polygon_conf_loss's docstring for reference; it is NOT current
+        behavior and must not be reintroduced.
         """
         fg, num_objs = _fg()
         # Valid bins: logits=0, target=1 → BCE = log2. Empty bins: logits=10,
-        # target=0 → BCE = softplus(10) — and they now COUNT toward the mean.
+        # target=0 → BCE = softplus(10) — and they now COUNT toward the sum.
         logits = tf.constant([[[0.0] * 12 + [10.0] * 12]])
         target = tf.constant([[[1.0] * 12 + [0.0] * 12]])
         loss = float(polygon_conf_loss(logits, target, _half_mask(), fg, num_objs))
         bce_empty = 10.0 + math.log1p(math.exp(-10.0))
-        expected = (12 * _LOG2 + 12 * bce_empty) / 24.0
+        # sum(all 24 bins) / num_valid(12), fg=1, num_objs=1.
+        expected = (12 * _LOG2 + 12 * bce_empty) / 12.0
         self.assertAlmostEqual(loss, expected, places=4)
-        # The masked form would have returned _LOG2 — make sure we are NOT that.
+        # Neither the plain valid-only mean (_LOG2) nor the old all-bins-mean
+        # form ((12*log2 + 12*bce_empty)/24) match the current convention.
         self.assertNotAlmostEqual(loss, _LOG2, places=2)
+        self.assertNotAlmostEqual(loss, (12 * _LOG2 + 12 * bce_empty) / 24.0, places=2)
 
     def test_conf_penalizes_confident_empty_bins(self):
         """Predicting high conf on empty bins must cost more than predicting low."""

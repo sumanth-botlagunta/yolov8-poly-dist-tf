@@ -7,10 +7,13 @@ Validates:
     - Output shapes are correct.
 """
 
+import math
+
+import numpy as np
 import tensorflow as tf
 import unittest
 
-from losses.tal_assigner import TaskAlignedAssigner
+from losses.tal_assigner import TaskAlignedAssigner, _pairwise_ciou
 
 
 def _make_assigner() -> TaskAlignedAssigner:
@@ -248,6 +251,132 @@ class TestTopkGuard(unittest.TestCase):
         fg = fg_mask.numpy()[0]
         self.assertEqual(fg.sum(), 3)
         self.assertTrue(all(fg[i] for i in (12, 13, 17)))
+
+
+class TestTargetScoreResolvedNormalization(unittest.TestCase):
+    """target_scores normalizes each GT's soft label by ITS OWN best REMAINING
+    (post duplicate-resolution) align/IoU, not by the raw pre-resolution
+    candidate max — see the ``align_norm`` / ``resolved`` block in
+    TaskAlignedAssigner.__call__.
+    """
+
+    _ALPHA, _BETA, _EPS = 0.5, 6.0, 1e-9
+
+    def _align(self, score, iou):
+        """Mirror the assigner's log-space alignment formula exactly."""
+        return math.exp(self._ALPHA * math.log(score + self._EPS)) * \
+               math.exp(self._BETA * math.log(iou + self._EPS))
+
+    def test_contested_gt_normalizes_by_surviving_max_align(self):
+        """Two concentric-square GTs share anchor0 as a spatial candidate.
+
+        anchor0's predicted box exactly matches GT_A (IoU=1.0) and only
+        partially overlaps GT_B (IoU=0.25) -- the highest IoU any candidate
+        has against GT_B, so duplicate resolution (argmax raw IoU) still
+        steals anchor0 for GT_A. GT_B's only surviving candidates are
+        anchor1 (IoU=0.16) and anchor2 (IoU=0.09); the top SURVIVOR is
+        anchor1, not the stolen anchor0. target_scores for GT_B's survivors
+        must be normalized against anchor1's align (post-resolution), not
+        anchor0's (higher, pre-resolution) align.
+        """
+        assigner = TaskAlignedAssigner(topk=10, alpha=self._ALPHA, beta=self._BETA)
+
+        # Concentric squares (same center, same aspect ratio) -> CIoU reduces
+        # to plain-IoU (rho2 == 0, aspect term v == 0), so IoU is an exact
+        # area-ratio and easy to control by half-width alone.
+        gt_a = tf.constant([[40., 40., 60., 60.]])   # half-width 10, center (50,50)
+        gt_b = tf.constant([[30., 30., 70., 70.]])   # half-width 20, center (50,50)
+        gt_bboxes = tf.stack([gt_a, gt_b], axis=1)   # [1, 2, 4]
+        gt_labels = tf.constant([[0, 1]], dtype=tf.int64)
+        mask_gt = tf.constant([[True, True]])
+
+        pred0 = tf.constant([40., 40., 60., 60.])    # matches GT_A -> IoU(0,A)=1.0
+        pred1 = tf.constant([42., 42., 58., 58.])    # half-width 8
+        pred2 = tf.constant([44., 44., 56., 56.])    # half-width 6
+        pd_bboxes = tf.stack([pred0, pred1, pred2])[tf.newaxis]  # [1, 3, 4]
+
+        # anchor0 inside both GT_A ([40,60]^2) and GT_B ([30,70]^2); anchor1/2
+        # inside GT_B only (x=35, 32 fall outside GT_A's [40,60] x-range).
+        anc_points = tf.constant([[50., 50.], [35., 50.], [32., 50.]])
+
+        pd_scores = tf.fill([1, 3, 2], 0.5)  # constant score -> align rank == IoU rank
+
+        target_labels, _, target_scores, _, _, fg_mask = assigner(
+            pd_scores, pd_bboxes, anc_points, gt_labels, gt_bboxes, mask_gt,
+            gt_polys=tf.zeros([1, 2, 72]), gt_dists=tf.zeros([1, 2]),
+        )
+
+        self.assertTrue(bool(tf.reduce_all(fg_mask)))
+        labels = target_labels.numpy()[0]
+        self.assertEqual(labels[0], 0)  # anchor0 -> GT_A (robbed from GT_B)
+        self.assertEqual(labels[1], 1)  # anchor1 -> GT_B (top survivor)
+        self.assertEqual(labels[2], 1)  # anchor2 -> GT_B (surviving runner-up)
+
+        # Independently reconstruct the IoUs with the assigner's own CIoU
+        # primitive (unit-tested elsewhere) to get ground-truth values.
+        iou_b1 = float(_pairwise_ciou(pred1[tf.newaxis], gt_b)[0])
+        iou_b2 = float(_pairwise_ciou(pred2[tf.newaxis], gt_b)[0])
+        iou_b0 = float(_pairwise_ciou(pred0[tf.newaxis], gt_b)[0])
+        self.assertGreater(iou_b0, iou_b1)  # confirms anchor0 WAS the best raw candidate
+        self.assertGreater(iou_b1, iou_b2)
+
+        align_b1 = self._align(0.5, iou_b1)
+        align_b2 = self._align(0.5, iou_b2)
+
+        # Correct (post-resolution): normalize by the max align among the
+        # SURVIVING anchors {1, 2} only -> anchor1 is both the align-max and
+        # the pos_overlap source, so its own target score reduces to its IoU.
+        expected_score_anchor1 = iou_b1
+        expected_score_anchor2 = align_b2 * iou_b1 / align_b1
+
+        got = target_scores.numpy()[0]
+        self.assertAlmostEqual(got[1, 1], expected_score_anchor1, places=5)
+        self.assertAlmostEqual(got[2, 1], expected_score_anchor2, places=5)
+
+        # Discriminating check: the WRONG pre-resolution normalizer (using
+        # the stolen anchor0's higher align/IoU as the max) gives a
+        # numerically different answer -- confirms this scenario actually
+        # exercises the resolved-vs-raw distinction, not a coincidence.
+        align_b0 = self._align(0.5, iou_b0)
+        wrong_score_anchor1 = align_b1 * iou_b0 / align_b0
+        self.assertNotAlmostEqual(got[1, 1], wrong_score_anchor1, places=4)
+
+    def test_uncontested_gt_matches_analytic_align_over_max_form(self):
+        """No contest: target_scores == align_norm computed directly from the
+        analytic align/IoU formula (byte-close, not just qualitatively right).
+        """
+        assigner = TaskAlignedAssigner(topk=10, alpha=self._ALPHA, beta=self._BETA)
+
+        gt_box = tf.constant([[30., 30., 70., 70.]])  # half-width 20, center (50,50)
+        gt_bboxes = gt_box[:, tf.newaxis, :]           # [1, 1, 4]
+        gt_labels = tf.constant([[0]], dtype=tf.int64)
+        mask_gt = tf.constant([[True]])
+
+        pred_top = tf.constant([35., 35., 65., 65.])   # half-width 15 -> IoU 0.5625
+        pred_low = tf.constant([40., 40., 60., 60.])   # half-width 10 -> IoU 0.25
+        pd_bboxes = tf.stack([pred_top, pred_low])[tf.newaxis]  # [1, 2, 4]
+        anc_points = tf.constant([[50., 50.], [40., 50.]])       # both inside the box
+        pd_scores = tf.fill([1, 2, 1], 0.5)
+
+        _, _, target_scores, _, _, fg_mask = assigner(
+            pd_scores, pd_bboxes, anc_points, gt_labels, gt_bboxes, mask_gt,
+            gt_polys=tf.zeros([1, 1, 72]), gt_dists=tf.zeros([1, 1]),
+        )
+        self.assertTrue(bool(tf.reduce_all(fg_mask)))
+
+        iou_top = float(_pairwise_ciou(pred_top[tf.newaxis], gt_box)[0])
+        iou_low = float(_pairwise_ciou(pred_low[tf.newaxis], gt_box)[0])
+        align_top = self._align(0.5, iou_top)
+        align_low = self._align(0.5, iou_low)
+        pos_overlap = iou_top          # max IoU (single GT, no contest)
+        align_max = align_top          # max align (single GT, no contest)
+
+        expected_top = align_top * pos_overlap / align_max   # == iou_top
+        expected_low = align_low * pos_overlap / align_max
+
+        got = target_scores.numpy()[0]
+        np.testing.assert_allclose(got[0, 0], expected_top, atol=1e-6)
+        np.testing.assert_allclose(got[1, 0], expected_low, atol=1e-6)
 
 
 if __name__ == "__main__":

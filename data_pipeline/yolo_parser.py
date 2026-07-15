@@ -339,9 +339,12 @@ class V8ParserExtended(Parser):
         # would drop it.
         valid = pts[:, :, 0] > -1.0  # [N, n_pairs]
 
-        # Relative positions from box center
-        dx = pts[:, :, 0] - cx[:, tf.newaxis]  # [N, n_pairs]
-        dy = pts[:, :, 1] - cy[:, tf.newaxis]  # [N, n_pairs]
+        # Relative positions, reference convention: origin − vertex (the box
+        # center minus the vertex, NOT vertex − center). The angle bins and the
+        # decode (vertex = center − r·(cos, sin)) both follow this convention;
+        # the deployed on-device decoder assumes it too.
+        dx = cx[:, tf.newaxis] - pts[:, :, 0]  # [N, n_pairs]
+        dy = cy[:, tf.newaxis] - pts[:, :, 1]  # [N, n_pairs]
         dists = tf.sqrt(dx * dx + dy * dy)       # [N, n_pairs]
 
         # Angle bin for each vertex

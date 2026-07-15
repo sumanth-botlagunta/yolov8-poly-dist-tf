@@ -30,7 +30,11 @@ def _make_parser() -> V8ParserExtended:
 
 
 # One box covering the whole image → center at (0.5, 0.5).
-# Two vertices: one due-east (bin 0) and one due-south (bin 6), both at radius 0.5.
+# Radial vector convention is origin − vertex (dx = cx − x, dy = cy − y), so a
+# vertex due-east of center (x=1.0, y=0.5) points the radial vector due-WEST
+# (180°, bin 12), and a vertex due-south (x=0.5, y=1.0) points the radial
+# vector due-NORTH (270°, bin 18) — the vertex's own bin is the OPPOSITE
+# compass direction from the vertex itself (bin = old_bin + 12, mod 24).
 _BOX = tf.constant([[0.0, 0.0, 1.0, 1.0]], dtype=tf.float32)        # yxyx normalized
 _POLY = tf.constant([[1.0, 0.5, 0.5, 1.0, -1.0, -1.0, -1.0, -1.0]], dtype=tf.float32)
 
@@ -49,24 +53,25 @@ class TestPreprocessPolygonsV2(unittest.TestCase):
         self.assertEqual(self.out.shape, (1, 72))
 
     def test_conf_binary(self):
-        """conf is strictly 0/1; exactly the two occupied bins (0 and 6) are 1."""
+        """conf is strictly 0/1; exactly the two occupied bins (12 and 18) are 1."""
         self.assertTrue(set(np.unique(self.conf)).issubset({0.0, 1.0}))
-        self.assertEqual(self.conf[0], 1.0)
-        self.assertEqual(self.conf[6], 1.0)
+        self.assertEqual(self.conf[12], 1.0)
+        self.assertEqual(self.conf[18], 1.0)
         self.assertEqual(int(self.conf.sum()), 2)
 
     def test_radial_distance_and_absent_bins(self):
         """Occupied bins carry radius 0.5; absent bins carry dist 0 (and conf 0)."""
-        self.assertAlmostEqual(self.dist[0], 0.5, places=5)
-        self.assertAlmostEqual(self.dist[6], 0.5, places=5)
+        self.assertAlmostEqual(self.dist[12], 0.5, places=5)
+        self.assertAlmostEqual(self.dist[18], 0.5, places=5)
         absent = np.ones(24, dtype=bool)
-        absent[[0, 6]] = False
+        absent[[12, 18]] = False
         np.testing.assert_array_equal(self.dist[absent], 0.0)
         np.testing.assert_array_equal(self.conf[absent], 0.0)
-        # The two vertices sit exactly on bin starts (0°, 90°), so their sub-bin
-        # offset is 0; every angle entry is therefore 0 here.
-        self.assertAlmostEqual(self.angle[0], 0.0, places=5)
-        self.assertAlmostEqual(self.angle[6], 0.0, places=5)
+        # The two vertices sit exactly on bin starts (180°, 270° in the
+        # flipped origin-minus-vertex convention), so their sub-bin offset is
+        # 0; every angle entry is therefore 0 here.
+        self.assertAlmostEqual(self.angle[12], 0.0, places=5)
+        self.assertAlmostEqual(self.angle[18], 0.0, places=5)
         np.testing.assert_array_equal(self.angle[absent], 0.0)
 
 
@@ -76,10 +81,12 @@ class TestSubBinAngleOffset(unittest.TestCase):
     def test_offset_is_fractional_position_in_bin(self):
         parser = _make_parser()
         box = tf.constant([[0.0, 0.0, 1.0, 1.0]], dtype=tf.float32)  # centre (0.5,0.5)
-        # One vertex at 7.5° (the middle of bin 0) at radius 0.4.
+        # Vertex placed so that the RADIAL vector (origin − vertex) sits at
+        # 7.5° (the middle of bin 0) at radius 0.4: dx = cx - x = r*cos(7.5°),
+        # dy = cy - y = r*sin(7.5°) → x = cx - r*cos, y = cy - r*sin.
         r, ang = 0.4, math.radians(7.5)
-        x = 0.5 + r * math.cos(ang)
-        y = 0.5 + r * math.sin(ang)
+        x = 0.5 - r * math.cos(ang)
+        y = 0.5 - r * math.sin(ang)
         poly = tf.constant([[x, y, -1.0, -1.0]], dtype=tf.float32)
         out = parser._preprocess_polygons_v2(box, poly, angle_step=15).numpy()
         dist, angle, conf = out[0, 0::3], out[0, 1::3], out[0, 2::3]
@@ -251,6 +258,58 @@ class TestResamplePolygons(unittest.TestCase):
                 f"sampled point {p} is not on the input contour")
 
 
+class TestRadialRoundTrip(unittest.TestCase):
+    """Round trip: encode via _preprocess_polygons_v2, decode via
+    eval.polygon_metrics._radial_to_cartesian (conf-gated, sub-bin offsets),
+    and check the decoded vertex lands back near the bin's true vertex.
+
+    This pins the encode/decode direction convention end-to-end: both sides
+    must agree that the radial vector is origin − vertex (vertex reconstructs
+    as center − r·(cos, sin)), otherwise decoded vertices would land ~180°
+    away from where they were encoded.
+    """
+
+    def test_round_trip_recovers_original_vertices(self):
+        from eval.polygon_metrics import DEFAULT_POLY_CONF_THRESH, _radial_to_cartesian
+
+        parser = _make_parser()
+        angle_step_deg = 15
+        n_bins = 24
+        cx, cy = 0.5, 0.5
+
+        # One vertex per bin, each at its own (non-center) sub-bin offset —
+        # so this exercises the general sub-bin decode, not just bin centers.
+        rng = np.random.default_rng(0)
+        offsets = rng.uniform(0.05, 0.95, size=n_bins).astype(np.float32)
+        radii = rng.uniform(0.1, 0.4, size=n_bins).astype(np.float32)
+        verts = []
+        for i in range(n_bins):
+            ang = math.radians((i + offsets[i]) * angle_step_deg)
+            x = cx - radii[i] * math.cos(ang)
+            y = cy - radii[i] * math.sin(ang)
+            verts.append((x, y))
+        polys = tf.constant(_flat_poly(verts, n_bins * 2))
+        boxes = tf.constant([[0.0, 0.0, 1.0, 1.0]], tf.float32)
+
+        out = parser._preprocess_polygons_v2(boxes, polys, angle_step_deg).numpy()
+        dist, angle, conf = out[0, 0::3], out[0, 1::3], out[0, 2::3]
+        self.assertEqual(int(conf.sum()), n_bins)  # every bin independently occupied
+
+        gate = conf >= DEFAULT_POLY_CONF_THRESH
+        self.assertTrue(gate.all())
+
+        # Square image so the isotropic radius decodes identically on both axes.
+        w = h = 100
+        decoded = _radial_to_cartesian(cx, cy, dist[gate], w, h, offsets=angle[gate])
+        expected_px = np.array([[v[0] * w, v[1] * h] for v in np.array(verts)[gate]])
+
+        # Tolerance: half a bin arc at the vertex's own radius, plus float slack.
+        half_bin_arc_px = (math.radians(angle_step_deg) / 2.0) * (radii[gate] * w)
+        diffs = np.linalg.norm(decoded - expected_px, axis=1)
+        self.assertTrue(np.all(diffs < half_bin_arc_px + 1.0),
+                         f"max diff {diffs.max():.4f}px exceeds tolerance")
+
+
 class TestEmptyPolygonAngleTarget(unittest.TestCase):
     """A box with NO valid vertices must produce all-zero polygon targets.
 
@@ -285,6 +344,8 @@ def _reference_one_hot(boxes, polygons, angle_step):
     This is a verbatim copy of the old _preprocess_polygons_v2 body (lines 291-347)
     used to assert exact output equivalence of the new segment formulation. It must
     NOT be "improved" — it encodes the required behavior, including argmax tie-break.
+    The dx/dy sign matches the current origin-minus-vertex convention (dx = cx - x,
+    dy = cy - y), so this is compared byte-exact against the segment formulation.
     """
     n_angles = 360 // angle_step
     N = tf.shape(boxes)[0]
@@ -295,8 +356,8 @@ def _reference_one_hot(boxes, polygons, angle_step):
     pts = tf.reshape(polygons, [N, -1, 2])
     valid = pts[:, :, 0] >= 0.0
 
-    dx = pts[:, :, 0] - cx[:, tf.newaxis]
-    dy = pts[:, :, 1] - cy[:, tf.newaxis]
+    dx = cx[:, tf.newaxis] - pts[:, :, 0]
+    dy = cy[:, tf.newaxis] - pts[:, :, 1]
     dists = tf.sqrt(dx * dx + dy * dy)
 
     angles_rad = tf.math.atan2(dy, dx)

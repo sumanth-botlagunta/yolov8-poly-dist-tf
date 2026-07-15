@@ -31,12 +31,16 @@ directly as the group-0/1 start, not multiplied by `base_lr`). Ultralytics warms
 higher `warmup_bias_lr`. The ramp-down direction matches the original TF2-Vision codebase the model
 was migrated from, and the checkpoints were trained under it.
 
-## 3. HSV brightness is additive
+## 3. HSV jitter is the PyTorch-YOLO multiplicative quantized form
 
-The value/brightness channel of HSV augmentation uses additive jitter
-(`tf.image.random_brightness(image, val)`, `data_pipeline/augmentations.py`) — a ±`val` offset,
-not the multiplicative gain stock YOLO uses. The additive form matches the original codebase and the
-augmentation distribution the checkpoints were trained under.
+HSV augmentation applies per-channel multiplicative gains `r = 1 + U(-1, 1)·[hue, sat, val]`
+in the integer-quantized `[180, 255, 255]` HSV domain (floor, `h % 180`, s/v clipped to 255),
+matching the original codebase's `_augment_hsv_torch` byte-exactly
+(`data_pipeline/batch_color_aug.apply_hsv_gains`; per-sample twin in
+`data_pipeline/augmentations.hsv_augment`). An earlier revision used additive hue/brightness
+under the belief that additive matched the original — the reconstructed legacy source showed
+the production path was the multiplicative torch form, so this register entry was corrected
+and the code aligned. All three channels — including hue — are multiplicative.
 
 ## 4. Distance head is not evaluated at validation time
 

@@ -6,10 +6,11 @@ Converts raw head outputs to final detections:
     3. Normalize to [0, 1] in yxyx format.
     4. Sigmoid the class logits.
     5. Top-1 class masking (each anchor keeps only its highest-scoring class).
-    6. Greedy NMS (score_threshold=0.05, iou_threshold=0.65), either per class
+    6. Greedy NMS (score_threshold=0.001, iou_threshold=0.65), either per class
        or once class-agnostically (``nms_class_mode``).
     7. Merge survivors, sort by score, keep top-max_boxes.
-    8. Polygon activations: softplus(dist), sigmoid(angle), sigmoid(conf).
+    8. Polygon activations: softplus(dist) × stride/img (radial distances train
+       in the assigned anchor's grid units), sigmoid(angle), sigmoid(conf).
     9. Distance: exp(log_dist), clamped to [min_distance, max_distance].
 """
 
@@ -27,7 +28,7 @@ class YoloV8Layer:
     """Post-processing layer converting raw head output to detections.
 
     Top-1 class masking zeroes all classes except the argmax per anchor;
-    score_threshold=0.05 filters boxes before NMS. Suppression scope is set by
+    score_threshold=0.001 filters boxes before NMS. Suppression scope is set by
     ``nms_class_mode``:
 
     - ``per_class``: NMS independently per class — overlapping boxes with
@@ -50,7 +51,7 @@ class YoloV8Layer:
         num_classes: int = 39,
         max_boxes: int = 300,
         nms_thresh: float = 0.65,
-        score_thresh: float = 0.05,
+        score_thresh: float = 0.001,
         nms_class_mode: str = "per_class",
         reg_max: int = 16,
         output_poly_size: int = 24,
@@ -208,8 +209,10 @@ class YoloV8Layer:
             sel_pa = tf.ensure_shape(
                 tf.pad(tf.math.sigmoid(tf.gather(m_pa, top)),  [[0, pad], [0, 0]]),
                 [self.max_boxes, self.output_poly_size])
+            # poly_dist arrives already activated (softplus × stride/img at the
+            # per-level flatten) — gather only, no second activation.
             sel_pd = tf.ensure_shape(
-                tf.pad(tf.math.softplus(tf.gather(m_pd, top)), [[0, pad], [0, 0]]),
+                tf.pad(tf.gather(m_pd, top), [[0, pad], [0, 0]]),
                 [self.max_boxes, self.output_poly_size])
             sel_pc = tf.ensure_shape(
                 tf.pad(tf.math.sigmoid(tf.gather(m_pc, top)),  [[0, pad], [0, 0]]),
@@ -297,7 +300,14 @@ class YoloV8Layer:
 
             if has_poly:
                 all_poly_angle.append(tf.cast(tf.reshape(raw_outputs["poly_angle"][level], [B, -1, self.output_poly_size]), tf.float32))
-                all_poly_dist.append( tf.cast(tf.reshape(raw_outputs["poly_dist"][level],  [B, -1, self.output_poly_size]), tf.float32))
+                # Radial distances train in the assigned anchor's GRID units
+                # (reference convention), so the decode to a normalized-image
+                # radius is softplus(raw) × stride / img. Activated per level
+                # (stride is constant within a level) so the NMS gather below
+                # carries final values.
+                pd_raw = tf.cast(tf.reshape(raw_outputs["poly_dist"][level], [B, -1, self.output_poly_size]), tf.float32)
+                all_poly_dist.append(
+                    tf.math.softplus(pd_raw) * (tf.cast(stride, tf.float32) / H_f))
                 all_poly_conf.append( tf.cast(tf.reshape(raw_outputs["poly_conf"][level],  [B, -1, self.output_poly_size]), tf.float32))
 
             if has_dist:

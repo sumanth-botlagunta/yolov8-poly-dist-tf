@@ -26,6 +26,7 @@ from typing import Dict, List, Tuple
 
 import tensorflow as tf
 
+from data_pipeline.augmentations import clip_boxes
 from data_pipeline.parser import Parser
 
 
@@ -88,6 +89,15 @@ class V8DistanceParser(Parser):
 
         # Colour augmentation (HSV + normalize /255) runs once per batch on the
         # accelerator in train.task.train_step. Keep the image uint8.
+
+        # Clip to [0, 1] and drop degenerate boxes, mirroring the detection
+        # stream's parser filter. These GTs feed the same TAL/box/DFL losses, so
+        # a zero-size or out-of-range box would inject a noisy positive
+        # assignment into the shared detection losses.
+        boxes, keep = clip_boxes(boxes, min_side=0.0)
+        boxes = tf.boolean_mask(boxes, keep)
+        classes = tf.boolean_mask(classes, keep)
+        dists = tf.boolean_mask(dists, keep)
 
         # Build label tensors.
         n_gt = tf.shape(boxes)[0]

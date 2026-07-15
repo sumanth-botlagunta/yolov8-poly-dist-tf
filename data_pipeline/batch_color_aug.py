@@ -7,10 +7,10 @@ albumentations across the batch.
 
 The per-image randomness distribution matches a per-sample application exactly:
 
-  * HSV: a separate (dh, ds, dv) triple is drawn per image (``[B]`` vectors), as
-    in per-image ``tf.image.random_hue/saturation/brightness``. Hue and
-    saturation are fused into one rgb→hsv→rgb round trip, which is mathematically
-    identical (see ``apply_hsv_deltas``).
+  * HSV: a separate 3-vector of gains is drawn per image (``[B, 3]``), applied
+    with the PyTorch-YOLO formulation — multiplicative gains in the quantized
+    [180, 255, 255] HSV domain (see ``apply_hsv_gains``); identical math to the
+    per-sample ``hsv_augment`` in ``data_pipeline.augmentations``.
   * Albumentations: the per-image enter gate (u < freq) and the four independent
     p=0.01 transform gates are drawn per image, in the same order as the
     per-sample ``apply_albumentations`` ``tf.cond`` chain, so the induced
@@ -30,42 +30,40 @@ import tensorflow as tf
 # HSV jitter (per-image deltas applied to the whole batch in one pass)
 # ---------------------------------------------------------------------------
 
-def apply_hsv_deltas(
-    images: tf.Tensor,
-    dh: tf.Tensor,
-    ds: tf.Tensor,
-    dv: tf.Tensor,
-) -> tf.Tensor:
-    """Apply per-image HSV deltas to a float batch in one rgb→hsv→rgb round trip.
+_HSV_SCALE = (180.0, 255.0, 255.0)
 
-    This is mathematically identical to applying, per image,
-    ``tf.image.adjust_hue(img, dh) → adjust_saturation(img, ds) →
-    adjust_brightness(img, dv) → clip(0, 1)`` — adjust_hue adds dh to the H
-    channel (mod 1), adjust_saturation multiplies the S channel (TF clips S to
-    [0, 1] internally), adjust_brightness adds dv to RGB. Fusing hue and
-    saturation into a single hsv round trip (instead of two) changes nothing
-    because both operate on the same HSV representation.
+
+def apply_hsv_gains(
+    images: tf.Tensor,
+    r: tf.Tensor,
+) -> tf.Tensor:
+    """Apply per-image HSV gains, PyTorch-YOLO form (quantized domain).
+
+    Reference math, vectorized over the batch::
+
+        x = floor(rgb_to_hsv(images) * [180, 255, 255])
+        x = floor(x * r)                       # r broadcasts per image
+        h %= 180; s, v clipped to [0, 255]
+        images = hsv_to_rgb(x / [180, 255, 255])
+
+    All three channels — including hue — are scaled multiplicatively.
 
     Args:
         images: float32 [B, H, W, 3] in [0, 1].
-        dh:     float32 [B] additive hue delta (fraction of the hue circle).
-        ds:     float32 [B] multiplicative saturation gain.
-        dv:     float32 [B] additive brightness delta (applied on RGB).
+        r:      float32 [B, 3] per-image (hue, sat, val) gains around 1.0.
 
     Returns:
         float32 [B, H, W, 3] in [0, 1].
     """
-    hsv = tf.image.rgb_to_hsv(images)            # [B, H, W, 3]
-    h = hsv[..., 0]
-    s = hsv[..., 1]
-    v = hsv[..., 2]
-
-    h = tf.math.floormod(h + dh[:, tf.newaxis, tf.newaxis], 1.0)
-    s = tf.clip_by_value(s * ds[:, tf.newaxis, tf.newaxis], 0.0, 1.0)
-
-    rgb = tf.image.hsv_to_rgb(tf.stack([h, s, v], axis=-1))
-    rgb = rgb + dv[:, tf.newaxis, tf.newaxis, tf.newaxis]
-    return tf.clip_by_value(rgb, 0.0, 1.0)
+    scale = tf.constant(_HSV_SCALE, tf.float32)
+    x = tf.image.rgb_to_hsv(images)                      # [B, H, W, 3]
+    x = tf.math.floor(x * scale)
+    x = tf.math.floor(x * r[:, tf.newaxis, tf.newaxis, :])
+    h = x[..., 0] % 180.0
+    s = tf.clip_by_value(x[..., 1], 0.0, 255.0)
+    v = tf.clip_by_value(x[..., 2], 0.0, 255.0)
+    x = tf.stack([h, s, v], axis=-1) / scale
+    return tf.image.hsv_to_rgb(x)
 
 
 def batch_hsv_augment(
@@ -74,18 +72,17 @@ def batch_hsv_augment(
     sat: float = 0.7,
     val: float = 0.4,
 ) -> tf.Tensor:
-    """Draw per-image HSV deltas and apply them across the batch.
+    """Draw per-image HSV gains and apply them across the batch.
 
-    Mirrors the per-sample ``hsv_augment`` (augmentations.py) draw ranges:
-        dh ~ U(-hue, hue)              (hue == 0 → no-op, dh = 0)
-        ds ~ U(max(0, 1-sat), 1+sat)   (sat == 0 → no-op, ds = 1)
-        dv ~ U(-val, val)              (val == 0 → no-op, dv = 0)
+    Gain draw (per image): ``r = 1 + U(-1, 1) · [hue, sat, val]`` — the same
+    ranges and multiplicative semantics as the per-sample ``hsv_augment``
+    (augmentations.py).
 
     Args:
         images: float32 [B, H, W, 3] in [0, 1].
-        hue:    max hue delta magnitude.
-        sat:    saturation range half-width (gain ∈ [1-sat, 1+sat]).
-        val:    max brightness delta magnitude.
+        hue:    hue gain half-range.
+        sat:    saturation gain half-range.
+        val:    brightness (value) gain half-range.
 
     Returns:
         float32 [B, H, W, 3] in [0, 1]. Returns the input unchanged when all
@@ -95,22 +92,9 @@ def batch_hsv_augment(
         return images
 
     b = tf.shape(images)[0]
-    if hue > 0.0:
-        dh = tf.random.uniform([b], -hue, hue)
-    else:
-        dh = tf.zeros([b], dtype=images.dtype)
-    if sat > 0.0:
-        sat_lower = max(0.0, 1.0 - sat)
-        sat_upper = 1.0 + sat
-        ds = tf.random.uniform([b], sat_lower, sat_upper)
-    else:
-        ds = tf.ones([b], dtype=images.dtype)
-    if val > 0.0:
-        dv = tf.random.uniform([b], -val, val)
-    else:
-        dv = tf.zeros([b], dtype=images.dtype)
-
-    return apply_hsv_deltas(images, dh, ds, dv)
+    gen_range = tf.constant([hue, sat, val], tf.float32)
+    r = tf.random.uniform([b, 3], -1.0, 1.0) * gen_range + 1.0
+    return apply_hsv_gains(images, r)
 
 
 # ---------------------------------------------------------------------------

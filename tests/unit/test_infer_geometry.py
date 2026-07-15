@@ -38,10 +38,12 @@ def test_poly_decode_respects_conf_gate():
 
 
 def test_poly_decode_geometry_at_zero_angle():
-    # one vertex at bin 0 (angle 0): x = cx + d, y = cy
+    # one vertex at bin 0 (angle 0): vertex = center - d*(cos, sin) = (cx - d, cy)
+    # (reference convention: the radial vector is origin - vertex, so the
+    # vertex sits to the LEFT of center at angle 0, not the right).
     poly = np.zeros((24, 3), np.float32)
     poly[0] = [0.9, 0.2, 0.0]
     verts = infer._poly_vertices_norm(poly, 0.5, 0.5, 0.4)
     assert len(verts) == 1
     vx, vy = verts[0]
-    assert abs(vx - 0.7) < 1e-6 and abs(vy - 0.5) < 1e-6
+    assert abs(vx - 0.3) < 1e-6 and abs(vy - 0.5) < 1e-6

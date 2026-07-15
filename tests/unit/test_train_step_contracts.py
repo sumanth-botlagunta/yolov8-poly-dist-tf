@@ -110,10 +110,15 @@ def test_distance_stream_fg_gets_zero_conf_gradient():
     target, fg = _poly_targets()
     pd_conf = tf.Variable(0.5 * np.ones((2, _A, _V), dtype=np.float32))
     zeros = tf.constant(np.zeros((2, _A, _V), dtype=np.float32))
+    # anc_strides == img_size => dist_scale == 1, keeping the test's original
+    # numeric intent (target_dist unscaled by the grid-units conversion).
+    anc_strides = tf.ones([_A, 1], dtype=tf.float32) * 8.0
+    img_size = tf.constant(8.0)
     with tf.GradientTape() as tape:
         poly_total, *_ = loss._polygon_loss(
             zeros, zeros, pd_conf, target, fg, tf.constant(2.0),
             tf.constant([0, 1], dtype=tf.int64),
+            anc_strides, img_size,
         )
     grad = tape.gradient(poly_total, pd_conf)
     assert np.max(np.abs(grad[1, 2, :].numpy())) < 1e-9   # distance-stream fg: no grad

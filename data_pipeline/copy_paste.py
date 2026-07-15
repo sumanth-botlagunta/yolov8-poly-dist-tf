@@ -51,29 +51,51 @@ class CopyAndPasteModule:
         bg_data: Dict[str, tf.Tensor],
         obj_data: Dict[str, tf.Tensor],
     ) -> Dict[str, tf.Tensor]:
-        """Gate on the minimum pasted size, then composite.
+        """Draw an adaptive resize ratio, then composite.
 
-        Draws the resize ratio and skips the paste entirely (background returned
-        unchanged) when the pasted object would be smaller than
-        ``min_height × min_width`` pixels at the original background resolution
-        (``obj_dims × ratio`` — the scale the composite is geometrically
-        equivalent to; see the resolution-correction note in ``_paste``). The gate
-        keeps arbitrarily tiny/blurry pasted objects out of the GT.
+        The ratio bounds are constructed (in ORIGINAL background pixel units,
+        like the reference implementation) so that the pasted object meets the
+        ``min_height × min_width`` floor whenever that is feasible under the
+        containment and ``max_resize_ratio`` caps (containment wins when they
+        conflict — same as the reference), never exceeds ``height_limit`` of
+        the background height or the full background width, and the paste
+        always happens once the probability gate fired:
+
+            max_ratio = min(bg_h·height_limit/obj_h, bg_w/obj_w, max_resize_ratio)
+            min_ratio = max(min_height/obj_h, min_width/obj_w, min_resize_ratio)
+            min_ratio = min(min_ratio, max_ratio)
+            ratio ~ U(min_ratio, max_ratio)
+
+        Containment plus the size floor are therefore guaranteed by
+        construction — there is no separate accept/reject gate that could
+        silently drop the paste (which would make the realized paste rate
+        fall below ``prob``).
         """
         obj_shape = tf.shape(obj_data['image'])
         obj_h_f = tf.cast(obj_shape[0], tf.float32)
         obj_w_f = tf.cast(obj_shape[1], tf.float32)
-        resize_ratio = tf.random.uniform(
-            [], self._min_resize_ratio, self._max_resize_ratio)
-        size_ok = tf.logical_and(
-            obj_h_f * resize_ratio >= self._min_height,
-            obj_w_f * resize_ratio >= self._min_width,
-        )
-        return tf.cond(
-            size_ok,
-            lambda: self._paste(bg_data, obj_data, resize_ratio),
-            lambda: dict(bg_data),
-        )
+
+        # Original background dims (the pipeline pre-resizes to the model input
+        # size before copy-paste; height/width carry the capture dims). The
+        # bounds are defined in original units, matching the resolution the
+        # min_height/min_width floor and obj crop dims are expressed in.
+        bg_shape = tf.shape(bg_data['image'])
+        orig_h_f = tf.cast(bg_data.get('height', bg_shape[0]), tf.float32)
+        orig_w_f = tf.cast(bg_data.get('width', bg_shape[1]), tf.float32)
+
+        max_ratio = tf.reduce_min(tf.stack([
+            orig_h_f * self._height_limit / obj_h_f,
+            orig_w_f / obj_w_f,
+            self._max_resize_ratio,
+        ]))
+        min_ratio = tf.reduce_max(tf.stack([
+            self._min_height / obj_h_f,
+            self._min_width / obj_w_f,
+            self._min_resize_ratio,
+        ]))
+        min_ratio = tf.minimum(min_ratio, max_ratio)
+        resize_ratio = tf.random.uniform([], min_ratio, max_ratio)
+        return self._paste(bg_data, obj_data, resize_ratio)
 
     def _paste(
         self,
@@ -127,27 +149,39 @@ class CopyAndPasteModule:
         corr_h = H_f / tf.maximum(orig_h_f, 1.0)
         corr_w = W_f / tf.maximum(orig_w_f, 1.0)
 
-        # resize_ratio is drawn by _copy_and_paste (which also applies the
-        # min_height/min_width gate on obj_dims × ratio before calling here).
+        # resize_ratio is drawn by _copy_and_paste with adaptive bounds that
+        # guarantee the min-size floor and full containment in original units.
         obj_h_f = tf.cast(tf.shape(obj_rgb)[0], tf.float32)
         obj_w_f = tf.cast(tf.shape(obj_rgb)[1], tf.float32)
         new_h = tf.maximum(tf.cast(tf.round(obj_h_f * resize_ratio * corr_h), tf.int32), 1)
         new_w = tf.maximum(tf.cast(tf.round(obj_w_f * resize_ratio * corr_w), tf.int32), 1)
+        new_h = tf.minimum(new_h, H)
+        new_w = tf.minimum(new_w, W)
 
-        # Resize obj and alpha
+        # Resize obj and alpha. The alpha mask resizes with 'nearest' (the
+        # reference behavior): the binary mask stays exactly binary through the
+        # resize instead of picking up bilinear edge blending.
         obj_rgb_r = tf.image.resize(obj_rgb, [new_h, new_w], method='bilinear')
-        alpha_r   = tf.image.resize(alpha,   [new_h, new_w], method='bilinear')
+        alpha_r   = tf.image.resize(alpha,   [new_h, new_w], method='nearest')
         alpha_r   = tf.clip_by_value(alpha_r, 0.0, 1.0)
 
-        # Random placement in [10%, height_limit] × [10%, 90%] of background.
-        _margin = 0.1
-        min_y = tf.cast(H_f * _margin, tf.int32)
-        min_x = tf.cast(W_f * _margin, tf.int32)
-        max_y = tf.maximum(tf.cast(H_f * self._height_limit, tf.int32) - new_h, min_y)
-        max_x = tf.maximum(tf.cast(W_f * (1.0 - _margin), tf.int32) - new_w, min_x)
+        # Random placement, reference formulation. Vertical: the object's top
+        # edge lands in the LOWER band of the frame —
+        #     offset_h_min = H·(1 − height_limit)
+        #     offset_h_max = H − new_h
+        #     offset_h = U(0.1, 0.9)·(max − min) + min
+        # (floor-facing camera: pasted objects belong near the floor, not at
+        # the top of the frame). Horizontal: offset_w = U(0.1, 0.9)·(W − new_w).
+        # Both clipped to keep the object fully inside the canvas.
+        new_h_f = tf.cast(new_h, tf.float32)
+        new_w_f = tf.cast(new_w, tf.float32)
+        off_h_min = H_f * (1.0 - self._height_limit)
+        off_h_max = H_f - new_h_f
+        off_h = tf.random.uniform([], 0.1, 0.9) * (off_h_max - off_h_min) + off_h_min
+        off_w = tf.random.uniform([], 0.1, 0.9) * (W_f - new_w_f)
 
-        paste_y = tf.random.uniform([], min_y, max_y + 1, dtype=tf.int32)
-        paste_x = tf.random.uniform([], min_x, max_x + 1, dtype=tf.int32)
+        paste_y = tf.clip_by_value(tf.cast(off_h, tf.int32), 0, H - new_h)
+        paste_x = tf.clip_by_value(tf.cast(off_w, tf.int32), 0, W - new_w)
 
         # Build full-canvas alpha mask (0 everywhere except paste region)
         pad_top    = paste_y

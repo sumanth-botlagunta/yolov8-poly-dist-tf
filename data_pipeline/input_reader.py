@@ -444,6 +444,10 @@ class InputReader:
                     data_dir=self._tfds_data_dir,
                     as_supervised=False,
                     download=self._tfds_download,
+                    # Reshuffle shard/file read order every pass of the repeated
+                    # source stream (tfds defaults to False, which would replay
+                    # the same shard order on every lap).
+                    shuffle_files=self._is_training,
                     # Keep images as encoded bytes through shuffle; the decoders'
                     # tf.string branch decodes inside the parallel decode map.
                     # (A shuffle buffer of decoded images costs MBs per element.)
@@ -474,6 +478,8 @@ class InputReader:
             data_dir=self._tfds_data_dir,
             as_supervised=False,
             download=self._tfds_download,
+            # Reshuffle shard order every lap (train-only stream).
+            shuffle_files=True,
             # Encoded bytes through shuffle (RGBA PNG crops); CopyPasteDecoder's
             # tf.string branch decodes with channels=4 in the parallel map.
             decoders={'image': tfds.decode.SkipDecoding()},
@@ -626,6 +632,7 @@ def build_input_reader_from_config(
             single_scale_max=parser_cfg.aug_scale_max,
             single_translate=parser_cfg.aug_rand_translate,
             single_area_thresh=parser_cfg.area_thresh,
+            resize_with_random_method=parser_cfg.resize_with_random_method,
             random_flip=parser_cfg.random_flip,
             # The mosaic path never rotates; the optional single-path pre-warp
             # rotation is the only rotation, gated by the parser-level

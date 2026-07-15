@@ -320,7 +320,7 @@ class TaskAlignedLossExtended:
         tgt_ltrb_px = tf.stack([tgt_l, tgt_t, tgt_r, tgt_b], axis=-1)   # [B, A, 4]
         tgt_ltrb_fm = tgt_ltrb_px / anc_strides[tf.newaxis]              # [B, A, 4]
         tgt_ltrb_fm = tf.clip_by_value(
-            tgt_ltrb_fm, 0.0, float(self.reg_max) - 1.001
+            tgt_ltrb_fm, 0.0, float(self.reg_max) - 1.0 - 0.01
         )
 
         tgt_floor        = tf.floor(tgt_ltrb_fm)                         # [B, A, 4]
@@ -436,11 +436,17 @@ class TaskAlignedLossExtended:
         fg_mask: tf.Tensor,
         num_objs: tf.Tensor,
         ignore_bg: tf.Tensor,
+        anc_strides: tf.Tensor,   # [A, 1] — per-anchor stride for dist units
+        img_size: tf.Tensor,      # scalar float — input image side (square)
     ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """Combined PolyYOLO polygon loss (angle + dist + conf).
 
         target_polygons layout: [dist0, angle0, conf0, dist1, angle1, conf1, ...]
-            dist:  radial distance from box center (pre-computed by parser).
+            dist:  radial distance from box center in NORMALIZED image units
+                   (pre-computed by parser); converted below to the assigned
+                   anchor's GRID units (× img_size / stride — the reference
+                   convention, DFL-style per-level normalization) before the
+                   softplus regression.
             angle: sub-bin angular offset (vertex_angle - bin_start)/angle_step
                    in [0, 1) on bins that hold a vertex, 0.0 elsewhere.
             conf:  1.0 if a valid vertex was assigned to this bin; also the
@@ -460,10 +466,14 @@ class TaskAlignedLossExtended:
             (poly_total, angle_loss, dist_loss_val, conf_loss_val); poly_total is
             the gain-weighted sum, the other three are raw pre-gain sub-losses.
         """
-        target_dist  = target_polygons[:, :, 0::3]   # [B, A, 24]
+        target_dist  = target_polygons[:, :, 0::3]   # [B, A, 24] normalized units
         target_angle = target_polygons[:, :, 1::3]   # [B, A, 24] — sub-bin offset
         conf         = target_polygons[:, :, 2::3]   # [B, A, 24] — per-bin validity
         vertex_mask  = conf                          # valid-vertex mask for angle/dist
+
+        # Normalized image units → the assigned anchor's grid units.
+        dist_scale  = img_size / anc_strides[:, 0]                    # [A]
+        target_dist = target_dist * dist_scale[tf.newaxis, :, tf.newaxis]
 
         # ignore_bg=1 rows (distance stream) carry no polygon GT: drop them from
         # the foreground mask so the all-bins conf loss does not push their real
@@ -685,6 +695,7 @@ class TaskAlignedLossExtended:
             poly_loss_val, poly_angle_l, poly_dist_l, poly_conf_l = self._polygon_loss(
                 pd_poly_angle, pd_poly_dist, pd_poly_conf,
                 target_polygons, fg_mask, num_objs, ignore_bg,
+                anc_strides=anc_strides, img_size=img_H,
             )
 
         # ── 6. Apply gains and aggregate ──────────────────────────────

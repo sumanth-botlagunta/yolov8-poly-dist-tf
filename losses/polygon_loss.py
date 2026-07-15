@@ -129,33 +129,35 @@ def polygon_conf_loss(
 ) -> tf.Tensor:
     """BCE loss for per-vertex validity confidence, over all bins.
 
-    Averages BCE over all ``num_vertices`` bins of each anchor (occupied bins
-    get target 1, empty bins get target 0), sums over foreground anchors, and
-    normalizes by num_objs. Unlike angle/dist (which stay masked — their
-    regression targets are undefined on empty bins), conf must see negatives: it
-    is the gate that tells decode/viz which bins to keep, so empty bins need a 0
-    target or their confidence drifts past the 0.4 threshold and produces spiky
-    polygons.
-
-    The masked form (mean over valid vertices only) is a one-line swap:
-
-        # per_anchor = _masked_vertex_mean(bce, vertex_mask)
+    Sums BCE over all ``num_vertices`` bins of each anchor (occupied bins get
+    target 1, empty bins get target 0) and divides by that anchor's VALID
+    vertex count (the reference normalization: an object with few vertices
+    weighs its conf bins more strongly than ``/num_bins`` would), then sums
+    over foreground anchors and normalizes by num_objs. Unlike angle/dist
+    (which stay masked — their regression targets are undefined on empty
+    bins), conf must see negatives: it is the gate that tells decode/viz which
+    bins to keep, so empty bins need a 0 target or their confidence drifts
+    past the 0.4 threshold and produces spiky polygons.
 
     Args:
         pd_conf:     float32 [batch, anchors, num_vertices]  logits
         target_conf: float32 [batch, anchors, num_vertices]  0 or 1
         vertex_mask: float32 [batch, anchors, num_vertices]  1.0 on valid bins
-            (unused by the all-bins form; kept for the masked-form swap)
+            (the per-anchor normalizer; anchors with zero valid vertices
+            contribute zero via divide_no_nan)
         fg_mask:     bool    [batch, anchors]
         num_objs:    float32 scalar  total valid GT object count in batch
 
     Returns:
         Scalar loss.
     """
-    del vertex_mask  # used only by the masked-form swap in the docstring
     bce = tf.nn.sigmoid_cross_entropy_with_logits(
         labels=target_conf, logits=pd_conf
     )  # [B, A, V]
-    per_anchor = tf.reduce_mean(bce, axis=-1)            # [B, A] — mean over all bins
+    m = tf.cast(vertex_mask, bce.dtype)
+    num_valid = tf.reduce_sum(m, axis=-1)                # [B, A]
+    per_anchor = tf.math.divide_no_nan(
+        tf.reduce_sum(bce, axis=-1), num_valid
+    )  # [B, A] — all-bins sum ÷ valid-vertex count
     fg_float = tf.cast(fg_mask, tf.float32)              # [B, A]
     return tf.reduce_sum(per_anchor * fg_float) / num_objs

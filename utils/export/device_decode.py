@@ -176,8 +176,15 @@ def reconstruct_detections(dev_out, model_h, model_w, *, max_boxes=300,
 
     if has_poly:
         if k:
+            # Radial distances train in the assigned anchor's GRID units
+            # (reference convention): normalized radius = softplus(raw) ×
+            # stride/img. Build the per-anchor stride vector over the flat N.
+            stride_flat = np.concatenate([
+                np.full((model_h // s) * (model_w // s), s, dtype=np.float64)
+                for s in _STRIDES
+            ])
             sel_pa = _sigmoid(pa[sidx])
-            sel_pd = _softplus(pd[sidx])
+            sel_pd = _softplus(pd[sidx]) * (stride_flat[sidx, None] / model_h)
             sel_pc = _sigmoid(pc[sidx])
             poly = np.stack([sel_pc, sel_pd, sel_pa], axis=-1)   # (conf,dist,angle)
         else:

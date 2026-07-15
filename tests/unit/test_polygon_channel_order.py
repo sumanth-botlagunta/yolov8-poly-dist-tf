@@ -56,6 +56,11 @@ def test_prediction_layout_is_conf_dist_angle():
     n = int(out["num_detections"][0])
     assert n >= 1
     poly = out["polygons"][0, 0].numpy()   # [24, 3]
+    # The live detection is the level-3 (stride 8) anchor at (2, 2); poly_dist
+    # is pre-scaled at the per-level flatten by stride/img_size (8/64 = 0.125)
+    # to convert the grid-unit training target back to a normalized-image
+    # radius. Layout (channel order) itself is unchanged: (conf, dist, angle).
     np.testing.assert_allclose(poly[:, 0], tf.sigmoid(C_RAW).numpy(),  atol=1e-6)  # conf
-    np.testing.assert_allclose(poly[:, 1], tf.math.softplus(D_RAW).numpy(), atol=1e-6)  # dist
+    np.testing.assert_allclose(
+        poly[:, 1], tf.math.softplus(D_RAW).numpy() * (8.0 / 64.0), atol=1e-6)  # dist
     np.testing.assert_allclose(poly[:, 2], tf.sigmoid(A_RAW).numpy(),  atol=1e-6)  # angle

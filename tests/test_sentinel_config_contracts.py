@@ -34,33 +34,43 @@ def _make_parser() -> V8ParserExtended:
 
 def test_preprocess_keeps_negative_x_vertex_for_edge_box():
     """An edge box (center x=0.0) with a due-west vertex at x=-0.02 must occupy the
-    180-degree bin. Old `>= 0.0` dropped the vertex -> that bin would be empty."""
+    0-degree bin. Old `>= 0.0` dropped the vertex -> that bin would be empty.
+
+    Radial convention is origin − vertex (dx = cx − x, dy = cy − y): a
+    due-west vertex (relative to center) produces a radial vector pointing
+    due-EAST (0 deg), so it lands in bin 0, not bin 12.
+    """
     parser = _make_parser()
     # Box yxyx: ymin=0.0, xmin=-0.04, ymax=0.2, xmax=0.04 -> center (cy,cx)=(0.1, 0.0)
     box = tf.constant([[0.0, -0.04, 0.2, 0.04]], tf.float32)
-    # Vertices: due-west at (-0.02, 0.1) [bin 12 = 180 deg], plus a -1.0 sentinel pair.
+    # Vertices: due-west at (-0.02, 0.1), plus a -1.0 sentinel pair.
     poly = tf.constant([[-0.02, 0.1, -1.0, -1.0]], tf.float32)
 
     out = parser._preprocess_polygons_v2(box, poly, angle_step=15).numpy()
     conf = out[0, 2::3]
     dist = out[0, 0::3]
 
-    # atan2(dy=0, dx=-0.02) = pi = 180 deg -> bin 180/15 = 12.
-    assert conf[12] == 1.0, f"negative-x west vertex dropped (conf bin 12 = {conf[12]})"
-    assert dist[12] > 0.0, f"west vertex radial dist not recorded: {dist[12]}"
+    # dx = cx - x = 0.0 - (-0.02) = 0.02, dy = cy - y = 0.1 - 0.1 = 0.0.
+    # atan2(dy=0, dx=0.02) = 0 deg -> bin 0.
+    assert conf[0] == 1.0, f"negative-x west vertex dropped (conf bin 0 = {conf[0]})"
+    assert dist[0] > 0.0, f"west vertex radial dist not recorded: {dist[0]}"
     # Exactly one occupied bin (the single valid vertex).
     assert int(conf.sum()) == 1, f"unexpected occupied bins: {np.flatnonzero(conf)}"
 
 
 def test_preprocess_drops_only_exact_minus_one_sentinel():
     """Control: x exactly == -1.0 is the sentinel and is the ONLY value treated as
-    padding. A box at center with one real east vertex + a -1.0 pair => one bin."""
+    padding. A box at center with one real east vertex + a -1.0 pair => one bin.
+
+    A due-EAST vertex (x=1.0) relative to center (0.5, 0.5) produces a radial
+    vector (dx = cx - x = -0.5, dy = 0) pointing due-WEST (180 deg) -> bin 12.
+    """
     parser = _make_parser()
     box = tf.constant([[0.0, 0.0, 1.0, 1.0]], tf.float32)  # center (0.5, 0.5)
     poly = tf.constant([[1.0, 0.5, -1.0, -1.0]], tf.float32)  # east vertex + sentinel
     out = parser._preprocess_polygons_v2(box, poly, angle_step=15).numpy()
     conf = out[0, 2::3]
-    assert conf[0] == 1.0 and int(conf.sum()) == 1, f"sentinel handling wrong: {conf}"
+    assert conf[12] == 1.0 and int(conf.sum()) == 1, f"sentinel handling wrong: {conf}"
 
 
 def test_mosaic_canvas_carries_negative_vertex_not_sentinel():

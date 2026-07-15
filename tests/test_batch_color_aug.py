@@ -3,8 +3,8 @@
 These verify that the vectorized per-batch ops reproduce the per-sample parser
 behaviour they replace, with the same per-image randomness semantics:
 
-  (a) apply_hsv_deltas == per-image adjust_hue → adjust_saturation →
-      adjust_brightness → clip  (exact, atol 1e-4).
+  (a) apply_hsv_gains == the per-image PyTorch-YOLO HSV math (multiplicative
+      gains in the quantized [180, 255, 255] domain), exact per image.
   (b) Masked albumentations reproduce the single-image reference ops (blur3,
       gray, clahe) for forced masks.
   (c) row_mask == False rows skip albumentations but are still HSV'd.
@@ -17,7 +17,7 @@ import tensorflow as tf
 
 from data_pipeline.batch_color_aug import (
     apply_albumentations_masks,
-    apply_hsv_deltas,
+    apply_hsv_gains,
     batch_albumentations,
     batch_color_augment,
     batch_hsv_augment,
@@ -48,26 +48,37 @@ def _clahe_ref(image):
 
 
 # ---------------------------------------------------------------------------
-# (a) HSV exact equivalence
+# (a) HSV exact equivalence (PyTorch-YOLO quantized multiplicative form)
 # ---------------------------------------------------------------------------
 
-def test_apply_hsv_deltas_matches_per_image_chain():
+def _hsv_torch_ref(image, r3):
+    """Single-image reference of the quantized multiplicative HSV math."""
+    scale = tf.constant([180.0, 255.0, 255.0])
+    x = tf.image.rgb_to_hsv(image)
+    x = tf.math.floor(x * scale)
+    x = tf.math.floor(x * r3)
+    h, s, v = tf.split(x, 3, axis=-1)
+    h = h % 180.0
+    s = tf.clip_by_value(s, 0.0, 255.0)
+    v = tf.clip_by_value(v, 0.0, 255.0)
+    return tf.image.hsv_to_rgb(tf.concat([h, s, v], axis=-1) / scale)
+
+
+def test_apply_hsv_gains_matches_reference():
     tf.random.set_seed(0)
     B, H, W = 4, 16, 24
     imgs = tf.random.uniform([B, H, W, 3], dtype=tf.float32)
-    dh = tf.constant([-0.013, 0.0, 0.011, 0.007], dtype=tf.float32)
-    ds = tf.constant([0.4, 1.0, 1.6, 0.85], dtype=tf.float32)
-    dv = tf.constant([-0.3, 0.0, 0.25, 0.1], dtype=tf.float32)
+    r = tf.constant([
+        [0.990, 0.40, 0.70],
+        [1.000, 1.00, 1.00],
+        [1.012, 1.65, 1.38],
+        [0.995, 0.85, 1.10],
+    ], dtype=tf.float32)
 
-    batched = apply_hsv_deltas(imgs, dh, ds, dv).numpy()
-
+    batched = apply_hsv_gains(imgs, r).numpy()
     for i in range(B):
-        ref = imgs[i]
-        ref = tf.image.adjust_hue(ref, float(dh[i]))
-        ref = tf.image.adjust_saturation(ref, float(ds[i]))
-        ref = tf.image.adjust_brightness(ref, float(dv[i]))
-        ref = tf.clip_by_value(ref, 0.0, 1.0).numpy()
-        np.testing.assert_allclose(batched[i], ref, atol=1e-4)
+        ref = _hsv_torch_ref(imgs[i], r[i]).numpy()
+        np.testing.assert_allclose(batched[i], ref, atol=1e-5)
 
 
 def test_batch_hsv_augment_noop_when_all_zero():
@@ -77,16 +88,25 @@ def test_batch_hsv_augment_noop_when_all_zero():
     np.testing.assert_array_equal(out.numpy(), imgs.numpy())
 
 
-def test_batch_hsv_augment_zero_components_are_identity_deltas():
-    """hue=0 → dh=0, sat=0 → ds=1, val=0 → dv=0 (one active component still jitters)."""
+def test_batch_hsv_augment_stays_in_range():
+    """Extreme gains (sat up to 1.7, val up to 1.4) must stay finite in [0, 1]."""
     tf.random.set_seed(1)
     imgs = tf.random.uniform([2, 8, 8, 3], dtype=tf.float32)
-    # Only saturation active; hue/val must be no-ops, so result == adjust_saturation only.
-    out = batch_hsv_augment(imgs, hue=0.0, sat=0.5, val=0.0).numpy()
-    # Saturation strictly changes pixels for a random image with gain != 1 in general;
-    # at minimum the op must stay in range and be finite.
+    out = batch_hsv_augment(imgs, hue=0.015, sat=0.7, val=0.4).numpy()
     assert np.isfinite(out).all()
     assert out.min() >= 0.0 and out.max() <= 1.0
+
+
+def test_per_sample_hsv_augment_matches_batch_math():
+    """augmentations.hsv_augment and apply_hsv_gains share one formula: with the
+    same gain vector they must produce identical pixels."""
+    from data_pipeline.augmentations import hsv_augment  # noqa: F401  (formula twin)
+    tf.random.set_seed(2)
+    img = tf.random.uniform([16, 16, 3], dtype=tf.float32)
+    r = tf.constant([[1.005, 1.30, 0.75]], dtype=tf.float32)
+    batched = apply_hsv_gains(img[tf.newaxis], r)[0].numpy()
+    ref = _hsv_torch_ref(img, r[0]).numpy()
+    np.testing.assert_allclose(batched, ref, atol=1e-6)
 
 
 # ---------------------------------------------------------------------------

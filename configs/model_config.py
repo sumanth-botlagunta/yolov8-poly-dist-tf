@@ -80,7 +80,7 @@ class HeadConfig:
 class DetectionGeneratorConfig:
     max_boxes: int = 300
     nms_thresh: float = 0.65
-    score_thresh: float = 0.05
+    score_thresh: float = 0.001
     # NMS suppression scope: "per_class" runs NMS independently per class (two
     # overlapping boxes of different classes both survive); "agnostic" runs one
     # NMS over all boxes. Eval-time post-processing only; no effect on training.

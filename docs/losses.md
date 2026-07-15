@@ -49,13 +49,16 @@ validity mask (`vertex_mask`); all normalize by `num_objs`:
 - `polygon_angle_loss` — `BCE(sigmoid(pred), sub-bin offset)`, offset =
   `(vertex_angle − bin_start)/angle_step ∈ [0,1)`; **mean over valid vertices**, ÷ `num_objs`.
 - `polygon_dist_loss` — `(target_radius − softplus(pred))²`; **mean over valid vertices**, ÷ `num_objs`.
-- `polygon_conf_loss` — BCE on per-bin vertex validity; **mean over ALL 24 bins** (occupied → 1,
-  empty → 0), ÷ `num_objs`. Conf is the decode gate and must see negatives: the earlier masked
-  form (valid-bins-only) gave empty bins zero gradient ever, so their conf drifted above
-  the 0.4 decode/viz threshold while their dist stayed untrained — the star/spiky polygon
-  artifacts seen in val overlays. (The earlier masked form is kept in the
-  `polygon_conf_loss` docstring as a one-line swap.) Angle/dist remain masked because their
-  regression targets are undefined on empty bins.
+  Targets are converted to the assigned anchor's grid units (`× img_size / stride`, the reference
+  per-level normalization) in `_polygon_loss`; decode multiplies back (`softplus × stride / img`).
+- `polygon_conf_loss` — BCE on per-bin vertex validity over **ALL 24 bins** (occupied → 1,
+  empty → 0); per-anchor **sum ÷ valid-vertex count** (reference normalization, `divide_no_nan`),
+  ÷ `num_objs`. Conf is the decode gate and must see negatives: a valid-bins-only mask gave empty
+  bins zero gradient ever, so their conf drifted above the 0.4 decode/viz threshold while their
+  dist stayed untrained — the star/spiky polygon artifacts seen in val overlays. Angle/dist remain
+  masked because their regression targets are undefined on empty bins.
+The radial vector convention is **origin − vertex** end-to-end (encode and every decoder);
+vertices reconstruct as `center − r·(cos, sin)`, matching the deployed on-device decoder.
 Combined in `tal_loss.py:_polygon_loss` with the component gains; the overall `poly_gain`
 multiplier is applied inside `_polygon_loss`.
 
@@ -79,8 +82,8 @@ heads:
 | cls | `soft`: `target_scores_sum` · `legacy_hard`: `num_objs` | — |
 | distance | `num_objs` (total batch GT count) | — |
 | polygon angle | `num_objs` | **mean over valid vertices** |
-| polygon dist | `num_objs` | **mean over valid vertices** |
-| polygon conf | `num_objs` | **mean over ALL 24 bins** |
+| polygon dist | `num_objs` | **mean over valid vertices** (targets in the assigned anchor's grid units: `× img/stride`) |
+| polygon conf | `num_objs` | **sum over ALL 24 bins ÷ valid-vertex count** |
 
 Consequences:
 - `dist_gain` and the poly gains divide by `num_objs` (not `target_scores_sum`), so they are on a

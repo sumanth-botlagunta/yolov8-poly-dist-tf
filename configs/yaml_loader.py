@@ -244,7 +244,7 @@ def _build_model_config(m: Dict[str, Any], task: Dict[str, Any]) -> ModelConfig:
     det_gen_cfg = DetectionGeneratorConfig(
         max_boxes=det_gen_raw.get("max_boxes", 300),
         nms_thresh=det_gen_raw.get("nms_thresh", 0.65),
-        score_thresh=det_gen_raw.get("score_thresh", 0.05),
+        score_thresh=det_gen_raw.get("score_thresh", 0.001),
         nms_class_mode=det_gen_raw.get("nms_class_mode", "per_class"),
         # Inference distance clamp shares the task-level range (single source of
         # truth) so a custom range is honoured at inference/export, not just loss.

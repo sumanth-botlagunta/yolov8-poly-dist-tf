@@ -109,32 +109,82 @@ class TestCopyAndPasteModule(unittest.TestCase):
         self.assertAlmostEqual(box[3] - box[1], 0.4, places=5)
 
     def test_min_size_gate_skips_small_pastes(self):
-        """Pastes below min_height×min_width at full resolution are SKIPPED.
+        """NEW semantics: copy-paste ALWAYS pastes (no accept/reject gate).
 
-        The gate compares obj_dims × resize_ratio (the full-resolution pasted
-        size) against the minimum. A too-small object leaves the background
-        unchanged (no extra GT row); a large-enough one is pasted. Guards that
-        min_height/min_width are enforced, not just stored.
+        min_height/min_width now shape the ADAPTIVE ratio bounds instead of
+        skipping the paste outright:
+            max_ratio = min(orig_h·height_limit/obj_h, orig_w/obj_w, max_resize_ratio)
+            min_ratio = max(min_height/obj_h, min_width/obj_w, min_resize_ratio)
+            min_ratio = min(min_ratio, max_ratio)
+        When the floor is feasible under max_resize_ratio, the pasted object
+        meets min_height/min_width at full resolution. When max_ratio caps
+        below the floor, the realized ratio equals max_ratio (falls short of
+        the floor) but the paste still happens — every case below appends a
+        GT row (n+1), never skips.
         """
-        # 40×40 object at ratio 1.0 < 60×100 minimum → skipped.
-        mod = CopyAndPasteModule(prob=1.0, min_height=60, min_width=100,
-                                 min_resize_ratio=1.0, max_resize_ratio=1.0)
-        out = mod.process_fn(is_training=True)(_bg(n=2), _obj(h=40, w=40))
-        self.assertEqual(int(out["groundtruth_boxes"].shape[0]), 2)
-        self.assertEqual(int(out["groundtruth_polygons"].shape[0]), 2)
+        # Case 1: floor is feasible (max_resize_ratio is generous) → the
+        # pasted object's full-resolution size meets the min_height/min_width
+        # floor, and the row is appended.
+        mod = CopyAndPasteModule(prob=1.0, min_height=60, min_width=60,
+                                 min_resize_ratio=0.2, max_resize_ratio=5.0,
+                                 height_limit=0.6)
+        out = mod.process_fn(is_training=True)(_bg(h=200, w=200, n=2), _obj(h=40, w=40))
+        self.assertEqual(int(out["groundtruth_boxes"].shape[0]), 3)
+        box = out["groundtruth_boxes"][-1].numpy()
+        h_px = (box[2] - box[0]) * 200
+        w_px = (box[3] - box[1]) * 200
+        self.assertGreaterEqual(h_px, 60 - 1.0)
+        self.assertGreaterEqual(w_px, 60 - 1.0)
 
-        # 80×120 object at ratio 1.0 >= 60×100 → pasted.
-        out2 = mod.process_fn(is_training=True)(_bg(n=2), _obj(h=80, w=120))
+        # Case 2: max_ratio caps BELOW the floor (min_resize_ratio ==
+        # max_resize_ratio == 1.0 forces a deterministic draw == max_ratio).
+        # max_ratio = min(100*0.6/80, 100/120, 1.0) = 0.75 → below the
+        # 60×100 floor, so the pasted size falls short — but it still pastes.
+        mod2 = CopyAndPasteModule(prob=1.0, min_height=60, min_width=100,
+                                  min_resize_ratio=1.0, max_resize_ratio=1.0,
+                                  height_limit=0.6)
+        out2 = mod2.process_fn(is_training=True)(_bg(n=2), _obj(h=80, w=120))
         self.assertEqual(int(out2["groundtruth_boxes"].shape[0]), 3)
+        box2 = out2["groundtruth_boxes"][-1].numpy()
+        h_px2 = (box2[2] - box2[0]) * 100
+        self.assertAlmostEqual(h_px2, 80 * 0.75, delta=1.0)
+        self.assertLessEqual(h_px2, 60 + 1e-3)  # at (not above) the floor, by construction
 
-        # Gate uses the FULL-RES size (obj_dims × ratio), independent of the
-        # background's pre-resize correction: same skip decision on a
-        # pre-resized background carrying original dims.
+        # Case 3 (formerly "skipped on a pre-resized background carrying
+        # original dims"): the full-res gate is now folded into the ratio
+        # bounds, not a separate reject path — the paste still happens.
         bg = _bg(h=100, w=100)
         bg["height"] = tf.constant(400, tf.int32)
         bg["width"] = tf.constant(400, tf.int32)
         out3 = mod.process_fn(is_training=True)(bg, _obj(h=40, w=40))
-        self.assertEqual(int(out3["groundtruth_boxes"].shape[0]), 2)
+        self.assertEqual(int(out3["groundtruth_boxes"].shape[0]), 3)
+
+    def test_placement_band_lower_region_and_contained(self):
+        """The pasted object's top edge lands in the LOWER band of the frame.
+
+        off_h ~ U(0.1, 0.9)·(off_h_max − off_h_min) + off_h_min, with
+        off_h_min = H·(1 − height_limit). Draw many pastes with a small
+        object (so the resize/containment clipping never binds) and assert
+        every pasted box's top edge respects the U(0.1, 0.9) floor and stays
+        fully inside the canvas.
+        """
+        mod = CopyAndPasteModule(prob=1.0, min_height=0, min_width=0,
+                                 min_resize_ratio=0.1, max_resize_ratio=0.3,
+                                 height_limit=0.6)
+        fn = mod.process_fn(is_training=True)
+        H = 100
+        for _ in range(30):
+            out = fn(_bg(h=H, w=H, n=2), _obj(h=10, w=10))
+            box = out["groundtruth_boxes"][-1].numpy()
+            ymin_px = box[0] * H
+            # off_h_min = 0.4*H; the U(0.1, 0.9) interpolation's own lower
+            # bound is off_h_min + 0.1*(off_h_max - off_h_min) >= off_h_min.
+            self.assertGreaterEqual(ymin_px, 0.4 * H - 1.0)
+            # Fully inside the canvas.
+            self.assertGreaterEqual(box[0], -1e-6)
+            self.assertLessEqual(box[2], 1.0 + 1e-6)
+            self.assertGreaterEqual(box[1], -1e-6)
+            self.assertLessEqual(box[3], 1.0 + 1e-6)
 
     def test_graph_mode_map_traces(self):
         """Regression: copy-paste must trace under Dataset.map(AUTOTUNE).

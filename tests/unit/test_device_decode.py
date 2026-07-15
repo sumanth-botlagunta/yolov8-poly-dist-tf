@@ -92,8 +92,11 @@ def test_polygon_and_distance_heads_decode():
     # Channel 0 of polygons is sigmoid(conf): high on the 3 set bins, ~0 elsewhere.
     conf0 = out["polygons"][0, 0, :, 0]
     assert (conf0[:3] > 0.99).all() and (conf0[3:] < 0.01).all()
-    # softplus(0) = ln 2 for the dist channel.
-    np.testing.assert_allclose(out["polygons"][0, 0, 0, 1], math.log(2.0), atol=1e-5)
+    # softplus(0) = ln 2 for the raw dist channel, then scaled by the assigned
+    # anchor's stride/img_size (anchor 0 is the first stride-8 anchor,
+    # model_h=MH=32 -> scale = 8/32 = 0.25) to convert grid units back to a
+    # normalized-image radius.
+    np.testing.assert_allclose(out["polygons"][0, 0, 0, 1], math.log(2.0) * 8 / MH, atol=1e-5)
     # exp(0)=1 is inside [0.5,10] so distance stays 1.0.
     np.testing.assert_allclose(out["distance"][0, 0], 1.0, atol=1e-5)
 

@@ -209,21 +209,30 @@ class TaskAlignedAssigner:
 
         # ── 8. Soft target_scores: one-hot × normalized alignment ────────
         # Ultralytics YOLOv8: the soft target is scaled by the GT's localization
-        # quality (pos_overlaps = per-GT max IoU over candidates), so well-localized
-        # objects get higher classification targets.
-        align_max_per_gt = tf.reduce_max(
-            align_spatial, axis=1, keepdims=True
-        )  # [B, 1, M]
-        # Reuse iou_cand (= iou * candidate_mask) from above.
-        pos_overlaps = tf.reduce_max(iou_cand, axis=1, keepdims=True)  # [B, 1, M]
-        align_norm = (
-            align_spatial * pos_overlaps / (align_max_per_gt + self.eps)
+        # quality (pos_overlaps = per-GT max IoU), so well-localized objects get
+        # higher classification targets. The per-GT maxima are taken over the
+        # duplicate-RESOLVED positive mask (align_metric *= mask_pos in the
+        # reference): a GT whose best candidate was claimed by an overlapping GT
+        # normalizes by its best REMAINING anchor, and its pos_overlap likewise
+        # comes from the anchors it actually kept. For uncontested GTs this is
+        # identical to maxing over the raw candidate set.
+        fg_f = tf.cast(fg_mask, tf.float32)                                  # [B, A]
+        resolved = (
+            tf.one_hot(target_gt_idx, M, dtype=tf.float32)
+            * fg_f[:, :, tf.newaxis]
+            * tf.cast(candidate_mask, tf.float32)
+        )  # [B, A, M] — candidate ∧ assigned-to-this-GT ∧ foreground
+        align_res = align_spatial * resolved                                 # [B, A, M]
+        align_max_per_gt = tf.reduce_max(align_res, axis=1, keepdims=True)   # [B, 1, M]
+        pos_overlaps = tf.reduce_max(iou * resolved, axis=1, keepdims=True)  # [B, 1, M]
+        align_norm = tf.math.divide_no_nan(
+            align_res * pos_overlaps, align_max_per_gt
         )  # [B, A, M]
 
         # Gather the assigned GT's alignment per anchor — equivalent to
         # one_hot(target_gt_idx)·align_norm summed over M, without the one-hot.
         assigned_align = tf.gather(align_norm, target_gt_idx, axis=-1, batch_dims=2)  # [B, A]
-        assigned_align = assigned_align * tf.cast(fg_mask, tf.float32)
+        assigned_align = assigned_align * fg_f
 
         target_scores = (
             tf.one_hot(target_labels, C, dtype=tf.float32) *

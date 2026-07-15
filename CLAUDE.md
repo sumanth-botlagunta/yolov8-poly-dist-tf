@@ -13,7 +13,7 @@ The authoritative hyperparameter reference is the experiment YAML you train with
 (architecture, data pipeline, losses, training, testing). The older
 `docs/implementation_plan.md` / top-level `MASTER_PLAN.md` references are obsolete and gone.
 
-`.claude/design_register.md` documents non-obvious design choices (crowd policy, additive HSV,
+`.claude/design_register.md` documents non-obvious design choices (crowd policy, multiplicative HSV,
 warmup ramp direction, polygon conf-over-all-bins, mosaic canvas formulation, `-1.0` polygon
 sentinel, etc.) and the reasoning behind them. Several differ from stock YOLOv8 for a measured
 or historical reason, and several affect training — so changing them means re-training.
@@ -67,7 +67,7 @@ Polygons go through three formats across the pipeline:
 |-------|--------|
 | TFDS input | `[N, max_vertices+2]` flat xy normalized, padded with -1 |
 | PolyYOLO target (training/loss) | `[N, 72]` = `[dist, angle, conf] × 24` (interleaved; `angle` = sub-bin offset in `[0,1)`; see `losses/tal_loss.py:_polygon_loss`) |
-| Cartesian (decode/eval/viz) | `[M, 2]` pixel `(x, y)` vertices after conf-gate ≥ 0.4 (M ≤ 24 occupied bins) reconstructed from the radial format (`(i + angle)·angle_step`); the pre-gate intermediate is `[24, 2]` — eval GT labels themselves stay in the radial `[N, 72]` format |
+| Cartesian (decode/eval/viz) | `[M, 2]` pixel `(x, y)` vertices after conf-gate ≥ 0.4 (M ≤ 24 occupied bins), reconstructed as `vertex = center − r·(cos, sin)` at angle `(i + angle)·angle_step` (the radial vector is **origin − vertex**, the reference convention); the pre-gate intermediate is `[24, 2]` — eval GT labels themselves stay in the radial `[N, 72]` format |
 
 ### Model Heads
 
@@ -113,13 +113,17 @@ path byte-identically. Polygon/distance losses are unchanged by `weighting`.
   (not a one-hot). Loss = BCE on `sigmoid(pred)`, averaged over the **valid vertices only**
   (masked by the conf channel), normalized by `num_objs`. Decode: `vertex_angle = (i + sigmoid(pred))·angle_step`.
 - Polygon **dist** uses L2+softplus: `(target − softplus(pred))²`, averaged over the **valid
-  vertices only** (masked by the conf channel), normalized by `num_objs`.
-- Polygon **conf** uses BCE on per-bin validity, averaged over **ALL 24 bins** (occupied → 1,
-  empty → 0), normalized by `num_objs`. Conf is the decode gate and must see negatives —
-  the earlier masked form (valid-bins-only) gave empty bins zero gradient ever, so
-  their conf drifted above the 0.4 decode/viz threshold while their dist stayed untrained →
-  the star/spiky polygon artifacts seen in val overlays. The masked form
-  is preserved in `polygon_conf_loss`'s docstring as a one-line swap.
+  vertices only** (masked by the conf channel), normalized by `num_objs`. Targets are stored
+  normalized by the parser and converted to the assigned anchor's **grid units**
+  (`× img_size / stride`) inside `_polygon_loss` — the reference DFL-style per-level
+  normalization; decode multiplies back (`softplus(pred) × stride / img`).
+- Polygon **conf** uses BCE on per-bin validity over **ALL 24 bins** (occupied → 1,
+  empty → 0), with the per-anchor sum divided by that anchor's **valid-vertex count**
+  (reference normalization; `divide_no_nan` — zero-vertex anchors contribute nothing),
+  normalized by `num_objs`. Conf is the decode gate and must see negatives — a
+  valid-bins-only mask gave empty bins zero gradient ever, so their conf drifted above the
+  0.4 decode/viz threshold while their dist stayed untrained → the star/spiky polygon
+  artifacts seen in val overlays.
 - All three polygon sub-losses (`poly_angle_loss`, `poly_dist_loss`, `poly_conf_loss`) are
   logged separately to TensorBoard; the combined `poly_loss` is their gain-weighted sum
   multiplied by `poly_gain`.
@@ -237,8 +241,12 @@ Run with `/test` or `pytest tests/unit tests/smoke -v`.
 - **Backbone config**: despite `depth_scale: 1.0` / `width_scale: 1.0` in the YAML, model_id is `cspdarknetv8s` (small) — the model_id takes precedence
 - **Polygon conf in predictions**: `predictions['polygons'][:, :, :, 0]` values are already sigmoid-activated by the detection generator — they are not raw logits. Apply your threshold directly.
 - **Polygon angle is a sub-bin offset**: the `poly_angle` channel is the offset within a bin (`(vertex_angle − bin_start)/angle_step ∈ [0,1)`), **not** a one-hot of the dominant bin. Decode the vertex angle as `(i + sigmoid(pred))·angle_step`; this is consumed in `detection_generator` / `polygon_metrics` / `viz_utils`. (See `losses/polygon_loss.py` for the masked-mean conventions.)
+- **Polygon radial convention is origin − vertex, in grid units**: the parser encodes the radial vector as `center − vertex` (angles are 180° from a vertex−center encoding) and the loss trains `softplus(pred)` toward the radius in the assigned anchor's grid units; every decoder (generator, eval, viz, device_decode) reconstructs `vertex = center − softplus(raw)·(stride/img)·(cos, sin)`. This matches the deployed on-device decoder's convention, so exported poly heads are drop-in for the device.
 - **Geometry lives in the mosaic stage**: `random_perspective` (rotation/scale/shear/translate, clip-to-edge) runs in `mosaic.py` for both the 4-image mosaic and single images; the parser does not apply a separate affine.
-- **Candidate-filter split (legacy convention)**: the mosaic path culls at `mosaic.area_thresh` 0.5 visible-area + 2px `min_side` + AR<20; the non-mosaic single path culls at the parser-level `area_thresh` 0.1 + AR<20 with **no** min_side floor (sub-2px objects keep their labels). The parser's `clip_boxes(min_side=0.0)` is strict-`>` and drops only degenerate zero rows — which is what removes the mosaic stage's `padded_batch` zero-padding.
+- **Candidate-filter split (legacy convention)**: the mosaic path culls at `mosaic.area_thresh` 0.5 visible-area + 2px `min_side` + AR<20; the non-mosaic single path culls at the parser-level `area_thresh` 0.1 + AR<20 with **no** min_side floor (sub-2px objects keep their labels). The parser's `clip_boxes(min_side=0.0)` is strict-`>` and drops only degenerate zero rows — which is what removes the mosaic stage's `padded_batch` zero-padding. The distance stream applies the same clip/degenerate filter (`distance_parser.py`).
+- **Copy-paste placement is the lower band (reference convention)**: the pasted object's top edge lands via `U(0.1, 0.9)·(off_max − off_min) + off_min` with `off_min = H·(1 − height_limit)` — near the floor, where a floor-facing camera actually sees these objects. The resize ratio is adaptively bounded (min size floor + full containment guaranteed in original-pixel units), and the paste always happens once the probability gate fires.
+- **HSV jitter is multiplicative (quantized torch form)**: per-image gains `1 + U(−1, 1)·[hue, sat, val]` applied in the floored `[180, 255, 255]` HSV domain (`batch_color_aug.apply_hsv_gains`); NOT additive hue/brightness. Same config values as the reference.
+- **`shuffle_files=is_training` on every `tfds.load`** so the shard read order reshuffles each lap of the repeated source streams; **`resize_with_random_method`** (parser key) is consumed by the mosaic stage — mosaic tile resizes draw one of 8 interpolation kernels per resize.
 - **Polygon validity is the `-1.0` sentinel, not non-negativity**: `transform_boxes_polygons` keys vertex validity off `pts[:, :, 0] > -1.0`, **not** `>= 0.0`. Mosaic-canvas overflow can place an in-view object's vertex at a slightly-negative input-normalized coordinate; that is a real vertex and is transformed + **clipped-to-edge** (like the box GT for the same overflow), not dropped as padding. Only the reserved `-1.0` (see design register entry 10) is treated as "no vertex". This keeps polygon GT consistent with box GT.
 - **Mosaic is G-in/(G//R)-out** (`group_size`=32, `decodes_per_output`=R, default 1 → 32 outputs): each `padded_batch(group_size)` group emits `group_size // R` samples. Each output independently flips `mosaic_frequency` (per-output, not per-group → exact per-sample frequency, no batch clustering); a mosaic draws 4 source images from one per-group `tf.random.shuffle` at **Sidon-set shifts** (`_SIDON_SHIFTS` in `mosaic.py`): R=4 uses the contiguous window {0,1,2,3}, which tiles the permutation (4 distinct images, zero cross-output reuse = stock YOLO); at R<4 each image recurs in exactly 4/R outputs but any two outputs of a group share **at most one** source image (the earlier contiguous window SLID at R<4 — adjacent outputs shared 3/4 sources at R=1, ~82 near-duplicate pairs per 128-batch measured). R<4's remaining trade-off is volume (an epoch consumes R/4 as many distinct images), not correlation. Epoch step count is unchanged by R. See `data_pipeline/mosaic.py`.
 - **`padded_batch(group_size)` uses explicit `padding_values`**: `input_reader` pins a per-key padding dict over the decoder element spec. Critically `groundtruth_polygons` pads with **`-1.0`** (the sentinel) — the default `0.0` is a valid top-left vertex coordinate, so 0-padded rows would read as real vertices and corrupt the radial target. Every other key gets its natural empty (image 0, strings `''`, ints 0, boxes/area/dists 0.0, `is_crowd` False). Keyed by name so it is robust to spec reordering.

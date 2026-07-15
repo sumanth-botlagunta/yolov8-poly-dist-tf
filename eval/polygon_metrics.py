@@ -83,8 +83,11 @@ def _radial_to_cartesian(
     if offsets is not None:
         idx = idx + np.asarray(offsets, dtype=np.float32)
     angles = idx * angle_step
-    xs = (cx_n + radii * np.cos(angles)) * w
-    ys = (cy_n + radii * np.sin(angles)) * h
+    # Reference convention: the radial vector is origin − vertex, so the
+    # vertex reconstructs as center MINUS r·(cos, sin). Both the GT encoding
+    # (parser) and the prediction decode follow this convention.
+    xs = (cx_n - radii * np.cos(angles)) * w
+    ys = (cy_n - radii * np.sin(angles)) * h
     return np.stack([xs, ys], axis=1)   # [N, 2]
 
 

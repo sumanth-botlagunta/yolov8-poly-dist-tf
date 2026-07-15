@@ -54,17 +54,22 @@ def _make_pred_poly_24x3(r: float) -> np.ndarray:
 
 class TestRadialToCartesian(unittest.TestCase):
     def test_circle_first_vertex_at_right(self):
-        """Vertex 0 angle = 0 → ((cx_n + r) * W, cy_n * H)."""
+        """Vertex 0 angle = 0 → ((cx_n - r) * W, cy_n * H).
+
+        Reference convention: the radial vector is origin − vertex, so the
+        vertex reconstructs as center MINUS r·(cos, sin) — at angle 0 the
+        vertex sits to the LEFT of center, not the right.
+        """
         # center (0.5, 0.5) normalized, r = 0.1 normalized, 100x100 px
         verts = _radial_to_cartesian(0.5, 0.5, _uniform_radii(0.1), _W, _H)
-        self.assertAlmostEqual(float(verts[0, 0]), 60.0, places=4)
+        self.assertAlmostEqual(float(verts[0, 0]), 40.0, places=4)
         self.assertAlmostEqual(float(verts[0, 1]), 50.0, places=4)
 
     def test_non_square_scales_axes_independently(self):
         """A normalized radius scales by W on x and H on y separately."""
         verts = _radial_to_cartesian(0.5, 0.5, _uniform_radii(0.1), 200, 100)
-        # vertex 0 (angle 0): x = (0.5 + 0.1)*200 = 120, y = 0.5*100 = 50
-        self.assertAlmostEqual(float(verts[0, 0]), 120.0, places=4)
+        # vertex 0 (angle 0): x = (0.5 - 0.1)*200 = 80, y = 0.5*100 = 50
+        self.assertAlmostEqual(float(verts[0, 0]), 80.0, places=4)
         self.assertAlmostEqual(float(verts[0, 1]),  50.0, places=4)
 
 

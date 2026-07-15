@@ -140,7 +140,11 @@ def _per_image_preds(predictions, i):
 
 
 def _poly_vertices_norm(poly_24x3, cxn, cyn, conf_thresh):
-    """Decode a radial polygon [24,(conf,dist,angle)] to model-normalized (x,y) vertices."""
+    """Decode a radial polygon [24,(conf,dist,angle)] to model-normalized (x,y) vertices.
+
+    Reference convention: the radial vector is origin − vertex, so each vertex
+    is center MINUS r·(cos, sin).
+    """
     bin_w = 2.0 * math.pi / _N_VERTS
     pts = []
     for i in range(_N_VERTS):
@@ -150,7 +154,7 @@ def _poly_vertices_norm(poly_24x3, cxn, cyn, conf_thresh):
         d = max(0.0, float(poly_24x3[i, 1]))
         off = float(poly_24x3[i, 2])
         ang = (i + off) * bin_w
-        pts.append((cxn + d * math.cos(ang), cyn + d * math.sin(ang)))
+        pts.append((cxn - d * math.cos(ang), cyn - d * math.sin(ang)))
     return pts
 
 

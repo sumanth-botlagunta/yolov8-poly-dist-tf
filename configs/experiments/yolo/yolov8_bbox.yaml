@@ -58,6 +58,9 @@ task:
     detection_generator:
       max_boxes: 300
       nms_thresh: 0.65
+      # Pre-NMS score floor (the legacy value). Only affects sub-0.05
+      # detections in the mAP tail; F1score50 sweeps from 0.10 regardless.
+      score_thresh: 0.001
 
   losses:
     # Positive weighting scheme: soft = per-anchor target_scores weighting /

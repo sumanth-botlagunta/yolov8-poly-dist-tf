@@ -181,6 +181,47 @@ def letterbox_resize(
     return image, boxes, polygons
 
 
+_RESIZE_METHODS = ('bilinear', 'lanczos3', 'lanczos5', 'bicubic', 'gaussian',
+                   'nearest', 'area', 'mitchellcubic')
+
+
+def resize_with_random_method(
+    image: tf.Tensor,
+    new_height: tf.Tensor,
+    new_width: tf.Tensor,
+) -> tf.Tensor:
+    """Resize with a uniformly drawn interpolation kernel.
+
+    Draws one of the eight ``tf.image.resize`` methods per call — an implicit
+    regularizer against interpolation-artifact overfitting (train-only; the
+    reference pipeline applies it to mosaic-branch resizes).
+
+    Args:
+        image: [H, W, C] any numeric dtype.
+        new_height: scalar int target height.
+        new_width: scalar int target width.
+
+    Returns:
+        float32 [new_height, new_width, C].
+    """
+    image = tf.cast(image, tf.float32)
+    lo = tf.reduce_min(image)
+    hi = tf.reduce_max(image)
+    method_index = tf.random.uniform(
+        shape=[], minval=0, maxval=len(_RESIZE_METHODS), dtype=tf.int32)
+    branches = [
+        (tf.equal(method_index, i),
+         lambda m=m: tf.image.resize(image, [new_height, new_width], method=m))
+        for i, m in enumerate(_RESIZE_METHODS)
+    ]
+    out = tf.case(branches, exclusive=True)
+    # Overshooting kernels (bicubic/lanczos/mitchellcubic) can ring past the
+    # input range; a later cast to uint8 WRAPS (mod 256) rather than
+    # saturating, turning overshot bright edges into near-black speckle.
+    # Clamp to the input's own range so every kernel is safe to cast.
+    return tf.clip_by_value(out, lo, hi)
+
+
 def random_horizontal_flip(
     image: tf.Tensor,
     boxes: tf.Tensor,
@@ -800,26 +841,38 @@ def hsv_augment(
     sat: float = 0.7,
     val: float = 0.4,
 ) -> tf.Tensor:
-    """Random HSV jitter.
+    """Random HSV jitter, PyTorch-YOLO form (multiplicative, quantized domain).
+
+    Reference math: per-channel gains ``r = 1 + U(-1, 1)·[hue, sat, val]`` are
+    applied in the integer-quantized HSV domain::
+
+        x = floor(rgb_to_hsv(image) * [180, 255, 255])
+        x = floor(x * r)
+        h %= 180; s, v clipped to [0, 255]
+        image = hsv_to_rgb(x / [180, 255, 255])
+
+    All three channels — including hue — are scaled multiplicatively; this is
+    NOT the additive hue-rotation / additive-brightness form.
 
     Args:
         image: float32 [H, W, 3] in [0, 1].
-        hue:   max hue delta (fraction of full hue circle).
-        sat:   saturation multiplicative range: [1−sat, 1+sat].
-        val:   brightness additive range: ±val.
+        hue:   hue gain half-range.
+        sat:   saturation gain half-range.
+        val:   brightness (value) gain half-range.
 
     Returns:
         float32 [H, W, 3] in [0, 1].
     """
-    if hue > 0.0:
-        image = tf.image.random_hue(image, hue)
-    if sat > 0.0:
-        # Ultralytics convention: gain ∈ [1−sat, 1+sat]. Kept equal to the
-        # per-batch HSV path (batch_color_aug) so both streams see the same
-        # saturation distribution for one config value.
-        sat_lower = max(0.0, 1.0 - sat)
-        sat_upper = 1.0 + sat
-        image = tf.image.random_saturation(image, sat_lower, sat_upper)
-    if val > 0.0:
-        image = tf.image.random_brightness(image, val)
-    return tf.clip_by_value(image, 0.0, 1.0)
+    if hue <= 0.0 and sat <= 0.0 and val <= 0.0:
+        return image
+    scale = tf.constant([180.0, 255.0, 255.0], tf.float32)
+    r = tf.random.uniform([3], -1.0, 1.0) * tf.constant([hue, sat, val]) + 1.0
+    x = tf.image.rgb_to_hsv(image)
+    x = tf.math.floor(x * scale)
+    x = tf.math.floor(x * r)
+    h, s, v = tf.split(x, 3, axis=-1)
+    h = h % 180.0
+    s = tf.clip_by_value(s, 0.0, 255.0)
+    v = tf.clip_by_value(v, 0.0, 255.0)
+    x = tf.concat([h, s, v], axis=-1) / scale
+    return tf.image.hsv_to_rgb(x)
