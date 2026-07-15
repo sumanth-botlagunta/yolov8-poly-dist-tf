@@ -52,9 +52,9 @@ Configuration (parser.mosaic in the experiment YAML):
     shear: 0.0               (shear ±, degrees; 0 = no shear)
     perspective: 0.0         (perspective coefficient ±; 0 disables)
     translate: 0.1           (translation ± as a fraction of output size)
-    area_thresh: 0.1         (min visible box-area fraction to keep; stricter
-                              values delete clipped objects whose pixels remain
-                              visible, training the model to suppress partials)
+    area_thresh: 0.5         (min visible box-area fraction to keep on the
+                              MOSAIC path — the legacy mosaic value; the single
+                              path filters at the parser-level 0.1 instead)
 
 Classes:
     Mosaic: manages both Mosaic and MixUp augmentations.
@@ -154,8 +154,9 @@ def _scale_box_poly_to_canvas(
 
 # _PAD_SPEC (defined below): how each per-instance (axis-0 = N) annotation field
 # is padded to the group-max instance count before stacking. (key, pad_value)
-#   - boxes pad with zero rows: the parser's clip_boxes min_side filter drops
-#     zero boxes (including after flip), so they never train.
+#   - boxes pad with zero rows: the parser's clip_boxes degenerate-row filter
+#     (strict > 0 on both sides) drops zero boxes (including after flip), so
+#     they never train.
 #   - polygons pad with -1.0 rows (the invalid-vertex sentinel).
 #   - classes/dontcare pad 0; is_crowd pad False (crowd filtering is
 #     config-conditional in the parser); area/dists pad 0.0.
@@ -247,7 +248,7 @@ class Mosaic:
         mosaic_center: float = 0.25,
         aug_scale_min: float = 0.5,
         aug_scale_max: float = 1.5,
-        area_thresh: float = 0.1,
+        area_thresh: float = 0.5,
         with_polygons: bool = True,
         degrees: float = 0.0,
         shear: float = 0.0,
@@ -320,9 +321,9 @@ class Mosaic:
             single_scale_max if single_scale_max is not None else aug_scale_max)
         self._single_translate = (
             single_translate if single_translate is not None else translate)
-        # Both warps cull at the reference candidate-filter value (0.1); the
-        # single-image warp reads the parser-level area_thresh so the two
-        # paths remain independently configurable.
+        # The mosaic warp culls at area_thresh (0.5 — the legacy mosaic value);
+        # the single-image warp reads the parser-level area_thresh (0.1) via
+        # single_area_thresh, so the two paths remain independently configurable.
         self._single_area_thresh = (
             single_area_thresh if single_area_thresh is not None else area_thresh)
         # Flip ownership: when True, this module flips — each mosaic tile
@@ -465,13 +466,15 @@ class Mosaic:
         scale_max: Optional[float] = None,
         translate: Optional[float] = None,
         area_thresh: Optional[float] = None,
+        min_side: float = 0.003,
     ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """random_perspective with this module's params → output size.
 
         The warp never rotates (degrees/rotate_prob forced to 0); single-path
         rotation is the separate optional pre-warp step. The scale gain is drawn
         from the [aug_scale_min, aug_scale_max] bounds, or the per-call override
-        (the single path passes its own bounds/translate).
+        (the single path passes its own bounds/translate, and min_side=0.0 —
+        the 2px size floor is mosaic-only).
         """
         return random_perspective(
             image, boxes, polygons,
@@ -485,6 +488,7 @@ class Mosaic:
             area_thresh=(self._area_thresh if area_thresh is None
                          else area_thresh),
             rotate_prob=0.0,
+            min_side=min_side,
         )
 
     def _rotate_image_boxes_polys(
@@ -579,6 +583,10 @@ class Mosaic:
             scale_max=self._single_scale_max,
             translate=self._single_translate,
             area_thresh=self._single_area_thresh,
+            # Legacy convention: the ~2px min_side floor applies on the mosaic
+            # branch only; non-mosaic images keep sub-2px objects' labels. A
+            # fully warped-out box still drops via the zero-area ratio term.
+            min_side=0.0,
         )
         anns = self._filtered_anns(ex, boxes_out, polys_out, keep)
         anns['image']  = img_out

@@ -154,3 +154,60 @@ def test_unknown_weighting_rejected_at_construction():
     import pytest
     with pytest.raises(ValueError, match="weighting"):
         TaskAlignedLossExtended(weighting="hard")
+
+
+# ---- CIoU alpha coefficient carries no gradient (reference: no-grad alpha) ----
+
+def test_ciou_alpha_is_not_differentiated():
+    """grad(_bbox_iou_loss ciou) must equal the frozen-alpha gradient (alpha is
+    a constant weighting coefficient), differ from the flowing-alpha gradient,
+    and leave the forward value unchanged."""
+    import math
+
+    eps = 1e-7
+    b2 = tf.constant([[0.2, 0.2, 0.8, 0.6]], tf.float32)        # target
+    b1v = tf.Variable([[0.25, 0.15, 0.75, 0.70]], tf.float32)   # pred, aspect differs
+
+    def _terms(b1):
+        ix1 = tf.maximum(b1[..., 0], b2[..., 0]); iy1 = tf.maximum(b1[..., 1], b2[..., 1])
+        ix2 = tf.minimum(b1[..., 2], b2[..., 2]); iy2 = tf.minimum(b1[..., 3], b2[..., 3])
+        inter = tf.maximum(ix2 - ix1, 0.0) * tf.maximum(iy2 - iy1, 0.0)
+        a1 = (b1[..., 2] - b1[..., 0]) * (b1[..., 3] - b1[..., 1])
+        a2 = (b2[..., 2] - b2[..., 0]) * (b2[..., 3] - b2[..., 1])
+        union = a1 + a2 - inter + eps
+        iou = inter / union
+        cx1 = (b1[..., 0] + b1[..., 2]) * 0.5; cy1 = (b1[..., 1] + b1[..., 3]) * 0.5
+        cx2 = (b2[..., 0] + b2[..., 2]) * 0.5; cy2 = (b2[..., 1] + b2[..., 3]) * 0.5
+        rho2 = tf.square(cx1 - cx2) + tf.square(cy1 - cy2)
+        ex1 = tf.minimum(b1[..., 0], b2[..., 0]); ey1 = tf.minimum(b1[..., 1], b2[..., 1])
+        ex2 = tf.maximum(b1[..., 2], b2[..., 2]); ey2 = tf.maximum(b1[..., 3], b2[..., 3])
+        c2 = tf.square(ex2 - ex1) + tf.square(ey2 - ey1) + eps
+        w1 = b1[..., 2] - b1[..., 0]; h1 = b1[..., 3] - b1[..., 1]
+        w2 = b2[..., 2] - b2[..., 0]; h2 = b2[..., 3] - b2[..., 1]
+        v = (4.0 / (math.pi ** 2)) * tf.square(
+            tf.math.atan2(w2, h2 + eps) - tf.math.atan2(w1, h1 + eps))
+        return iou, rho2, c2, v
+
+    with tf.GradientTape() as tape:
+        loss = tf.reduce_sum(_bbox_iou_loss(b1v, b2, "ciou"))
+    got = tape.gradient(loss, b1v)
+
+    # Reference: same formula with alpha precomputed OUTSIDE the tape.
+    iou0, _, _, v0 = _terms(tf.constant(b1v.numpy()))
+    alpha_const = v0 / (1.0 - iou0 + v0 + eps)
+    with tf.GradientTape() as tape:
+        iou, rho2, c2, v = _terms(b1v)
+        ref_loss = tf.reduce_sum(1.0 - (iou - rho2 / c2 - alpha_const * v))
+    ref = tape.gradient(ref_loss, b1v)
+    np.testing.assert_allclose(got.numpy(), ref.numpy(), rtol=1e-5, atol=1e-7)
+
+    # It must DIFFER from the flowing-alpha gradient (guards the stop_gradient).
+    with tf.GradientTape() as tape:
+        iou, rho2, c2, v = _terms(b1v)
+        alpha_flow = v / (1.0 - iou + v + eps)
+        flow_loss = tf.reduce_sum(1.0 - (iou - rho2 / c2 - alpha_flow * v))
+    flow = tape.gradient(flow_loss, b1v)
+    assert float(tf.reduce_max(tf.abs(flow - got))) > 1e-6
+
+    # Forward value is unchanged by the stop.
+    assert abs(float(ref_loss) - float(loss)) < 1e-6

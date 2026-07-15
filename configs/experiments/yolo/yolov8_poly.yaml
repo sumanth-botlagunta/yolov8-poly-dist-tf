@@ -61,10 +61,11 @@ task:
       nms_thresh: 0.65
 
   losses:
-    # Positive weighting scheme: legacy_hard = one-hot cls targets, binary fg
-    # weighting, num_objs normalizer (the recipe the production gains were
-    # tuned for). soft = per-anchor target_scores weighting / target_scores_sum.
-    weighting: legacy_hard
+    # Positive weighting scheme: soft = per-anchor target_scores weighting /
+    # target_scores_sum normalizer (the reference recipe; matches the legacy
+    # codebase). legacy_hard = one-hot cls targets, binary fg weighting,
+    # num_objs normalizer (kept selectable for A/B).
+    weighting: soft
     iou_gain: 7.5
     cls_gain: 0.5
     dfl_gain: 1.5
@@ -138,9 +139,11 @@ task:
         tile_crop_min: 0.0
         tile_crop_max: 0.0
         mosaic_crop_mode: scale
-        # reference candidate-filter value; the single-image path uses the
-        # parser-level area_thresh wired via single_area_thresh
-        area_thresh: 0.1
+        # Mosaic-path candidate filter (legacy mosaic value): a box keeps its
+        # label only if >= 50% of its area stays visible after the canvas warp.
+        # The single-image path uses the parser-level area_thresh (0.1) wired
+        # via single_area_thresh.
+        area_thresh: 0.5
         jitter: 0.0
         group_size: 32
         decodes_per_output: 1   # R: 1 = each decode reused in 4 outputs (Sidon, <=1 shared source); 4 = stock-YOLO no-reuse at 4x decode cost

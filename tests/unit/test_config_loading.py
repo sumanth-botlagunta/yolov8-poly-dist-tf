@@ -163,12 +163,12 @@ class TestValidateConfigGuards(unittest.TestCase):
 
 
 class TestWeightingConfig(unittest.TestCase):
-    """losses.weighting: tier YAMLs run legacy_hard; the dataclass default is soft."""
+    """losses.weighting: tier YAMLs run soft (the legacy recipe); default is soft."""
 
-    def test_tier_yamls_select_legacy_hard(self):
+    def test_tier_yamls_select_soft(self):
         for tier in ("yolov8_bbox", "yolov8_poly", "yolov8_poly_dist"):
             cfg = load_config(os.path.join(_EXP_DIR, f"{tier}.yaml"))
-            self.assertEqual(cfg.task.losses.weighting, "legacy_hard", tier)
+            self.assertEqual(cfg.task.losses.weighting, "soft", tier)
 
     def test_default_without_key_is_soft(self):
         from configs.model_config import LossConfig

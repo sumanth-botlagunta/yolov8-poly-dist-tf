@@ -72,7 +72,7 @@ normalization conventions.
 | `poly_dist_gain` / `poly_angle_gain` / `poly_conf_gain` | 0.45 / 0.4 / 0.2 | Polygon sub-losses. |
 | `poly_gain` | 0.5 | Overall multiplier on the summed polygon loss. |
 | `tal_alpha` / `tal_beta` / `topk` | 0.5 / 6.0 / 10 | Alignment metric `score^α × IoU^β`, top-k. |
-| `weighting` | `soft` | Positive weighting for box/DFL/cls: `soft` (target_scores weight, `target_scores_sum` normalizer) · `legacy_hard` (one-hot cls targets, binary fg weight, `num_objs` normalizer — what the tier YAMLs run). |
+| `weighting` | `soft` | Positive weighting for box/DFL/cls: `soft` (target_scores weight, `target_scores_sum` normalizer — what the tier YAMLs run) · `legacy_hard` (one-hot cls targets, binary fg weight, `num_objs` normalizer; selectable for A/B). |
 | `box_iou_type` | `ciou` | Box regression loss: `ciou` (default) · `giou` · `diou` · `eiou` · `siou`. |
 | `cls_loss_type` | `bce` | Classification loss: `bce` (default) · `focal` · `varifocal`. |
 | `label_smoothing` | `0.0` | Softens BCE targets (0 = off). |

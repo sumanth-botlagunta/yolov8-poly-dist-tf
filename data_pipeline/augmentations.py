@@ -635,7 +635,9 @@ def clip_boxes(
 
     Args:
         boxes:    float32 [N, 4] yxyx.
-        min_side: minimum side length (normalised) to keep a box (0.003 ~ 2px at 672).
+        min_side: minimum side length (normalised, strict >) to keep a box.
+                  0.0 keeps every box with positive area on both sides and
+                  drops only degenerate zero-size rows.
 
     Returns:
         (clipped_boxes [N, 4], keep_mask [N] bool)
@@ -643,7 +645,10 @@ def clip_boxes(
     boxes_clipped = tf.clip_by_value(boxes, 0.0, 1.0)
     h = boxes_clipped[:, 2] - boxes_clipped[:, 0]
     w = boxes_clipped[:, 3] - boxes_clipped[:, 1]
-    keep = tf.logical_and(h >= min_side, w >= min_side)
+    # Strict > so min_side=0.0 means "degenerate rows only": zero-size rows
+    # (notably the mosaic stage's padded_batch zero-padding) are dropped while
+    # every box with positive area on both sides survives.
+    keep = tf.logical_and(h > min_side, w > min_side)
     return boxes_clipped, keep
 
 

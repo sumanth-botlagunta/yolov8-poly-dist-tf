@@ -151,7 +151,12 @@ def _bbox_iou_loss(b1: tf.Tensor, b2: tf.Tensor, iou_type: str = "ciou",
     v = (4.0 / (math.pi ** 2)) * tf.square(
         tf.math.atan2(w2, h2 + eps) - tf.math.atan2(w1, h1 + eps)
     )
-    alpha_v = v / (1.0 - iou + v + eps)
+    # alpha is a constant weighting coefficient, not a differentiated term (the
+    # reference recipe computes it under no-grad). Without the stop, the
+    # aspect-penalty gradient is inflated up to ~2x and a spurious positive
+    # gradient path opens through alpha's IoU dependence, braking IoU
+    # improvement whenever the aspect ratios disagree. Forward value unchanged.
+    alpha_v = tf.stop_gradient(v / (1.0 - iou + v + eps))
     ciou = iou - rho2 / c2 - alpha_v * v
     return 1.0 - ciou
 

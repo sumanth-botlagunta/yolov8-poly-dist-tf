@@ -926,8 +926,9 @@ if __name__ == "__main__":
 
 
 def test_candidate_filter_legacy_parity():
-    """Legacy-parity candidate filter: mosaic path culls at 0.5, single path
-    keeps boxes down to 10% visible area + 2px sides + aspect ratio < 20."""
+    """Legacy-parity candidate filter: mosaic path culls at 0.5 area + 2px
+    sides; single path culls at 0.1 area with NO min_side floor. Aspect
+    ratio < 20 applies on both paths."""
     import tensorflow as tf
     from configs.yaml_loader import load_config
     from data_pipeline.augmentations import transform_boxes_polygons
@@ -935,14 +936,13 @@ def test_candidate_filter_legacy_parity():
 
     for tier in ('yolov8_bbox', 'yolov8_poly', 'yolov8_poly_dist'):
         cfg = load_config(f'configs/experiments/yolo/{tier}.yaml')
-        # Both paths cull at the reference candidate-filter value: a stricter
-        # mosaic threshold deletes labels of large objects whose pixels stay
-        # visible, training the model to suppress partially-visible objects.
-        assert cfg.task.train_data.parser.mosaic.area_thresh == 0.1, tier
+        # Legacy split: mosaic tiles cull at 0.5 visible area, non-mosaic
+        # singles at the parser-level 0.1.
+        assert cfg.task.train_data.parser.mosaic.area_thresh == 0.5, tier
         assert cfg.task.train_data.parser.area_thresh == 0.1, tier
     m = Mosaic([64, 64], area_thresh=0.4, single_area_thresh=0.1)
     assert m._area_thresh == 0.4 and m._single_area_thresh == 0.1
-    assert Mosaic([64, 64])._single_area_thresh == 0.1  # fallback: no split
+    assert Mosaic([64, 64])._single_area_thresh == 0.5  # fallback: no split
 
     # identity warp, box half outside the frame -> ~50% visible: kept at 0.1
     M = tf.eye(3)
@@ -950,7 +950,7 @@ def test_candidate_filter_legacy_parity():
     polys = tf.fill([1, 8], -1.0)
     _, keep, _ = transform_boxes_polygons(boxes, polys, M, 64, 64, 64, 64,
                                           area_thresh=0.1)
-    assert bool(keep[0]), "40-50%-visible box must survive the reference filter"
+    assert bool(keep[0]), "40-50%-visible box must survive the single-path filter"
     _, keep_strict, _ = transform_boxes_polygons(boxes, polys, M, 64, 64, 64, 64,
                                                  area_thresh=0.6)
     assert not bool(keep_strict[0])
@@ -964,4 +964,45 @@ def test_candidate_filter_legacy_parity():
     ok2px = tf.constant([[0.10, 0.10, 0.1035, 0.1035]], tf.float32)  # 0.0035 > 0.003
     _, keep_2px, _ = transform_boxes_polygons(ok2px, tf.fill([1, 8], -1.0),
                                               M, 672, 672, 672, 672)
-    assert bool(keep_2px[0]), "a ~2.4px box must survive the 2px reference floor"
+    assert bool(keep_2px[0]), "a ~2.4px box must survive the 2px mosaic floor"
+    # min_side floor is mosaic-only: at min_side=0.0 (the single path) a sub-2px
+    # box keeps its label.
+    tiny = tf.constant([[0.10, 0.10, 0.1015, 0.1015]], tf.float32)  # ~1px at 672
+    _, keep_tiny_mosaic, _ = transform_boxes_polygons(
+        tiny, tf.fill([1, 8], -1.0), M, 672, 672, 672, 672)
+    assert not bool(keep_tiny_mosaic[0]), "sub-2px box drops on the mosaic path"
+    _, keep_tiny_single, _ = transform_boxes_polygons(
+        tiny, tf.fill([1, 8], -1.0), M, 672, 672, 672, 672, min_side=0.0)
+    assert bool(keep_tiny_single[0]), "sub-2px box survives the single path"
+
+
+def test_single_path_keeps_sub2px_box_and_parser_drops_zero_rows():
+    """The non-mosaic single path applies no min_side floor (legacy), while the
+    parser's clip_boxes still drops the mosaic stage's zero-padding rows."""
+    import tensorflow as tf
+    from data_pipeline.augmentations import clip_boxes
+    from data_pipeline.mosaic import Mosaic
+
+    # Identity-warp single path (scale 1, translate 0): a ~1px box survives.
+    m = Mosaic([672, 672], mosaic_frequency=0.0,
+               single_scale_min=1.0, single_scale_max=1.0, single_translate=0.0,
+               single_area_thresh=0.1)
+    ex = {
+        'image': tf.zeros([672, 672, 3], tf.uint8),
+        'groundtruth_boxes': tf.constant([[0.10, 0.10, 0.1015, 0.1015]], tf.float32),
+        'groundtruth_polygons': tf.fill([1, 8], -1.0),
+        'groundtruth_classes': tf.constant([1], tf.int64),
+        'height': tf.constant(672, tf.int32),
+        'width': tf.constant(672, tf.int32),
+    }
+    out = m._single(ex)
+    assert int(tf.shape(out['groundtruth_boxes'])[0]) == 1, (
+        "sub-2px box must keep its label on the single path")
+
+    # clip_boxes at min_side=0.0 (the parser call): zero rows drop, 1px boxes stay.
+    boxes = tf.constant([
+        [0.0, 0.0, 0.0, 0.0],              # padded_batch zero row -> dropped
+        [0.10, 0.10, 0.1015, 0.1015],      # ~1px at 672 -> kept
+    ], tf.float32)
+    _, keep = clip_boxes(boxes, min_side=0.0)
+    assert not bool(keep[0]) and bool(keep[1])

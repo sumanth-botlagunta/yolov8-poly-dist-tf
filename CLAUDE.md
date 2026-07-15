@@ -83,10 +83,13 @@ Task-Aligned assignment (`losses/tal_assigner.py`): alignment metric = `score^0.
 top-k=10 (guarded: a GT with no positive-alignment candidate gets zero positives — a bare
 `>=` k-th-value compare would flood every in-box anchor of an underfit large object into the
 foreground), spatial (anchor-center-in-box) constraint, max-IoU duplicate resolution.
-`losses.weighting` selects the positive scheme: `soft` = Ultralytics recipe (cls targets
+`losses.weighting` selects the positive scheme: `soft` (set in all tier YAMLs — the reference
+recipe, and what the legacy codebase trained) = cls targets
 `one_hot × (align_norm × pos_overlaps)`, box/DFL weighted by `sum(target_scores, -1)`,
-normalizer `target_scores_sum`); `legacy_hard` (set in all tier YAMLs — the recipe the gains
-were tuned for) = one-hot cls targets, binary fg weight, normalizer `num_objs`.
+normalizer `target_scores_sum`; `legacy_hard` (selectable for A/B) = one-hot cls targets,
+binary fg weight, normalizer `num_objs`. The CIoU α (aspect-penalty) coefficient is
+**stop-gradient'd** in the box loss — a constant weighting term, per the reference no-grad
+convention.
 
 Loss gains from config: iou=7.5, cls=0.5, dfl=1.5, dist=1.0, poly_dist=0.45, poly_angle=0.4,
 poly_conf=0.2, with an overall `poly_gain` multiplier (default 0.5) applied to the summed
@@ -95,13 +98,13 @@ polygon loss.
 The box and cls losses are **config-selectable** (`losses/tal_loss.py`): `losses.box_iou_type`
 = `ciou` (default) / `giou` / `diou` / `eiou` / `siou`; `losses.cls_loss_type` = `bce` (default) /
 `focal` / `varifocal`; `losses.label_smoothing` (default 0); `losses.weighting` = `soft`
-(dataclass default) / `legacy_hard` (tier YAMLs). Code defaults reproduce the CIoU+BCE soft
+(dataclass default AND tier YAMLs) / `legacy_hard`. Code defaults reproduce the CIoU+BCE soft
 path byte-identically. Polygon/distance losses are unchanged by `weighting`.
 
 **Loss normalization conventions** (`losses/tal_loss.py`, `losses/polygon_loss.py`):
-- Box CIoU, DFL, and cls: under `weighting: soft` they divide by
+- Box CIoU, DFL, and cls: under `weighting: soft` (tier YAMLs) they divide by
   `target_scores_sum = max(sum(target_scores), 1)` with box/DFL additionally weighted
-  per-anchor by `sum(target_scores, -1)`; under `legacy_hard` (tier YAMLs) all three divide
+  per-anchor by `sum(target_scores, -1)`; under `legacy_hard` all three divide
   by `num_objs` with binary foreground weighting and one-hot cls targets.
 - Distance L1 divides by `num_objs` (total GT object count in the batch, both detection and
   distance streams). The valid-sentinel mask (`gt_distance > -10.0`) is applied to the
@@ -235,6 +238,7 @@ Run with `/test` or `pytest tests/unit tests/smoke -v`.
 - **Polygon conf in predictions**: `predictions['polygons'][:, :, :, 0]` values are already sigmoid-activated by the detection generator — they are not raw logits. Apply your threshold directly.
 - **Polygon angle is a sub-bin offset**: the `poly_angle` channel is the offset within a bin (`(vertex_angle − bin_start)/angle_step ∈ [0,1)`), **not** a one-hot of the dominant bin. Decode the vertex angle as `(i + sigmoid(pred))·angle_step`; this is consumed in `detection_generator` / `polygon_metrics` / `viz_utils`. (See `losses/polygon_loss.py` for the masked-mean conventions.)
 - **Geometry lives in the mosaic stage**: `random_perspective` (rotation/scale/shear/translate, clip-to-edge) runs in `mosaic.py` for both the 4-image mosaic and single images; the parser does not apply a separate affine.
+- **Candidate-filter split (legacy convention)**: the mosaic path culls at `mosaic.area_thresh` 0.5 visible-area + 2px `min_side` + AR<20; the non-mosaic single path culls at the parser-level `area_thresh` 0.1 + AR<20 with **no** min_side floor (sub-2px objects keep their labels). The parser's `clip_boxes(min_side=0.0)` is strict-`>` and drops only degenerate zero rows — which is what removes the mosaic stage's `padded_batch` zero-padding.
 - **Polygon validity is the `-1.0` sentinel, not non-negativity**: `transform_boxes_polygons` keys vertex validity off `pts[:, :, 0] > -1.0`, **not** `>= 0.0`. Mosaic-canvas overflow can place an in-view object's vertex at a slightly-negative input-normalized coordinate; that is a real vertex and is transformed + **clipped-to-edge** (like the box GT for the same overflow), not dropped as padding. Only the reserved `-1.0` (see design register entry 10) is treated as "no vertex". This keeps polygon GT consistent with box GT.
 - **Mosaic is G-in/(G//R)-out** (`group_size`=32, `decodes_per_output`=R, default 1 → 32 outputs): each `padded_batch(group_size)` group emits `group_size // R` samples. Each output independently flips `mosaic_frequency` (per-output, not per-group → exact per-sample frequency, no batch clustering); a mosaic draws 4 source images from one per-group `tf.random.shuffle` at **Sidon-set shifts** (`_SIDON_SHIFTS` in `mosaic.py`): R=4 uses the contiguous window {0,1,2,3}, which tiles the permutation (4 distinct images, zero cross-output reuse = stock YOLO); at R<4 each image recurs in exactly 4/R outputs but any two outputs of a group share **at most one** source image (the earlier contiguous window SLID at R<4 — adjacent outputs shared 3/4 sources at R=1, ~82 near-duplicate pairs per 128-batch measured). R<4's remaining trade-off is volume (an epoch consumes R/4 as many distinct images), not correlation. Epoch step count is unchanged by R. See `data_pipeline/mosaic.py`.
 - **`padded_batch(group_size)` uses explicit `padding_values`**: `input_reader` pins a per-key padding dict over the decoder element spec. Critically `groundtruth_polygons` pads with **`-1.0`** (the sentinel) — the default `0.0` is a valid top-left vertex coordinate, so 0-padded rows would read as real vertices and corrupt the radial target. Every other key gets its natural empty (image 0, strings `''`, ints 0, boxes/area/dists 0.0, `is_crowd` False). Keyed by name so it is robust to spec reordering.

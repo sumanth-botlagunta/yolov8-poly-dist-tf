@@ -143,11 +143,16 @@ class V8ParserExtended(Parser):
         #    single-image branches, so the parser applies no affine here (doing so
         #    would double-warp). The image already arrives at output_size.
 
-        # 4. Clip boxes; filter degenerate and too-small boxes
+        # 4. Clip boxes; drop degenerate rows. min_side=0.0 (strict >) removes
+        #    only zero-size rows — notably the mosaic stage's padded_batch
+        #    zero-padding. The 2px min_side filter applies on the MOSAIC branch
+        #    only (legacy convention: non-mosaic images are not size-filtered);
+        #    the area-ratio and aspect filters run in the mosaic-stage warps
+        #    for both paths.
         pre_areas = (
             (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
         )
-        boxes, keep = clip_boxes(boxes)
+        boxes, keep = clip_boxes(boxes, min_side=0.0)
         if self._area_thresh > 0.0:
             post_areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
             ratio_ok = (post_areas / tf.maximum(pre_areas, 1e-6)) >= self._area_thresh
