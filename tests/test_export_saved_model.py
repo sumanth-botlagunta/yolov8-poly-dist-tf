@@ -231,3 +231,26 @@ def test_box_dfl_decode_matches_reference(exported):
 
     assert tuple(out["box"].shape) == (N_ANCHORS, 4)
     np.testing.assert_allclose(out["box"].numpy(), box_ref, rtol=1e-3, atol=1e-2)
+
+
+def test_list_images_recurses_and_dedupes(tmp_path):
+    """_list_images must find images at any nesting depth, dedupe the
+    case-insensitive extension double-match, and return a sorted list."""
+    from utils.export.inference_saved_model import _list_images
+
+    (tmp_path / "a" / "b" / "c").mkdir(parents=True)
+    files = [
+        tmp_path / "top.jpg",
+        tmp_path / "a" / "mid.PNG",
+        tmp_path / "a" / "b" / "deep.jpeg",
+        tmp_path / "a" / "b" / "c" / "deepest.webp",
+    ]
+    for f in files:
+        f.write_bytes(b"\x00")
+    (tmp_path / "a" / "notes.txt").write_text("not an image")
+
+    got = _list_images(str(tmp_path))
+    assert got == sorted(str(f) for f in files)
+    assert len(got) == len(set(got)), "no duplicates from case-pattern overlap"
+    # single-file input passes through
+    assert _list_images(str(files[0])) == [str(files[0])]

@@ -39,6 +39,7 @@ Usage:
 
 import logging
 import os
+import time
 
 from absl import app, flags
 import tensorflow as tf
@@ -161,6 +162,8 @@ def main(_):
     with_poly  = model_cfg.with_polygons
     with_dist  = model_cfg.with_distance
 
+    t0 = time.time()
+    log.info("Building model at %dx%d...", H, W)
     model = build_yolov8(model_cfg)
     model.deploy = False                 # raw head dict, NOT the NMS/deploy path
     # Fixed-size export: use compile-time-constant FPN upsample sizes so the graph has
@@ -175,7 +178,8 @@ def main(_):
     _force_float32_policy()
 
     kind = restore_eval_weights(model, FLAGS.checkpoint)
-    log.info("Checkpoint restored (%s weights): %s", kind, FLAGS.checkpoint)
+    log.info("Checkpoint restored (%s weights) in %.1fs total: %s",
+             kind, time.time() - t0, FLAGS.checkpoint)
 
     do_norm = FLAGS.normalize
 
@@ -208,8 +212,11 @@ def main(_):
     # in a StatefulPartitionedCall and renames the outputs to Identity:0.. — so we
     # freeze (inline + variables→constants), promote each tagged op to a clean
     # top-level Identity, and re-emit a v1 SavedModel with those top-level nodes.
+    t0 = time.time()
+    log.info("Freezing + writing the SavedModel (function inlining, variables->constants, "
+             "graph optimization — typically the longest phase)...")
     _save_named_savedmodel(serving_fn, head_names, FLAGS.output_dir)
-    log.info("Device SavedModel written to %s", FLAGS.output_dir)
+    log.info("Device SavedModel written in %.1fs to %s", time.time() - t0, FLAGS.output_dir)
 
     # Log the concrete output shapes (the SNPE/.raw element counts).
     n_anchors = sum((H // s) * (W // s) for s in (8, 16, 32))

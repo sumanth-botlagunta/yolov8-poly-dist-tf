@@ -79,11 +79,14 @@ python -m utils.confusion_matrix --config configs/experiments/yolo/yolov8_poly_d
     --checkpoint /run/ckpt-100000 --split val --output_csv /tmp/cm.csv --output_png /tmp/cm.png
 ```
 
-### `python -m utils.export.inference_saved_model` — folder inference: predictions JSON + visuals
-Loads a checkpoint **or** a SavedModel and runs over a folder of images, emitting a COCO-style
-predictions JSON and/or annotated images, in the model-input or original-image coordinate space.
-- `--config` + `--checkpoint`, **or** `--saved_model` (one source required).
-- `--images` (req) — an image file or a directory of images.
+### `python -m utils.export.inference_saved_model` — inference over images or a TFDS split: predictions JSON + visuals
+Loads a checkpoint **or** a SavedModel and runs over a folder of images (recursive) or a TFDS
+split, emitting a COCO-style predictions JSON and/or annotated images, in the model-input or
+original-image coordinate space.
+- `--config` + `--checkpoint`, **or** `--saved_model` (one model source required).
+- `--images` — an image file or a directory (searched recursively), **or** `--tfds_split` —
+  a TFDS split (e.g. `test`) read via the config's `validation_data` (needs `--config`);
+  `image_id` = the TFDS `image/id`, directly scoreable against the GT annotations.
 - `--emit` — `visual` | `json` | `both` (default `both`).
 - `--draw_on` — `original` (map detections back to source pixels, default) | `model` (the exported 672/416 size).
 - `--output_dir` — where annotated PNGs + `predictions.json` are written. `--predictions_json` overrides the JSON path.
@@ -95,6 +98,9 @@ predictions JSON and/or annotated images, in the model-input or original-image c
 ```bash
 python -m utils.export.inference_saved_model --saved_model /export/saved_model --images /imgs \
     --output_dir /tmp/out --emit both --draw_on original
+python -m utils.export.inference_saved_model --saved_model /export/saved_model \
+    --config configs/experiments/yolo/yolov8_poly_dist.yaml --tfds_split test \
+    --emit json --score 0.05 --output_dir /tmp/dev_preds
 ```
 
 ## Export

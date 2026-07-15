@@ -1,7 +1,10 @@
-"""Run a trained model (checkpoint or exported SavedModel) on a folder of images.
+"""Run a trained model (checkpoint or exported SavedModel) over images or a TFDS split.
 
-Point it at a checkpoint (+config) or an exported SavedModel plus a file/folder of
-images; per image it produces:
+Point it at a checkpoint (+config) or an exported SavedModel, plus either a
+file/folder of images (--images, searched recursively) or a TFDS split
+(--tfds_split, read via the config's validation_data; image_id = the TFDS
+image/id, so the predictions JSON scores directly against the GT annotations
+with no id remapping); per image it produces:
 
   * visual — an annotated image (boxes + polygons + class/score, plus distance when
     the model has a distance head), drawn on the model-input geometry or back on the
@@ -30,6 +33,11 @@ Usage:
     python utils/export/inference_saved_model.py \
         --config configs/experiments/yolo/yolov8_poly_dist.yaml \
         --checkpoint /run/ckpt-100000 --images /path/to/imgs --emit visual --draw_on model
+
+    # Predictions JSON over the TFDS test split (no image dump needed):
+    python utils/export/inference_saved_model.py --saved_model /export/saved_model \
+        --config configs/experiments/yolo/yolov8_poly_dist.yaml \
+        --tfds_split test --emit json --score 0.05 --output_dir /tmp/dev_preds
 """
 
 import glob
@@ -37,6 +45,7 @@ import json
 import logging
 import math
 import os
+import time
 
 from absl import app, flags
 import numpy as np
@@ -48,7 +57,12 @@ try:
     flags.DEFINE_string('config', None, 'Experiment YAML (required with --checkpoint).')
     flags.DEFINE_string('checkpoint', None, 'Checkpoint path prefix.')
     flags.DEFINE_string('saved_model', None, 'Exported SavedModel dir (alternative to --checkpoint).')
-    flags.DEFINE_string('images', None, 'Image file or directory of images.', required=True)
+    flags.DEFINE_string('images', None, 'Image file or directory of images (searched '
+                        'recursively). Alternative to --tfds_split.')
+    flags.DEFINE_string('tfds_split', None, "TFDS split to run over (e.g. 'test'), read via "
+                        "--config's validation_data (tfds_name / tfds_data_dir). Alternative "
+                        "to --images; image_id in the JSON = the TFDS image/id (GT-consistent, "
+                        "no remapping needed).")
     flags.DEFINE_string('output_dir', '/tmp/infer_out', 'Where to write outputs.')
     flags.DEFINE_enum('emit', 'both', ['visual', 'json', 'both'], 'What to produce.')
     flags.DEFINE_enum('draw_on', 'original', ['original', 'model'],
@@ -75,12 +89,17 @@ except Exception:
 
 
 def _list_images(path: str):
+    """List image files under ``path`` recursively (any nesting depth).
+
+    A set dedupes the lower/upper-case extension patterns, which both match the
+    same file on case-insensitive filesystems.
+    """
     if os.path.isfile(path):
         return [path]
-    files = []
+    files = set()
     for ext in _IMG_EXTS:
-        files += glob.glob(os.path.join(path, ext))
-        files += glob.glob(os.path.join(path, ext.upper()))
+        for pat in (ext, ext.upper()):
+            files.update(glob.glob(os.path.join(path, '**', pat), recursive=True))
     return sorted(files)
 
 
@@ -148,6 +167,15 @@ def _load_checkpoint_model(config, ckpt_path):
 
 
 def main(_):
+    # Validate the flag combination FIRST — model/SavedModel loading takes tens of
+    # seconds, and a bad source flag should not cost that wait.
+    if FLAGS.tfds_split and FLAGS.images:
+        raise SystemExit("Provide --images OR --tfds_split, not both.")
+    if not FLAGS.tfds_split and not FLAGS.images:
+        raise SystemExit("Provide --images or --tfds_split.")
+    if FLAGS.tfds_split and not FLAGS.config:
+        raise SystemExit("--tfds_split needs --config (for tfds_name / tfds_data_dir).")
+
     tf.config.run_functions_eagerly(False)
     import cv2
     from common.viz_utils import render_summary_images
@@ -167,7 +195,11 @@ def main(_):
     if FLAGS.saved_model:
         from utils.export.device_decode import (
             reconstruct_detections, is_device_contract, is_legacy_contract)
+        t0 = time.time()
+        log.info("Loading SavedModel %s (TF deserializes the full frozen graph — "
+                 "this is the slow startup step)...", FLAGS.saved_model)
         loaded = tf.saved_model.load(FLAGS.saved_model)
+        log.info("SavedModel loaded in %.1fs", time.time() - t0)
         infer = loaded.signatures['serving_default']
         out_keys = list(infer.structured_outputs.keys())
         sig_in = infer.inputs[0].shape
@@ -201,31 +233,63 @@ def main(_):
         from train.task import normalize_images
         config = load_config(FLAGS.config)
         mh = mw = FLAGS.input_size or int(config.task.model.input_size[0])
+        t0 = time.time()
         model = _load_checkpoint_model(config, FLAGS.checkpoint)
+        log.info("Model built + checkpoint restored in %.1fs", time.time() - t0)
 
         def run(batch):
             return model(normalize_images(tf.constant((batch * 255.0).astype(np.uint8))),
                          training=False)
 
-    files = _list_images(FLAGS.images)
-    if not files:
-        raise SystemExit(f"No images found at {FLAGS.images}")
+    # --- image source: a folder tree (--images) or a TFDS split (--tfds_split) ---
+    # Both yield (img_id, name, rgb_uint8). TFDS ids come from image/id, so the
+    # predictions JSON is directly scoreable against the GT annotations.
+    if FLAGS.tfds_split:
+        from configs.yaml_loader import load_config
+        import tensorflow_datasets as tfds
+        val_cfg = load_config(FLAGS.config).task.validation_data
+        t0 = time.time()
+        ds, ds_info = tfds.load(val_cfg.tfds_name, split=FLAGS.tfds_split,
+                                data_dir=val_cfg.tfds_data_dir, with_info=True)
+        total = ds_info.splits[FLAGS.tfds_split].num_examples
+        log.info("TFDS %s split '%s' opened in %.1fs — %d examples",
+                 val_cfg.tfds_name, FLAGS.tfds_split, time.time() - t0, total)
+
+        def _source():
+            for ex in ds:
+                img_id = int(ex['image/id'].numpy())
+                yield img_id, str(img_id), ex['image'].numpy()
+        src_name = f"{val_cfg.tfds_name}[{FLAGS.tfds_split}]"
+    else:
+        files = _list_images(FLAGS.images)
+        if not files:
+            raise SystemExit(f"No images found at {FLAGS.images}")
+        total = len(files)
+
+        def _source():
+            for idx, f in enumerate(files):
+                bgr = cv2.imread(f)
+                if bgr is None:
+                    log.warning("Could not read %s — skipping", f)
+                    continue
+                name = (os.path.relpath(f, FLAGS.images) if os.path.isdir(FLAGS.images)
+                        else os.path.basename(f))
+                yield idx, name, bgr[..., ::-1]
+        src_name = FLAGS.images
+
     os.makedirs(FLAGS.output_dir, exist_ok=True)
     want_vis = FLAGS.emit in ('visual', 'both')
     want_json = FLAGS.emit in ('json', 'both')
-    log.info("Running on %d image(s) | model=%dx%d | emit=%s | draw_on=%s -> %s",
-             len(files), mh, mw, FLAGS.emit, FLAGS.draw_on, FLAGS.output_dir)
+    log.info("Running on %d image(s) from %s | model=%dx%d | emit=%s | draw_on=%s -> %s",
+             total, src_name, mh, mw, FLAGS.emit, FLAGS.draw_on, FLAGS.output_dir)
 
     coco_preds = []          # COCO-style detection list (for the JSON)
-    pbar = Progress(total=len(files), desc='Infer', unit='img')
-    for img_id, f in enumerate(files):
+    n_images = 0
+    pbar = Progress(total=total, desc='Infer', unit='img')
+    for img_id, fname, rgb in _source():
         pbar.update(1)
-        bgr = cv2.imread(f)
-        if bgr is None:
-            log.warning("Could not read %s — skipping", f)
-            continue
-        H, W = bgr.shape[:2]
-        rgb = bgr[..., ::-1]
+        n_images += 1
+        H, W = rgb.shape[:2]
         img01, r, top, left = _letterbox(rgb, mh, mw)
         predictions = run(img01[None, ...])
         pred = _per_image_preds(predictions, 0)
@@ -246,7 +310,7 @@ def main(_):
                 else:
                     px1, py1, px2, py2 = x1 * mw, y1 * mh, x2 * mw, y2 * mh
                 rec = {
-                    'image_id': img_id, 'file_name': os.path.basename(f),
+                    'image_id': img_id, 'file_name': fname,
                     'category_id': int(pred['classes'][k]),
                     'category_name': _name(pred['classes'][k]),
                     'bbox': [round(px1, 2), round(py1, 2), round(px2 - px1, 2), round(py2 - py1, 2)],
@@ -264,7 +328,7 @@ def main(_):
                     class_names=class_names)
                 out_img = None if rendered is None else rendered[0][..., ::-1]
             else:
-                out_img = bgr.copy()
+                out_img = np.ascontiguousarray(rgb[..., ::-1])   # BGR copy for cv2
                 for k in keep:
                     y1, x1, y2, x2 = [float(v) for v in pred['bbox'][k]]
                     p1 = tuple(int(round(v)) for v in _inv_point(x1, y1, mw, mh, r, top, left))
@@ -285,8 +349,10 @@ def main(_):
                             cv2.polylines(out_img, [opts.reshape(-1, 1, 2)], True,
                                           (0, 220, 100), 2, cv2.LINE_AA)
             if out_img is not None:
-                out_path = os.path.join(
-                    FLAGS.output_dir, os.path.splitext(os.path.basename(f))[0] + '_pred.png')
+                # fname can carry subdirectories (recursive scan) — flatten so all
+                # renders land in output_dir without recreating the tree.
+                stem = os.path.splitext(fname)[0].replace(os.sep, '__')
+                out_path = os.path.join(FLAGS.output_dir, stem + '_pred.png')
                 cv2.imwrite(out_path, out_img)
     pbar.close()
 
@@ -294,7 +360,7 @@ def main(_):
         jpath = FLAGS.predictions_json or os.path.join(FLAGS.output_dir, 'predictions.json')
         with open(jpath, 'w') as fh:
             json.dump(coco_preds, fh, indent=2)
-        log.info("Wrote %d detections over %d images -> %s", len(coco_preds), len(files), jpath)
+        log.info("Wrote %d detections over %d images -> %s", len(coco_preds), n_images, jpath)
     if want_vis:
         log.info("Annotated images in %s", FLAGS.output_dir)
 
