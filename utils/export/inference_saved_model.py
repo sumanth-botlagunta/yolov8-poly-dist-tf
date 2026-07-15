@@ -2,9 +2,11 @@
 
 Point it at a checkpoint (+config) or an exported SavedModel, plus either a
 file/folder of images (--images, searched recursively) or a TFDS split
-(--tfds_split, read via the config's validation_data; image_id = the TFDS
-image/id, so the predictions JSON scores directly against the GT annotations
-with no id remapping); per image it produces:
+(--tfds_split, read via the config's validation_data). In BOTH modes the
+predictions JSON uses image_id = file_name = the image basename with its
+extension (folder mode: the file's basename; TFDS mode: the records'
+image/filename), matching the GT annotations directly. Bboxes and scores are
+written at full float precision. Per image it produces:
 
   * visual — an annotated image (boxes + polygons + class/score, plus distance when
     the model has a distance head), drawn on the model-input geometry or back on the
@@ -61,8 +63,8 @@ try:
                         'recursively). Alternative to --tfds_split.')
     flags.DEFINE_string('tfds_split', None, "TFDS split to run over (e.g. 'test'), read via "
                         "--config's validation_data (tfds_name / tfds_data_dir). Alternative "
-                        "to --images; image_id in the JSON = the TFDS image/id (GT-consistent, "
-                        "no remapping needed).")
+                        "to --images. image_id = file_name = the image basename with extension "
+                        "(from the records' image/filename), matching the GT annotations.")
     flags.DEFINE_string('output_dir', '/tmp/infer_out', 'Where to write outputs.')
     flags.DEFINE_enum('emit', 'both', ['visual', 'json', 'both'], 'What to produce.')
     flags.DEFINE_enum('draw_on', 'original', ['original', 'model'],
@@ -257,8 +259,14 @@ def main(_):
 
         def _source():
             for ex in ds:
-                img_id = int(ex['image/id'].numpy())
-                yield img_id, str(img_id), ex['image'].numpy()
+                # image_id convention: the image BASENAME with extension (string),
+                # matching the GT annotations. image/filename is the source of
+                # truth; fall back to the numeric image/id only if absent.
+                if 'image/filename' in ex:
+                    name = os.path.basename(ex['image/filename'].numpy().decode('utf-8'))
+                else:
+                    name = str(int(ex['image/id'].numpy()))
+                yield name, name, ex['image'].numpy()
         src_name = f"{val_cfg.tfds_name}[{FLAGS.tfds_split}]"
     else:
         files = _list_images(FLAGS.images)
@@ -267,14 +275,15 @@ def main(_):
         total = len(files)
 
         def _source():
-            for idx, f in enumerate(files):
+            for f in files:
                 bgr = cv2.imread(f)
                 if bgr is None:
                     log.warning("Could not read %s — skipping", f)
                     continue
-                name = (os.path.relpath(f, FLAGS.images) if os.path.isdir(FLAGS.images)
-                        else os.path.basename(f))
-                yield idx, name, bgr[..., ::-1]
+                # image_id convention: the image BASENAME with extension (string).
+                # Subfolder paths are dropped — GT annotations key by basename.
+                name = os.path.basename(f)
+                yield name, name, bgr[..., ::-1]
         src_name = FLAGS.images
 
     os.makedirs(FLAGS.output_dir, exist_ok=True)
@@ -313,11 +322,13 @@ def main(_):
                     'image_id': img_id, 'file_name': fname,
                     'category_id': int(pred['classes'][k]),
                     'category_name': _name(pred['classes'][k]),
-                    'bbox': [round(px1, 2), round(py1, 2), round(px2 - px1, 2), round(py2 - py1, 2)],
-                    'score': round(float(pred['confidence'][k]), 5),
+                    # Full float precision — no rounding, so the JSON is bit-comparable
+                    # across runs/paths.
+                    'bbox': [float(px1), float(py1), float(px2 - px1), float(py2 - py1)],
+                    'score': float(pred['confidence'][k]),
                 }
                 if dist is not None:
-                    rec['distance_m'] = round(float(dist[k]), 3)
+                    rec['distance_m'] = float(dist[k])
                 coco_preds.append(rec)
 
         # ---- visual ----

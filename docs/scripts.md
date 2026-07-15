@@ -85,8 +85,10 @@ split, emitting a COCO-style predictions JSON and/or annotated images, in the mo
 original-image coordinate space.
 - `--config` + `--checkpoint`, **or** `--saved_model` (one model source required).
 - `--images` — an image file or a directory (searched recursively), **or** `--tfds_split` —
-  a TFDS split (e.g. `test`) read via the config's `validation_data` (needs `--config`);
-  `image_id` = the TFDS `image/id`, directly scoreable against the GT annotations.
+  a TFDS split (e.g. `test`) read via the config's `validation_data` (needs `--config`).
+- In both modes `image_id` = `file_name` = the image basename with extension (folder mode:
+  the file's basename; TFDS mode: `image/filename`), directly scoreable against the GT
+  annotations. Bboxes/scores are written unrounded.
 - `--emit` — `visual` | `json` | `both` (default `both`).
 - `--draw_on` — `original` (map detections back to source pixels, default) | `model` (the exported 672/416 size).
 - `--output_dir` — where annotated PNGs + `predictions.json` are written. `--predictions_json` overrides the JSON path.
