@@ -110,7 +110,7 @@ class V8DistanceParser(Parser):
             'bbox': boxes,
             'classes': classes,
             'n_gt': tf.cast(tf.minimum(n_gt, self._max_num_instances), tf.int64),
-            'ignore_bg': tf.constant(1, dtype=tf.int64),  # ← distance stream
+            'ignore_bg': tf.constant(1, dtype=tf.int64),  # distance-stream marker
             'log_distance': log_dists,
             # Polygon fields are zeros (ignored by loss when with_distance=True).
             'polygons': tf.zeros(
@@ -238,7 +238,7 @@ class V8DistanceParser(Parser):
     ) -> Tuple[tf.Tensor, tf.Tensor]:
         do_flip = tf.random.uniform(()) > 0.5
         image = tf.cond(do_flip, lambda: tf.image.flip_left_right(image), lambda: image)
-        # Flip x-coordinates: xmin ↔ 1-xmax.
+        # Flip x-coordinates: new xmin = 1 - old xmax and vice versa.
         xmin = tf.where(do_flip, 1.0 - boxes[:, 3], boxes[:, 1])
         xmax = tf.where(do_flip, 1.0 - boxes[:, 1], boxes[:, 3])
         boxes = tf.stack([boxes[:, 0], xmin, boxes[:, 2], xmax], axis=1)

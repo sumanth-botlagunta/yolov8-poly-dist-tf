@@ -15,7 +15,7 @@ from typing import Callable, Dict, Type
 
 
 class Registry:
-    """Simple name → class registry with decorator support."""
+    """Simple name -> class registry with decorator support."""
 
     def __init__(self, name: str):
         self._name = name

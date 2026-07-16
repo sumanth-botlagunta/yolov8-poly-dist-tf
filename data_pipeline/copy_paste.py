@@ -53,23 +53,22 @@ class CopyAndPasteModule:
     ) -> Dict[str, tf.Tensor]:
         """Draw an adaptive resize ratio, then composite.
 
-        The ratio bounds are constructed (in ORIGINAL background pixel units,
-        like the reference implementation) so that the pasted object meets the
-        ``min_height × min_width`` floor whenever that is feasible under the
-        containment and ``max_resize_ratio`` caps (containment wins when they
-        conflict — same as the reference), never exceeds ``height_limit`` of
+        The ratio bounds are constructed in ORIGINAL background pixel units
+        (like the reference implementation) so the pasted object meets the
+        ``min_height x min_width`` floor whenever feasible under the
+        containment and ``max_resize_ratio`` caps (containment wins on
+        conflict, same as the reference), never exceeds ``height_limit`` of
         the background height or the full background width, and the paste
         always happens once the probability gate fired:
 
-            max_ratio = min(bg_h·height_limit/obj_h, bg_w/obj_w, max_resize_ratio)
+            max_ratio = min(bg_h*height_limit/obj_h, bg_w/obj_w, max_resize_ratio)
             min_ratio = max(min_height/obj_h, min_width/obj_w, min_resize_ratio)
             min_ratio = min(min_ratio, max_ratio)
             ratio ~ U(min_ratio, max_ratio)
 
-        Containment plus the size floor are therefore guaranteed by
-        construction — there is no separate accept/reject gate that could
-        silently drop the paste (which would make the realized paste rate
-        fall below ``prob``).
+        Containment and the size floor are guaranteed by construction; there
+        is no separate accept/reject gate, so the realized paste rate never
+        falls below ``prob``.
         """
         obj_shape = tf.shape(obj_data['image'])
         obj_h_f = tf.cast(obj_shape[0], tf.float32)
@@ -134,16 +133,12 @@ class CopyAndPasteModule:
         obj_rgb  = obj_rgba[:, :, :3]                       # [H_o, W_o, 3]
         alpha    = obj_rgba[:, :, 3:4] / 255.0              # [H_o, W_o, 1]
 
-        # Resize object by a ratio applied directly to its own dimensions.
-        #
-        # Resolution correction: the background may already have been resized (the
-        # pipeline pre-resizes to the model input size before copy-paste, so the
-        # composite runs on 672² pixels, not full resolution). The object's target
-        # size is defined relative to the original background dims, so scale it by
-        # (current/original) per axis. This commutes with the background resize:
-        # compositing here is geometrically pixel-equivalent to compositing at full
-        # resolution and resizing afterwards. When the background is unresized,
-        # height/width == current dims and the correction is 1.
+        # Resolution correction: the background is pre-resized to the model input
+        # size before copy-paste, but the object's target size is defined relative
+        # to the original background dims, so scale by (current/original) per axis.
+        # This commutes with the background resize (pixel-equivalent to compositing
+        # at full resolution and resizing afterwards). Unresized background:
+        # height/width == current dims, correction is 1.
         orig_h_f = tf.cast(bg_data.get('height', H), tf.float32)
         orig_w_f = tf.cast(bg_data.get('width', W), tf.float32)
         corr_h = H_f / tf.maximum(orig_h_f, 1.0)
@@ -166,12 +161,12 @@ class CopyAndPasteModule:
         alpha_r   = tf.clip_by_value(alpha_r, 0.0, 1.0)
 
         # Random placement, reference formulation. Vertical: the object's top
-        # edge lands in the LOWER band of the frame —
-        #     offset_h_min = H·(1 − height_limit)
-        #     offset_h_max = H − new_h
-        #     offset_h = U(0.1, 0.9)·(max − min) + min
+        # edge lands in the LOWER band of the frame,
+        #     offset_h_min = H*(1 - height_limit)
+        #     offset_h_max = H - new_h
+        #     offset_h = U(0.1, 0.9)*(max - min) + min
         # (floor-facing camera: pasted objects belong near the floor, not at
-        # the top of the frame). Horizontal: offset_w = U(0.1, 0.9)·(W − new_w).
+        # the top of the frame). Horizontal: offset_w = U(0.1, 0.9)*(W - new_w).
         # Both clipped to keep the object fully inside the canvas.
         new_h_f = tf.cast(new_h, tf.float32)
         new_w_f = tf.cast(new_w, tf.float32)
@@ -183,7 +178,7 @@ class CopyAndPasteModule:
         paste_y = tf.clip_by_value(tf.cast(off_h, tf.int32), 0, H - new_h)
         paste_x = tf.clip_by_value(tf.cast(off_w, tf.int32), 0, W - new_w)
 
-        # Build full-canvas alpha mask (0 everywhere except paste region)
+        # Build full-canvas alpha mask (0 everywhere except paste region).
         pad_top    = paste_y
         pad_bottom = H - paste_y - new_h
         pad_left   = paste_x
@@ -218,7 +213,7 @@ class CopyAndPasteModule:
         # --- Update annotations ---
         # Compute the new bbox for the pasted object in background normalised coords.
         orig_box = obj_data.get('orig_bbox', tf.constant([0.0, 0.0, 1.0, 1.0]))
-        # orig_box: yxyx normalised in obj image
+        # orig_box: yxyx normalised in obj image.
         paste_y_f = tf.cast(paste_y, tf.float32)
         paste_x_f = tf.cast(paste_x, tf.float32)
         new_h_f   = tf.cast(new_h, tf.float32)
@@ -233,7 +228,7 @@ class CopyAndPasteModule:
             0.0, 1.0,
         )  # [1, 4]
 
-        # Append box, class
+        # Append box and class.
         bg_data['groundtruth_boxes'] = tf.concat(
             [bg_data['groundtruth_boxes'], new_box], axis=0
         )
@@ -242,11 +237,11 @@ class CopyAndPasteModule:
             [bg_data['groundtruth_classes'], new_cls], axis=0
         )
 
-        # Append is_crowd, area, dontcare with default values
+        # Append is_crowd, area, dontcare with default values.
         bg_data['groundtruth_is_crowd'] = tf.concat(
             [bg_data['groundtruth_is_crowd'], tf.constant([False])], axis=0
         )
-        # Area from the CLIPPED box (new_box), not the raw pre-clip extents — a
+        # Area from the CLIPPED box (new_box), not the raw pre-clip extents; a
         # pasted object overhanging the canvas edge otherwise overstates its
         # visible area.
         box_area = (new_box[0, 2] - new_box[0, 0]) * (new_box[0, 3] - new_box[0, 1])
@@ -256,13 +251,13 @@ class CopyAndPasteModule:
         bg_data['groundtruth_dontcare'] = tf.concat(
             [bg_data['groundtruth_dontcare'], tf.constant([0], tf.int64)], axis=0
         )
-        # Pasted object has no distance measurement — append sentinel
+        # Pasted object has no distance measurement; append the sentinel.
         if 'groundtruth_dists' in bg_data:
             bg_data['groundtruth_dists'] = tf.concat(
                 [bg_data['groundtruth_dists'], tf.constant([-1.0])], axis=0
             )
 
-        # Append polygon (transform from obj-normalised to bg-normalised)
+        # Append polygon (transform from obj-normalised to bg-normalised).
         obj_pts = obj_data.get('points', tf.constant([], tf.float32))
         # Use the STATIC shape (a Python int, e.g. 3972 from CopyPasteDecoder), not
         # tf.shape(...) which returns a symbolic Tensor. This branch runs inside the
@@ -273,13 +268,13 @@ class CopyAndPasteModule:
             else tf.shape(obj_pts)[0]
 
         if isinstance(max_v, int) and max_v == 0:
-            # No polygon points — use empty padded polygon
+            # No polygon points; use an empty padded polygon.
             n_poly_cols = tf.shape(bg_data['groundtruth_polygons'])[1]
             new_poly = tf.fill([1, n_poly_cols], -1.0)
         else:
             n_pairs = max_v // 2
             pts = tf.reshape(obj_pts, [n_pairs, 2])       # [n_pairs, (x, y)]
-            valid = pts[:, 0] > -1.0                      # [n_pairs] — reserved sentinel is exactly -1.0
+            valid = pts[:, 0] > -1.0                      # [n_pairs]; reserved sentinel is exactly -1.0
 
             # Transform: x_bg = (paste_x + x_obj * new_w) / W
             x_bg = (paste_x_f + pts[:, 0] * new_w_f) / W_f
@@ -301,19 +296,16 @@ class CopyAndPasteModule:
             new_pts = tf.reshape(tf.stack([x_bg, y_bg], axis=-1), [1, max_v])
 
             # Fit to the bg polygon column count. The copy-paste source decoder does
-            # not resample, so an object can carry far more vertices than the
-            # background's (possibly resampled) width. When it does, evenly resample
-            # the valid vertices to the column budget rather than taking the first
-            # n_poly_cols raw vertices — the latter keeps only a contiguous arc of the
-            # contour and corrupts the PolyYOLO radial target (it discards the far
-            # side of the polygon). resample_polygons preserves the per-bin max radius
-            # to within sampling resolution.
+            # not resample, so an object can carry more vertices than the background's
+            # (possibly resampled) width. Evenly resample the valid vertices to the
+            # column budget; slicing the first n_poly_cols would keep only a
+            # contiguous arc of the contour and corrupt the PolyYOLO radial target.
             from data_pipeline.augmentations import resample_polygons
             n_poly_cols = tf.shape(bg_data['groundtruth_polygons'])[1]
             cur_cols = tf.shape(new_pts)[1]
             new_pts = tf.cond(
                 cur_cols >= n_poly_cols,
-                # compact=True: the in-bounds invalidation above (tf.where → -1)
+                # compact=True: the in-bounds invalidation above (tf.where -> -1)
                 # can leave scattered sentinels, so the valid vertices are NOT a
                 # prefix here and must be compacted before the even-spaced resample.
                 lambda: resample_polygons(new_pts, n_poly_cols // 2, compact=True),

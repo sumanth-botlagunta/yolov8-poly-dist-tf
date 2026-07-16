@@ -26,10 +26,10 @@ log = logging.getLogger(__name__)
 def _build_pipeline(cfg):
     """Construct the FULL training data pipeline from config (no model).
 
-    Uses the same builder as training (``build_input_reader_from_config``) so the
-    benchmark always matches the real pipeline — decode → copy-paste → mosaic /
-    random_perspective → parser, plus the distance-stream merge when configured —
-    and can't drift from it.
+    Uses the same builder as training (`build_input_reader_from_config`) so the
+    benchmark always matches the real pipeline (decode -> copy-paste -> mosaic /
+    random_perspective -> parser, plus the distance-stream merge when configured)
+    and cannot drift from it.
     """
     from data_pipeline.input_reader import build_input_reader_from_config
 
@@ -48,12 +48,12 @@ def _images_of(batch):
 
 
 def _run_benchmark(ds, n_steps: int) -> dict:
-    """Iterate over *n_steps* batches and return timing stats.
+    """Iterate over `n_steps` batches and return timing stats.
 
-    Step time is the wall-clock *between* successive batches (i.e. how long the
+    Step time is the wall-clock time between successive batches (how long the
     pipeline takes to produce a batch), and the per-batch image count is read
-    from the actual batch — so the merged detection+distance batch is measured
-    correctly, not assumed to be the detection-only size.
+    from the actual batch, so the merged detection+distance batch is measured
+    correctly rather than assumed to be the detection-only size.
     """
     import numpy as np
     import tensorflow as tf
@@ -69,8 +69,8 @@ def _run_benchmark(ds, n_steps: int) -> dict:
     for batch in ds.take(2):
         imgs = _images_of(batch)
         # The training pipeline emits uint8 images (the parser leaves the
-        # normalization to the model). Surface a silent dtype/shape drift — e.g.
-        # an accidental float32 cast upstream would balloon memory and quietly
+        # normalization to the model). Surface a silent dtype/shape drift: an
+        # accidental float32 cast upstream would balloon memory and quietly
         # change what the benchmark measures.
         img_dtype = imgs.dtype
         img_shape = tuple(imgs.shape)

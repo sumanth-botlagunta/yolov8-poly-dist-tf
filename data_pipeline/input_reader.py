@@ -6,13 +6,13 @@ Handles two parallel data streams:
      and concatenated onto the detection batch (ignore_bg=1 on those rows).
 
 Pipeline order for training:
-    tfds.load(names, SkipDecoding) → repeat each source → sample_from_datasets(weights)
-    → shuffle (encoded records) → decode
-    → zip(cnp_dataset) → copy_paste(prob)
-    → padded_batch(group_size) → mosaic (G in → G//R out) → unbatch → shuffle
-    → parser.parse_fn(is_training=True)
-    → batch(global_batch_size)
-    → prefetch(AUTOTUNE)
+    tfds.load(names, SkipDecoding) -> repeat each source -> sample_from_datasets(weights)
+    -> shuffle (encoded records) -> decode
+    -> zip(cnp_dataset) -> copy_paste(prob)
+    -> padded_batch(group_size) -> mosaic (G in -> G//R out) -> unbatch -> shuffle
+    -> parser.parse_fn(is_training=True)
+    -> batch(global_batch_size)
+    -> prefetch(AUTOTUNE)
 
 Training-stream invariants:
   - Each SOURCE dataset is repeated before sample_from_datasets so the [95,2,3]
@@ -28,7 +28,7 @@ Training-stream invariants:
     same-group correlation clusters.
 
 Distance stream (when distance_reader is provided):
-    servingbot_polygon → dist_parser → batch(16) → prefetch
+    servingbot_polygon -> dist_parser -> batch(16) -> prefetch
     Merged at the task level via zip + concat on batch dim.
 
 Classes:
@@ -82,10 +82,10 @@ class InputReader:
     """Build a merged tf.data pipeline from one or more TFDS datasets.
 
     For training the pipeline order is:
-        decode → copy-paste (prob=0.2) → mosaic (freq=0.5) → parser
+        decode -> copy-paste (prob=0.2) -> mosaic (freq=0.5) -> parser
 
     For evaluation:
-        decode → parser (no augmentation)
+        decode -> parser (no augmentation)
 
     The distance stream is decoded and parsed independently then zipped and
     concatenated with the detection batch before being returned.
@@ -161,7 +161,7 @@ class InputReader:
             # Performance options for the whole input graph (options set on the
             # terminal dataset propagate upstream at finalization, including the
             # zipped distance stream). deterministic=False removes head-of-line
-            # blocking in the parallel maps (forfeits seeded sample order — the
+            # blocking in the parallel maps (forfeits seeded sample order; the
             # per-op augmentation randomness is unaffected). The private
             # threadpool caps tf.data's worker count on machines whose visible
             # core count exceeds the actual CPU quota (cgroup caps).
@@ -199,7 +199,7 @@ class InputReader:
 
         # Detection source shuffle: seed=self._seed (the base seed). The cnp source
         # shuffle uses self._seed+1 and the post-unbatch shuffle uses self._seed+2 so
-        # the three shuffle stages draw from DISTINCT RNG streams — sharing one seed
+        # the three shuffle stages draw from DISTINCT RNG streams; sharing one seed
         # makes the permutations correlated, which can partially undo each stage's
         # decorrelation of the previous one.
         ds = ds.shuffle(self._shuffle_buffer_size, seed=self._seed, reshuffle_each_iteration=True)
@@ -227,7 +227,7 @@ class InputReader:
                 polys = ex.get('groundtruth_polygons', tf.zeros([0, 2], tf.float32))
 
                 # Identity fast-path: an image already exactly [H, W] is square
-                # (H == W in every config), so its letterbox is the identity — skip
+                # (H == W in every config), so its letterbox is the identity; skip
                 # the resize/pad and the coordinate transform entirely. True for
                 # pre-resized dataset variants.
                 def _identity():
@@ -281,7 +281,7 @@ class InputReader:
 
             ds = ds.map(_merge_cnp_fields, num_parallel_calls=_AUTOTUNE)
 
-        # Mosaic: padded_batch(group_size) → combine (G in → G//R out) → unbatch.
+        # Mosaic: padded_batch(group_size) -> combine (G in -> G//R out) -> unbatch.
         if self._mosaic_module is not None:
             mosaic_fn = self._mosaic_module.mosaic_fn(is_training=True)
             # Explicit padding_values for every key in the decoder element spec
@@ -324,8 +324,8 @@ class InputReader:
             # Disperse each group's outputs across many training batches: at R<4
             # every source image recurs in 4/R outputs of its group (the Sidon-shift
             # draw in mosaic.py caps any two outputs at one shared source image), and
-            # this buffer spreads those recurrences apart in time — 3072 decoded
-            # outputs (~4.3 GB host RAM at 672²) puts the 4 reuses of an image ~24
+            # this buffer spreads those recurrences apart in time: 3072 decoded
+            # outputs (~4.3 GB host RAM at 672^2) puts the 4 reuses of an image ~24
             # batches-of-128 apart, making same-batch reuse rare. Never below 32
             # groups' worth of outputs so large group configs still disperse. Cost is
             # RAM + initial fill only; per-step time is unaffected.
@@ -338,7 +338,7 @@ class InputReader:
                 .unbatch()
                 # mosaic_fn emits group_size // decodes_per_output samples per group; the
                 # outputs of one group share its source images, so a shuffle disperses them
-                # across batches before batching. ~256 × 1.4 MB decoded samples ≈ 360 MB.
+                # across batches before batching. ~256 x 1.4 MB decoded samples ~ 360 MB.
                 # seed=self._seed+2: a DISTINCT seed from the pre-decode source shuffle
                 # (seed) and the cnp source shuffle (seed+1) so the three shuffle stages do
                 # not share an RNG stream (correlated permutations across stages would
@@ -487,7 +487,7 @@ class InputReader:
             # declared metadata count (see _load_tfds_datasets).
             read_config=tfds.ReadConfig(assert_cardinality=False),
         )
-        # cnp source shuffle: seed=self._seed+1 — a DISTINCT seed from the detection
+        # cnp source shuffle: seed=self._seed+1, a DISTINCT seed from the detection
         # source shuffle (self._seed) and the post-unbatch shuffle (self._seed+2).
         # The cnp stream is zipped with the detection stream for copy-paste; sharing a
         # seed would lock the cnp permutation in lockstep with the detection one,
@@ -534,10 +534,10 @@ def build_input_reader_from_config(
     """Construct an InputReader from DataConfig + TaskConfig dataclasses.
 
     All pipeline components (decoder, parser, mosaic, copy-paste, distance
-    reader) are built from config when not explicitly provided.  task.py calls
+    reader) are built from config when not explicitly provided. task.py calls
     this function without passing any components, so this is where they must be
-    instantiated — failing to do so leaves parser=None and raw variable-size
-    images reach batch() directly, causing a shape-mismatch crash.
+    instantiated; leaving parser=None lets raw variable-size images reach
+    batch() directly, causing a shape-mismatch crash.
     """
     names = [n.strip() for n in data_cfg.tfds_name.split(',')]
     splits = [s.strip() for s in data_cfg.tfds_split.split(',')]

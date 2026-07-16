@@ -15,12 +15,12 @@ log = logging.getLogger(__name__)
 
 
 def normalize_images(images: tf.Tensor) -> tf.Tensor:
-    """uint8 [0, 255] → float32 [0, 1]; float images pass through unchanged.
+    """uint8 [0, 255] -> float32 [0, 1]; float images pass through unchanged.
 
     Parsers emit uint8 (colour aug + /255 moved to the batch level), so every
     consumer that calls ``model(images)`` directly (validation_step, eval tools)
     normalizes through this helper. Raw uint8 raises on the float32 conv kernels;
-    0–255 floats would silently produce garbage.
+    0-255 floats would silently produce garbage.
     """
     if images.dtype == tf.uint8:
         return tf.cast(images, tf.float32) / 255.0
@@ -31,7 +31,8 @@ class YoloV8Task:
     """Orchestrates training and evaluation of the YOLOv8 model."""
 
     def __init__(self, config):
-        """
+        """Initialize the task from an experiment config.
+
         Args:
             config: ExperimentConfig object (parsed from YAML).
         """
@@ -131,9 +132,10 @@ class YoloV8Task:
                  ", ".join(keep) or "none")
 
     def apply_freezing(self, model: tf.keras.Model) -> None:
-        """Freeze whole modules (``task.freeze_modules``) and/or the first N
-        backbone layers (``task.freeze_backbone_layers``) via ``trainable=False``.
+        """Freeze configured modules and/or leading backbone layers.
 
+        ``task.freeze_modules`` freezes whole modules; ``task.freeze_backbone_layers``
+        freezes the first N top-level backbone layers, both via ``trainable=False``.
         Keras propagates ``trainable=False`` to sublayers and runs frozen BatchNorm
         in inference mode (running stats held). Idempotent and applied on every
         start (including resume), before the optimizer is built, so
@@ -174,7 +176,7 @@ class YoloV8Task:
 
         One zero-initialized accumulator per trainable variable (so it must run AFTER
         freezing and optimizer build, when ``trainable_variables`` is final), plus a
-        micro-step counter. ``N == 1`` leaves them None → the unchanged apply path.
+        micro-step counter. ``N == 1`` leaves them None -> the unchanged apply path.
         """
         n = getattr(self._config.trainer, 'grad_accum_steps', 1)
         if n <= 1:
@@ -190,8 +192,11 @@ class YoloV8Task:
                  "(effective batch = global_batch_size × %d).", n, n)
 
     def _accumulate_and_maybe_apply(self, grads, model, optimizer, clip_norm, n_accum):
-        """Add this micro-batch's grads to the accumulators; every Nth call, apply the
-        mean accumulated gradient and zero the accumulators (preserves None grads)."""
+        """Accumulate this micro-batch's gradients; apply the mean every Nth call.
+
+        Adds the grads to the accumulators; on every Nth call applies the mean
+        accumulated gradient and zeros the accumulators (None grads preserved).
+        """
         for acc, g in zip(self._grad_accumulators, grads):
             if g is not None:
                 acc.assign_add(g)
@@ -325,7 +330,7 @@ class YoloV8Task:
             total, box, dfl, cls, dist, poly, poly_a, poly_d, poly_c = self._loss_fn(feats, labels)
 
         grads = tape.gradient(total, model.trainable_variables)
-        # Pre-clip global gradient norm — instability signal; compare against
+        # Pre-clip global gradient norm, an instability signal; compare against
         # gradient_clip_norm to see whether clipping is active.
         grad_norm = tf.linalg.global_norm([g for g in grads if g is not None])
         # Pairs with grad_norm for the update-to-weight ratio (train/update_ratio).
@@ -372,7 +377,7 @@ class YoloV8Task:
         Runs the model in deploy=True mode to obtain decoded detections.
         """
         images, labels = inputs
-        # Normalize uint8 → [0, 1]; already-normalized float inputs pass through.
+        # Normalize uint8 -> [0, 1]; already-normalized float inputs pass through.
         images = normalize_images(images)
         original_deploy = model.deploy
         model.deploy = True
@@ -406,8 +411,8 @@ class YoloV8Task:
     def _update_evaluators(self, state: Dict, preds: Dict, labels: Dict) -> None:
         """Update the evaluators with one batch (converts to numpy immediately).
 
-        Streaming the per-batch update here — rather than buffering every batch's
-        raw prediction/label tensors until end-of-epoch — bounds host memory to the
+        Streaming the per-batch update here, rather than buffering every batch's
+        raw prediction/label tensors until end-of-epoch, bounds host memory to the
         evaluators' (much smaller) accumulators on large validation sets.
         """
         import numpy as np

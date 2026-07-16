@@ -122,7 +122,7 @@ class YoloV8Trainer:
         trainer_cfg   = self._config.trainer
         # Guard against checkpoint_interval=0 (steps_per_loop not computed).
         ckpt_interval = max(trainer_cfg.checkpoint_interval, 1)
-        # Log ~20× per epoch; at least every 50 steps.
+        # Log ~20x per epoch; at least every 50 steps.
         spl           = trainer_cfg.steps_per_loop
         log_interval  = max(50, spl // 20) if spl > 0 else 50
 
@@ -170,7 +170,7 @@ class YoloV8Trainer:
                             yield next(self._train_iter)
                         except StopIteration:
                             # Only reachable if the training stream is finite
-                            # (misconfiguration — the detection stream repeats).
+                            # (misconfiguration; the detection stream repeats).
                             log.warning(
                                 "Training dataset exhausted mid-epoch at "
                                 "global_step=%d — epoch truncated. The training "
@@ -184,7 +184,7 @@ class YoloV8Trainer:
                 epoch_inputs = self._train_ds
 
             # The `for` pulls the next batch before the body runs, so
-            # (body start − previous body end) is the input-pipeline wait.
+            # (body start - previous body end) is the input-pipeline wait.
             # Reporting compute time alone would overstate throughput when
             # training is input-bound.
             prev_body_end = time.time()
@@ -208,13 +208,13 @@ class YoloV8Trainer:
                     _aug_logged = True
 
                 # Sync the step's losses to host once, reused for both the epoch
-                # accumulator and the progress bar (avoids a second device→host copy).
+                # accumulator and the progress bar (avoids a second device->host copy).
                 step_vals = {k: float(v) for k, v in step_losses.items()}
                 for k, v in step_vals.items():
                     loss_accum[k] = loss_accum.get(k, 0.0) + v
                 loss_count += 1
 
-                # Live progress bar (TTY → in-place; cloud log file → periodic line).
+                # Live progress bar (TTY -> in-place; cloud log file -> periodic line).
                 wall = step_dt + data_dt
                 img_s = self._merged_batch_size / max(wall, 1e-9)
                 if pbar is None:
@@ -344,7 +344,7 @@ class YoloV8Trainer:
 
         At the first epoch ``>= total_epochs - close_mosaic_epochs`` the train
         stream is rebuilt once with ``mosaic_frequency`` / ``mixup_frequency`` set
-        to 0 (Ultralytics ``close_mosaic``). Step/epoch accounting is unaffected —
+        to 0 (Ultralytics ``close_mosaic``). Step/epoch accounting is unaffected:
         the trainer still runs a fixed step count from the new iterator. No-op when
         ``close_mosaic_epochs`` is 0 (the default).
         """
@@ -381,7 +381,7 @@ class YoloV8Trainer:
         resume from it would re-run a full epoch.
 
         The epoch is trained but not yet validated here, so the boundary save
-        records it as not completed (``completed_epochs`` = trained epochs − 1).
+        records it as not completed (``completed_epochs`` = trained epochs - 1).
         A crash during validation then resumes with zero training steps for that
         epoch (``_steps_for_epoch`` returns 0) and runs the pending validation, so
         no boundary checkpoint is left unevaluated. The epoch-end save re-writes
@@ -401,7 +401,7 @@ class YoloV8Trainer:
         steps and the LR schedule / checkpoint cadence stay aligned with epochs.
 
         Returns 0 when the epoch's training already completed but the epoch was
-        never marked done — i.e. the previous process died DURING validation.
+        never marked done, i.e. the previous process died DURING validation.
         The caller then skips training and runs the pending validation directly,
         so no epoch-boundary checkpoint is left unevaluated.
         """
@@ -413,10 +413,13 @@ class YoloV8Trainer:
     # ------------------------------------------------------------------
 
     def _will_resume(self) -> bool:
-        """True if this run already has a checkpoint to resume from, so seed-init
-        is skipped and the run's own weights win. This makes `finetune_from` /
-        `init_checkpoint` a fresh-start-only seed: a restarted fine-tune resumes
-        from its own checkpoints and never re-reads the source checkpoint."""
+        """Return True if this run already has a checkpoint to resume from.
+
+        When True, seed-init is skipped and the run's own weights win. This makes
+        `finetune_from` / `init_checkpoint` a fresh-start-only seed: a restarted
+        fine-tune resumes from its own checkpoints and never re-reads the source
+        checkpoint.
+        """
         if self._resume_from:
             return True
         for d in (self._output_dir, os.path.join(self._output_dir, 'resume')):
@@ -679,7 +682,7 @@ class YoloV8Trainer:
 
             if n_collected < n_summary:
                 imgs_np = images.numpy()   # [B, H, W, 3] uint8 from the eval parser
-                # Renderers expect float [0, 1]; eval parser emits uint8 → /255.
+                # Renderers expect float [0, 1]; eval parser emits uint8 -> /255.
                 if imgs_np.dtype == np.uint8:
                     imgs_np = imgs_np.astype('float32') / 255.0
                 preds   = step_out['predictions']
@@ -784,7 +787,7 @@ class YoloV8Trainer:
             labels  = (inputs[1] if isinstance(inputs, (tuple, list)) and len(inputs) > 1
                        else None)
             imgs_np = images.numpy()   # [B, H, W, 3] uint8 (or float [0,1] in tests)
-            # Renderers expect float [0, 1]; uint8 parser output → /255.
+            # Renderers expect float [0, 1]; uint8 parser output -> /255.
             if imgs_np.dtype == np.uint8:
                 imgs_np = imgs_np.astype('float32') / 255.0
             n       = min(imgs_np.shape[0], n_cfg)
@@ -803,7 +806,7 @@ class YoloV8Trainer:
                 )
 
             if canvas is None:
-                # No labels, or opencv unavailable → log the raw augmented frames.
+                # No labels, or opencv unavailable -> log the raw augmented frames.
                 canvas = (imgs_np[:n] * 255.0).clip(0, 255).astype('uint8')
 
             with self._tb_writer.as_default():
@@ -821,7 +824,7 @@ class YoloV8Trainer:
         """Parse the global step from a 'ckpt-<step>' checkpoint path (-1 if not parseable).
 
         All managed saves use ``checkpoint_number=global_step``, so the basename
-        suffix IS the global step — comparable across the main and resume/ dirs.
+        suffix IS the global step, comparable across the main and resume/ dirs.
         """
         try:
             return int(os.path.basename(path).rsplit('ckpt-', 1)[1])
@@ -834,7 +837,7 @@ class YoloV8Trainer:
 
         Used to arbitrate between the main (epoch-boundary) directory and the
         resume/ (interruption) directory: a mid-epoch interruption save has a
-        higher step than the last boundary save until the next boundary lands —
+        higher step than the last boundary save until the next boundary lands,
         after which the boundary checkpoint wins and the stale resume save is
         ignored ("used once" semantics, with no bookkeeping to corrupt).
         """
@@ -849,7 +852,7 @@ class YoloV8Trainer:
         Considers BOTH the main (epoch-boundary) checkpoints and the resume/
         (interruption) checkpoints and restores whichever has the highest global
         step. Uses the explicit `completed_epochs` counter saved in the
-        checkpoint — not global_step // steps_per_loop — so resume is exact even
+        checkpoint, not global_step // steps_per_loop, so resume is exact even
         after mid-epoch SIGINT (the fixed-count epoch loop then runs only the
         remainder to the next boundary, so no step is skipped or repeated).
 
@@ -908,7 +911,7 @@ class YoloV8Trainer:
         log.debug("Checkpoint saved: %s", path)
 
     def _save_resume_checkpoint(self) -> None:
-        """Interruption save → resume/ (rotating, max 2) — main dir stays clean."""
+        """Interruption save -> resume/ (rotating, max 2); main dir stays clean."""
         path = self._resume_ckpt_manager.save(
             checkpoint_number=int(self._global_step)
         )
@@ -920,11 +923,11 @@ class YoloV8Trainer:
         best_dir     = os.path.join(self._output_dir, f'best_{metric_name}')
         os.makedirs(best_dir, exist_ok=True)
         # Saves the raw (live) model weights plus the optimizer + step counters,
-        # like a periodic checkpoint — no EMA swap into `model/`. The EMA shadow
+        # like a periodic checkpoint; no EMA swap into `model/`. The EMA shadow
         # weights are tracked inside the wrapper (`optimizer=self._optimizer`), so
         # this checkpoint already serializes them; eval/export recover them via
         # `ema.swap_in(model)`. Swapping EMA into `model/` would pair EMA weights
-        # with SGD velocity slots computed against the raw weights — an incoherent
+        # with SGD velocity slots computed against the raw weights, an incoherent
         # (weights, momentum) pair that corrupts a training resume.
         #
         # The optimizer + counters are required for resume: without the SGD
@@ -967,7 +970,7 @@ class YoloV8Trainer:
         """tf.summary.scalar with a markdown name+formula description (TB tooltip).
 
         ``key`` is the short metric key for the description lookup; defaults to the
-        last path segment of ``tag`` (e.g. 'train/lr' → 'lr').
+        last path segment of ``tag`` (e.g. 'train/lr' -> 'lr').
         """
         from eval.metric_meta import describe
         lookup = key if key is not None else tag.split('/')[-1]
@@ -979,7 +982,7 @@ class YoloV8Trainer:
 
         ``step_time`` is the compute time (the train step itself); ``data_wait``
         is the time spent waiting on the input pipeline for this batch. The
-        throughput is computed from their SUM (wall clock) — reporting compute
+        throughput is computed from their SUM (wall clock); reporting compute
         only would overstate speed whenever training is input-bound.
         """
         sgd        = self._optimizer._optimizer
@@ -996,7 +999,7 @@ class YoloV8Trainer:
         momentum   = (float(sgd._current_momentum())
                       if hasattr(sgd, '_current_momentum') else 0.0)
         wall       = step_time + data_wait
-        # Merged batch (detection + distance rows) — what the step actually consumed.
+        # Merged batch (detection + distance rows), what the step actually consumed.
         throughput = self._merged_batch_size / max(wall, 1e-9)
         # Ask the EMA wrapper itself so the logged value honors the configured
         # average_decay and dynamic_decay.
@@ -1008,8 +1011,8 @@ class YoloV8Trainer:
             self._scalar('train/lr',                   lr,               step=step)
             self._scalar('train/momentum',             momentum,         step=step)
             self._scalar('train/ema_decay',            ema_decay,        step=step)
-            # Update-to-weight ratio (Karpathy): lr·‖grad‖ / ‖weights‖. A healthy SGD
-            # run sits around 1e-3; far above → LR too high, far below → too low / stuck.
+            # Update-to-weight ratio (Karpathy): lr * ||grad|| / ||weights||. A healthy SGD
+            # run sits around 1e-3; far above -> LR too high, far below -> too low / stuck.
             gnorm = float(losses.get('grad_norm', 0.0))
             wnorm = float(losses.get('weight_norm', 0.0))
             self._scalar('train/update_ratio', lr * gnorm / max(wnorm, 1e-12), step=step,

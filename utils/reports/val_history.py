@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Inspect / extract / export a run's validation history (``val_history.jsonl``).
+"""Inspect / extract / export a run's validation history (`val_history.jsonl`).
 
-The trainer appends one validation report per epoch to ``<run>/val_history.jsonl``
-(see ``eval/val_history.py``). This is the read side: list the trend, pull any single
-epoch/checkpoint (or the best) back into the exact ckpt-format **txt**, raw **json**, or
-a best-conf **csv**, and export one or many reports to **xlsx** / **parquet** for trend
-analysis. The input may also be a single report JSON (a ``<ckpt>_val.json`` from
-``utils.eval --output_dir``); it is rendered / exported directly.
+The trainer appends one validation report per epoch to `<run>/val_history.jsonl`
+(see `eval/val_history.py`). This is the read side: list the trend, pull any single
+epoch/checkpoint (or the best) back into the exact ckpt-format txt, raw json, or
+a best-conf csv, and export one or many reports to xlsx / parquet for trend
+analysis. The input may also be a single report JSON (a `<ckpt>_val.json` from
+`utils.eval --output_dir`); it is rendered / exported directly.
 
 Usage:
     # trend table of every epoch (epoch / step / F1score50 / mAP / mAP50 / AR100)
@@ -23,11 +23,11 @@ Usage:
     # export the best epoch to an xlsx workbook (best_conf / all_conf / mean sheets)
     python -m utils.reports.val_history <run> --best --format xlsx -o best.xlsx
 
-    # export the WHOLE run to parquet (row per class x threshold x epoch)
+    # export the whole run to parquet (row per class x threshold x epoch)
     python -m utils.reports.val_history <run> --format parquet -o /tmp/run.parquet
 
 Arguments:
-    path                 run directory / ``val_history.jsonl``, or a single report JSON.
+    path                 run directory / `val_history.jsonl`, or a single report JSON.
     --list               print the trend table (default when no selector given).
     --sort COL           sort the trend table by this column (default: epoch).
     --epoch N            select the record for epoch N.
@@ -63,10 +63,10 @@ def _is_report(obj) -> bool:
 
 
 def _load_input(path):
-    """Resolve ``path`` to a list of report records.
+    """Resolve `path` to a list of report records.
 
-    Accepts a run directory / ``val_history.jsonl`` (many records) or a single report
-    JSON file (one record). Returns ``(records, is_single_report)``.
+    Accepts a run directory / `val_history.jsonl` (many records) or a single report
+    JSON file (one record). Returns `(records, is_single_report)`.
     """
     if os.path.isfile(path) and path.endswith('.json') and not path.endswith('.jsonl'):
         with open(path) as f:
@@ -119,7 +119,7 @@ def _render_selected(rec, fmt, best_only):
                         f"{r['f1']:.6f}", f"{r['precision']:.6f}",
                         f"{r['recall']:.6f}", f"{r['conf_threshold']:.4f}"])
         return buf.getvalue()
-    # txt — reuse the exact ckpt-format writer (record is a superset of the report)
+    # txt: reuse the exact ckpt-format writer (record is a superset of the report).
     import tempfile
     with tempfile.NamedTemporaryFile('w+', suffix='.txt', delete=True) as tf:
         metrics_report.write_txt(rec, tf.name)
@@ -191,7 +191,7 @@ def _export_tabular(records, fmt, out_path):
         except ImportError:
             sys.exit("xlsx export needs openpyxl: pip install openpyxl")
         written = [out_path]
-    else:  # parquet — best_conf and all_conf have different schemas -> two files
+    else:  # parquet: best_conf and all_conf have different schemas -> two files
         stem = os.path.splitext(out_path)[0]
         pb, pa = stem + '_best_conf.parquet', stem + '_all_conf.parquet'
         try:

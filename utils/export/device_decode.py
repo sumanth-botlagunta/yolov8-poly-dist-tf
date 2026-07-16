@@ -18,8 +18,8 @@ Device outputs (levels concatenated 3->4->5, batch dim dropped, N anchors):
 
 reconstruct_detections turns those into the same dict the in-repo deploy path
 (models/detection_generator.py::YoloV8Layer) returns, with a leading batch axis of 1:
-bbox (yxyx normalized), classes, confidence, num_detections, and — when the polygon
-/ distance heads are present — polygons (conf, dist, angle activated) and distance
+bbox (yxyx normalized), classes, confidence, num_detections, and, when the polygon
+/ distance heads are present, polygons (conf, dist, angle activated) and distance
 (metres). All values are numpy arrays; callers wrap them in tf.constant if needed.
 """
 
@@ -87,10 +87,10 @@ def reconstruct_detections(dev_out, model_h, model_w, *, max_boxes=300,
         dev_out: mapping head name -> array. Must contain 'box' [N,4] and 'cls'
             [N,C]. 'poly_angle'/'poly_dist'/'poly_conf' [N,P] and 'dist' [N,1] are
             decoded when present. Values may be numpy arrays or objects exposing
-            ``.numpy()`` (e.g. tf tensors from a SavedModel signature call).
+            `.numpy()` (e.g. tf tensors from a SavedModel signature call).
         model_h, model_w: the model input height / width the export was traced at
             (the anchor grid and box normalization use these).
-        legacy_box_order: True (the export default) means ``box`` is [t,l,b,r]
+        legacy_box_order: True (the export default) means `box` is [t,l,b,r]
             (y-first) and is reordered to [l,t,r,b] before decode; False assumes the
             repo-native [l,t,r,b]. A mismatch transposes every box.
 
@@ -177,7 +177,7 @@ def reconstruct_detections(dev_out, model_h, model_w, *, max_boxes=300,
     if has_poly:
         if k:
             # Radial distances train in the assigned anchor's GRID units
-            # (reference convention): normalized radius = softplus(raw) ×
+            # (reference convention): normalized radius = softplus(raw) *
             # stride/img. Build the per-anchor stride vector over the flat N.
             stride_flat = np.concatenate([
                 np.full((model_h // s) * (model_w // s), s, dtype=np.float64)

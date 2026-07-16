@@ -1,12 +1,12 @@
 """TFDS decoder classes for polygon detection and distance datasets.
 
-Access pattern mirrors TF Model Garden MSCOCODecoder — direct access only:
+Access pattern mirrors TF Model Garden MSCOCODecoder, direct access only:
   data['image']                   top-level
   data['image/id']                literal slash key
   data['objects']['bbox']         two-step nested for per-object fields
   data['objects']['label']
   data['objects']['is_crowd']
-  data['objects']['area']         dtype int64 in TFDS → cast to float32
+  data['objects']['area']         dtype int64 in TFDS -> cast to float32
   data['objects']['points']       polygon coords (not 'polygon_points')
   data['objects']['is_dontcare']  dontcare flag (not 'dontcare')
 
@@ -31,7 +31,7 @@ servingbot_polygon:1.0.1
       objects/distance:  float32 [N]
       (no objects/is_dontcare)
 
-cleaner_copy_paste:1.0.0   — FLAT, no nested 'objects' dict
+cleaner_copy_paste:1.0.0 - FLAT, no nested 'objects' dict
     image:          uint8  [H, W, 4]   RGBA
     image/filename: string
     image/id:       int64
@@ -122,10 +122,10 @@ class PolygonDecoder:
             height = tf.cast(shape[0], tf.int32)
             width = tf.cast(shape[1], tf.int32)
 
-        # source_id — 'image/id' is a literal flat key in TFDS (slash in key name)
+        # source_id: 'image/id' is a literal flat key in TFDS (slash in key name).
         source_id = tf.strings.as_string(tf.cast(data['image/id'], tf.int64))
 
-        # per-object fields — always two-step: data['objects'][field]
+        # Per-object fields are always two-step: data['objects'][field].
         objects = data['objects']
 
         boxes = tf.cast(objects['bbox'], tf.float32)        # [N, 4]
@@ -141,7 +141,7 @@ class PolygonDecoder:
             is_crowd = tf.zeros([n], dtype=tf.bool)
 
         try:
-            area = tf.cast(objects['area'], tf.float32)     # int64 in TFDS → float32
+            area = tf.cast(objects['area'], tf.float32)     # int64 in TFDS -> float32
         except KeyError:
             area = tf.zeros([n], dtype=tf.float32)
 
@@ -150,13 +150,14 @@ class PolygonDecoder:
         except KeyError:
             polygons = tf.zeros([n, self._max_vertices + 2], dtype=tf.float32) - 1.0
 
-        # is_dontcare exists in cleaner datasets; ServingBot has no such field
+        # is_dontcare exists in cleaner datasets; ServingBot has no such field.
         try:
             dontcare = tf.cast(objects['is_dontcare'], tf.int64)
         except KeyError:
             dontcare = tf.zeros([n], dtype=tf.int64)
 
-        # No distance in detection datasets — sentinel so schema matches ServingBot
+        # No distance in detection datasets; sentinel keeps the schema aligned
+        # with ServingBotDetDecoder.
         dists = tf.fill([n], -1.0)
 
         return {
@@ -223,8 +224,8 @@ class ServingBotDetDecoder(PolygonDecoder):
 class CopyPasteDecoder:
     """Decode cleaner_copy_paste:1.0.0 TFDS records (RGBA object crops).
 
-    This dataset has a FLAT schema — no nested 'objects' dict.  Every field
-    is a scalar or 1-D tensor at the top level of the feature dict.  Each
+    This dataset has a FLAT schema (no nested 'objects' dict); every field
+    is a scalar or 1-D tensor at the top level of the feature dict. Each
     TFDS example is one object crop with an alpha mask in channel 3.
 
     Output schema:
@@ -247,7 +248,7 @@ class CopyPasteDecoder:
             image.set_shape([None, None, 4])
         image = tf.cast(image, tf.uint8)  # [H, W, 4]
 
-        # All fields are flat top-level keys — no objects sub-dict
+        # All fields are flat top-level keys; no objects sub-dict.
         return {
             'image': image,
             'image/id': tf.cast(data['image/id'], tf.int64),

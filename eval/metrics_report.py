@@ -1,24 +1,20 @@
-"""Build and export the per-category F1 / precision / recall validation report.
+"""Builds and exports the per-category F1 / precision / recall validation report.
 
-The canonical store is **JSON** (full-precision, dependency-free). From a saved JSON
-(or directly from a `COCOEvaluator`) this writes the human/usable formats:
+The canonical store is JSON (full-precision, dependency-free). From a saved
+JSON (or directly from a COCOEvaluator) this writes the human-usable formats:
 
-  * ``.txt``  — console-style tables (best-conf per category + all-confidence sweep),
-                matching the on-device eval print format.
-  * ``.csv``  — two files: ``<base>_best_conf.csv`` and ``<base>_all_conf.csv``.
-  * ``.xlsx`` — one workbook, two sheets: "best_conf" (all classes at their best
-                confidence) and "all_conf" (all classes at every confidence).
+  * .txt: console-style tables (best-conf per category + all-confidence sweep),
+    matching the on-device eval print format.
+  * .csv: two files, <base>_best_conf.csv and <base>_all_conf.csv.
+  * .xlsx: one workbook, two sheets ("best_conf", "all_conf"), written with the
+    standard library only (minimal OOXML zip; no pandas/openpyxl). Numbers are
+    real numeric cells.
 
-Excel is written with the standard library only (a minimal OOXML zip), so it works
-without pandas/openpyxl. Numbers are written as real numeric cells (Excel can sum/sort).
-
-Typical use:
-  * During training the trainer calls :func:`build_report` and appends the result
-    (one line per validation) to ``<run>/val_history.jsonl`` via
-    ``eval/val_history.py``. ``utils/eval.py --output_dir`` uses :func:`save_canonical`
-    to drop a ``<ckpt>_val.json`` + ``.txt`` pair for a single offline evaluation.
-  * Offline, ``utils/reports/val_history.py`` reads a report JSON (or an epoch from the
-    jsonl store) and calls :func:`write_csv` / :func:`write_xlsx` / :func:`write_txt`.
+During training the trainer calls build_report and appends the result to
+<run>/val_history.jsonl via eval/val_history.py; utils/eval.py --output_dir
+uses save_canonical for a single offline evaluation. Offline,
+utils/reports/val_history.py reads a report JSON (or an epoch from the jsonl
+store) and calls write_csv / write_xlsx / write_txt.
 """
 
 from __future__ import annotations
@@ -29,7 +25,7 @@ import os
 import zipfile
 from typing import Dict, List, Optional
 
-# Class-id → name (best effort; falls back to the bare id).
+# Class-id -> name (best effort; falls back to the bare id).
 try:
     from configs.class_map import DETECTION_CLASSES
     _NAMES = {int(k): str(v) for k, v in DETECTION_CLASSES.items()} \
@@ -49,11 +45,12 @@ def _name(cat: int) -> str:
 
 def build_report(coco_ev, conf_grid=None, epoch=None, step=None,
                  extra: Optional[dict] = None, envelope_sweep: bool = False) -> dict:
-    """Assemble the report dict from a COCOEvaluator (after ``evaluate()``).
+    """Assembles the report dict from a COCOEvaluator (after evaluate()).
 
-    ``envelope_sweep=False`` (default) builds the all-conf table from the raw
-    operating-point sweep so it matches the headline F1score50 / best-conf table;
-    ``envelope_sweep=True`` uses COCO's interpolated envelope precision instead.
+    envelope_sweep=False (default) builds the all-conf table from the raw
+    operating-point sweep so it matches the headline F1score50 / best-conf
+    table; envelope_sweep=True uses COCO's interpolated envelope precision
+    instead.
     """
     tables = coco_ev.metrics_tables(conf_grid=conf_grid, envelope_sweep=envelope_sweep)
     report = {
@@ -83,7 +80,11 @@ def load_json(path: str) -> dict:
 
 
 def save_canonical(report: dict, out_dir: str, basename: str) -> Dict[str, str]:
-    """Write the per-validation canonical artifacts (json + txt). Returns paths."""
+    """Writes the per-validation canonical artifacts (json + txt).
+
+    Returns:
+      Dict with 'json' and 'txt' paths.
+    """
     os.makedirs(out_dir, exist_ok=True)
     jp = write_json(report, os.path.join(out_dir, basename + '.json'))
     tp = write_txt(report, os.path.join(out_dir, basename + '.txt'))
@@ -137,7 +138,7 @@ def write_txt(report: dict, path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# CSV (two files = the two "sheets")
+# CSV (two files, one per sheet)
 # ---------------------------------------------------------------------------
 
 def write_csv(report: dict, out_dir: str, base: str) -> Dict[str, str]:
@@ -162,7 +163,7 @@ def write_csv(report: dict, out_dir: str, base: str) -> Dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# XLSX — minimal OOXML, stdlib only, two sheets
+# XLSX (minimal OOXML, stdlib only, two sheets)
 # ---------------------------------------------------------------------------
 
 def _xml_escape(s: str) -> str:
@@ -198,7 +199,7 @@ def _sheet_xml(rows: List[list]) -> str:
 
 
 def _xlsx(path: str, sheets: List[tuple]) -> str:
-    """sheets = [(name, rows), ...]; rows = list of lists (str or number cells)."""
+    """Writes an xlsx workbook; sheets = [(name, rows), ...], rows = lists of str or number cells."""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     n = len(sheets)
     content_types = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
@@ -242,13 +243,13 @@ def _xlsx(path: str, sheets: List[tuple]) -> str:
 
 
 def write_xlsx(report: dict, path: str) -> str:
-    """One workbook, two sheets: best_conf (per class at best conf) and all_conf."""
+    """Writes one workbook with two sheets: best_conf and all_conf."""
     best_rows = [['category', 'name', 'f1', 'precision', 'recall', 'conf_threshold']]
     for r in report.get('best_conf', []):
         best_rows.append([int(r['category']), _name(r['category']),
                           round(r['f1'], 6), round(r['precision'], 6),
                           round(r['recall'], 6), round(r['conf_threshold'], 4)])
-    # mean row at the bottom of best_conf
+    # Mean row at the bottom of best_conf.
     m = report.get('mean', {})
     best_rows.append(['MEAN', '', round(m.get('f1', 0), 6),
                       round(m.get('precision', 0), 6), round(m.get('recall', 0), 6), ''])

@@ -1,16 +1,16 @@
 """Mosaic and MixUp augmentation combining multiple images.
 
-Mosaic stitches 4 images into a 2×-size canvas at a random center, then one
+Mosaic stitches 4 images into a 2x-size canvas at a random center, then one
 ``random_perspective`` warps the canvas back to the output size. The same warp
 runs on non-mosaic single images, so it is the pipeline's one geometric
 transform (the parser applies no affine).
 
 Placement is upright (matching stock YOLO mosaic): each source is resized so its
 long side equals the output size and placed toward its cell's center corner
-(overflow cropped, no letterbox pad) — a consistent per-image scale, not a random
-one. Size variety comes only from the canvas→output warp's scale gain
+(overflow cropped, no letterbox pad), a consistent per-image scale, not a random
+one. Size variety comes only from the canvas->output warp's scale gain
 ``[aug_scale_min, aug_scale_max]``. Rotation is rare: the warp rotates only with
-probability ``rotate_prob`` by ±``degrees``. The split center shifts H+V
+probability ``rotate_prob`` by +/-``degrees``. The split center shifts H+V
 (``mosaic_center``), so each tile's visible crop varies and boxes/polygons are cut
 at the moving edges.
 
@@ -38,22 +38,22 @@ images are decoded per emitted sample.
 Configuration (parser.mosaic in the experiment YAML):
     mosaic_frequency: 0.5
     mixup_frequency: 0.0     (per-output probability of blending with a second
-                              mosaic — Ultralytics MixUp; 0 = off, the default)
+                              mosaic, Ultralytics MixUp; 0 = off, the default)
     group_size: 32           (mosaic source pool per group)
     decodes_per_output: 4    (R: 4 = no reuse; lower = more reuse, less decode)
-    mosaic_center: 0.25      (half-range of the split point; the 2× canvas split
+    mosaic_center: 0.25      (half-range of the split point; the 2x canvas split
                               lands in [H(1-2c), H(1+2c)])
-    aug_scale_min / aug_scale_max: canvas→output warp scale-gain bounds. Per-image
+    aug_scale_min / aug_scale_max: canvas->output warp scale-gain bounds. Per-image
                               placement scale is fixed (long side fills the output),
                               not random.
-    degrees: 10.0            (rotation ± magnitude, degrees — applied only when the
+    degrees: 10.0            (rotation +/- magnitude, degrees; applied only when the
                               rotate_prob coin fires)
     rotate_prob: 0.10        (probability a given output is rotated at all)
-    shear: 0.0               (shear ±, degrees; 0 = no shear)
-    perspective: 0.0         (perspective coefficient ±; 0 disables)
-    translate: 0.1           (translation ± as a fraction of output size)
+    shear: 0.0               (shear +/-, degrees; 0 = no shear)
+    perspective: 0.0         (perspective coefficient +/-; 0 disables)
+    translate: 0.1           (translation +/- as a fraction of output size)
     area_thresh: 0.5         (min visible box-area fraction to keep on the
-                              MOSAIC path — the legacy mosaic value; the single
+                              MOSAIC path, the legacy mosaic value; the single
                               path filters at the parser-level 0.1 instead)
 
 Classes:
@@ -90,7 +90,7 @@ def _place_in_cell(
     """Place a resized image R into a (cell_h, cell_w) gray-114 cell.
 
     R's top-left corner is positioned at (top_y, top_x) within the cell (may be
-    negative → R is cropped); regions of the cell not covered by R stay 114.
+    negative -> R is cropped); regions of the cell not covered by R stay 114.
     Pure crop + pad so it runs in graph mode.
     """
     nh = tf.shape(R)[0]
@@ -118,9 +118,9 @@ def _scale_box_poly_to_canvas(
     padh: tf.Tensor, padw: tf.Tensor,
     H2: tf.Tensor, W2: tf.Tensor,
 ) -> Tuple[tf.Tensor, tf.Tensor]:
-    """Map an example's boxes/polygons (input-normalized) into 2× canvas-normalized.
+    """Map an example's boxes/polygons (input-normalized) into 2x canvas-normalized.
 
-    canvas_px = coord_in_px * scaled_dim + pad; then / canvas size. No clipping —
+    canvas_px = coord_in_px * scaled_dim + pad; then / canvas size. No clipping;
     the subsequent random_perspective clips to the output edge.
     """
     nh_f = tf.cast(nh, tf.float32); nw_f = tf.cast(nw, tf.float32)
@@ -164,14 +164,14 @@ def _scale_box_poly_to_canvas(
 # _SIDON_SHIFTS: source-selection shift sets keyed by R = decodes_per_output.
 # Output j draws its 4 sources at perm[(j*R + s) % G] for s in the set. A set is
 # valid for a given R when:
-#   1. Uniform reuse — the shifts cover each residue class mod R exactly 4/R
+#   1. Uniform reuse: the shifts cover each residue class mod R exactly 4/R
 #      times, so every image is used in exactly 4/R outputs.
-#   2. Sidon property (mod G, including sign) — all pairwise shift differences
+#   2. Sidon property (mod G, including sign): all pairwise shift differences
 #      are distinct, so any two outputs share at most one source image. A
 #      difference d collides with -d' when d + d' == G (with itself when 2d == G).
 # _SIDON_MIN_G is the smallest group size at which each set's difference
-# collection stays collision-free mod G ({±1,±2,±3,±4,±6,±7} for R=1;
-# {±1,±3,±4,±5,±8,±9} for R=2). Below it (and for R not listed) selection falls
+# collection stays collision-free mod G ({+/-1,+/-2,+/-3,+/-4,+/-6,+/-7} for R=1;
+# {+/-1,+/-3,+/-4,+/-5,+/-8,+/-9} for R=2). Below it (and for R not listed) selection falls
 # back to the contiguous window. R=4 uses the contiguous window by construction:
 # the windows tile the permutation, so the Sidon concern is vacuous.
 _SIDON_SHIFTS = {1: (0, 1, 3, 7), 2: (0, 1, 4, 9), 4: (0, 1, 2, 3)}
@@ -290,7 +290,7 @@ class Mosaic:
         # Per-tile RANDOM-WINDOW CROP. When tile_crop_max > 0, each mosaic tile
         # crops a random window of side fraction s ~ U[tile_crop_min, tile_crop_max]
         # of its content (random position within bounds), then scales the crop to
-        # its quadrant — a zoom/translate scale-invariance signal. 0/0 disables it
+        # its quadrant, a zoom/translate scale-invariance signal. 0/0 disables it
         # (the content region fills its quadrant unchanged).
         if (tile_crop_max > 0.0) and not (0.0 < tile_crop_min <= tile_crop_max <= 1.0):
             raise ValueError(
@@ -306,7 +306,7 @@ class Mosaic:
         self._single_rotate_degrees = (
             single_rotate_degrees if single_rotate_degrees is not None else 0.0)
         # Mosaic-branch tile resizes draw a random interpolation kernel when
-        # enabled (parser-level resize_with_random_method) — an implicit
+        # enabled (parser-level resize_with_random_method), an implicit
         # regularizer the reference pipeline applies to mosaic resizes only.
         self._resize_with_random_method = resize_with_random_method
         # Copy-paste module (optional). When set, each mosaic TILE independently
@@ -326,12 +326,12 @@ class Mosaic:
             single_scale_max if single_scale_max is not None else aug_scale_max)
         self._single_translate = (
             single_translate if single_translate is not None else translate)
-        # The mosaic warp culls at area_thresh (0.5 — the legacy mosaic value);
+        # The mosaic warp culls at area_thresh (0.5, the legacy mosaic value);
         # the single-image warp reads the parser-level area_thresh (0.1) via
         # single_area_thresh, so the two paths remain independently configurable.
         self._single_area_thresh = (
             single_area_thresh if single_area_thresh is not None else area_thresh)
-        # Flip ownership: when True, this module flips — each mosaic tile
+        # Flip ownership: when True, this module flips: each mosaic tile
         # independently (before placement; the assembled canvas is never mirrored)
         # and each single image once. The detection train parser's flip must then
         # be off or images would flip twice (input_reader wires that). Default
@@ -363,14 +363,14 @@ class Mosaic:
         decode cost per emitted sample is exactly ``decodes_per_output`` (R) and the epoch
         step count is unchanged (the trainer runs a fixed number of steps).
 
-        Image diversity — each output independently:
-          * flips ``mosaic_frequency`` (a **per-output** coin flip — not per-group — so the
+        Image diversity (each output independently):
+          * flips ``mosaic_frequency`` (a per-output coin flip, not per-group, so the
             per-sample mosaic probability is exactly ``mosaic_frequency`` with no batch
             clustering);
-          * if mosaic, draws **4 distinct** source images from one per-group random
+          * if mosaic, draws 4 distinct source images from one per-group random
             permutation at the ``_window_shifts(R, G)`` offsets. At R=4 the shifts tile
             the permutation, so every output's 4 images are disjoint from every other
-            output's — stock-YOLO, zero reuse. At R<4 each image recurs in ``4/R``
+            output's (stock YOLO, zero reuse). At R<4 each image recurs in ``4/R``
             outputs, and the Sidon shifts guarantee any two outputs share at most one
             source image (no near-duplicate outputs);
           * if single, ``_single`` on the output's first source image.
@@ -398,7 +398,7 @@ class Mosaic:
                 return _stack_results(results)
 
             # One random permutation of the group per call. Output j reads sources
-            # at perm[(j·R + s) % G] for the four Sidon shifts s. At R=4 the shifts
+            # at perm[(j*R + s) % G] for the four Sidon shifts s. At R=4 the shifts
             # are the contiguous window {0,1,2,3} and tile the permutation (disjoint
             # outputs, zero reuse). At R<4 the Sidon set keeps per-image reuse at
             # exactly 4/R while any two outputs share at most one source image.
@@ -446,9 +446,9 @@ class Mosaic:
         """Horizontally flip an example dict with probability 0.5.
 
         ``random_horizontal_flip`` draws its own coin, mirrors box x
-        (xmin ↔ 1 − xmax) and valid polygon x (keeping the -1 sentinel).
+        (xmin <-> 1 - xmax) and valid polygon x (keeping the -1 sentinel).
         Applied per mosaic TILE (before placement) and per single image, so
-        tiles of one mosaic flip independently — the assembled canvas itself
+        tiles of one mosaic flip independently; the assembled canvas itself
         is never mirrored.
         """
         img, boxes, polys = random_horizontal_flip(
@@ -473,12 +473,12 @@ class Mosaic:
         area_thresh: Optional[float] = None,
         min_side: float = 0.003,
     ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
-        """random_perspective with this module's params → output size.
+        """random_perspective with this module's params -> output size.
 
         The warp never rotates (degrees/rotate_prob forced to 0); single-path
         rotation is the separate optional pre-warp step. The scale gain is drawn
         from the [aug_scale_min, aug_scale_max] bounds, or the per-call override
-        (the single path passes its own bounds/translate, and min_side=0.0 —
+        (the single path passes its own bounds/translate, and min_side=0.0;
         the 2px size floor is mosaic-only).
         """
         return random_perspective(
@@ -565,13 +565,13 @@ class Mosaic:
         }
 
     def _single(self, ex: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
-        """Non-mosaic path: (optional rotation) → flip → single-path warp.
+        """Non-mosaic path: (optional rotation) -> flip -> single-path warp.
 
         The image arrives LETTERBOXED to the output size (aspect-preserved content
         inset with gray margins), so border objects survive the pre-resize and the
         subsequent translate can no longer expel them wholesale. Optional pre-warp
         rotation (single_rotate) is applied first, then flip, then the single warp
-        (single_scale_min/max + single_translate — no scale gain, a small translate).
+        (single_scale_min/max + single_translate: no scale gain, a small translate).
         The single path ignores all cnp_* fields (copy-paste is mosaic-only).
         """
         img = ex['image']
@@ -612,7 +612,7 @@ class Mosaic:
         quadrant. Using the ORIGINAL capture dims ('height'/'width') the content box
         is reconstructed with the SAME letterbox geometry, the content is sliced, and
         the GT (currently letterbox-normalized) is mapped back to CONTENT-normalized
-        coords (the exact inverse of the pre-resize — i.e. the original decoder
+        coords (the exact inverse of the pre-resize, i.e. the original decoder
         coords). When 'height'/'width' are absent (some direct-call tests) the whole
         image is treated as content (identity), which is exact for square inputs.
         """
@@ -767,7 +767,7 @@ class Mosaic:
         return boxes_w, polys_w, keep
 
     def _prepare_tile(self, ex: Dict[str, tf.Tensor]) -> Dict[str, tf.Tensor]:
-        """Slice content → copy-paste → per-tile flip → tile-crop for one tile."""
+        """Slice content -> copy-paste -> per-tile flip -> tile-crop for one tile."""
         cex = self._content_example(ex)
         cex = self._paste_tile(cex)
         if self._random_flip:
@@ -790,23 +790,23 @@ class Mosaic:
     ) -> Dict[str, tf.Tensor]:
         """Mosaic-warp 4 images to the output in a single resample per source.
 
-        Assemble the 2× canvas (per-image ``tf.image.resize`` at the drawn scale,
+        Assemble the 2x canvas (per-image ``tf.image.resize`` at the drawn scale,
         ``_place_in_cell`` crop/pad, concat) and apply one ``apply_perspective_image``
-        warp canvas→output. Per-tile resize + one warp is used because a full-frame
+        warp canvas->output. Per-tile resize + one warp is used because a full-frame
         per-tile warp variant is several times slower on CPU
         (``ImageProjectiveTransformV3`` costs far more per pixel than
         ``tf.image.resize``); both forms are geometrically identical, and labels go
-        through ``_scale_box_poly_to_canvas`` → ``transform_boxes_polygons`` with the
+        through ``_scale_box_poly_to_canvas`` -> ``transform_boxes_polygons`` with the
         same single ``M``.
 
-        Quadrant → example: TL=one, TR=two, BL=three, BR=four. The warp scale gain
+        Quadrant -> example: TL=one, TR=two, BL=three, BR=four. The warp scale gain
         is drawn from the [aug_scale_min, aug_scale_max] bounds.
         """
         H, W = self._H, self._W
         H2 = tf.constant(2 * H, tf.int32)
         W2 = tf.constant(2 * W, tf.int32)
 
-        # Random split point on the 2× canvas: [H(1-2c), H(1+2c)] clipped.
+        # Random split point on the 2x canvas: [H(1-2c), H(1+2c)] clipped.
         c = self._center
         yc = tf.cast(tf.round(tf.random.uniform([], H * (1.0 - 2.0 * c), H * (1.0 + 2.0 * c))), tf.int32)
         xc = tf.cast(tf.round(tf.random.uniform([], W * (1.0 - 2.0 * c), W * (1.0 + 2.0 * c))), tf.int32)
@@ -819,7 +819,7 @@ class Mosaic:
         examples = [self._prepare_tile(ex) for ex in (one, two, three, four)]
         boxes_list, polys_list = [], []
 
-        # Draw the global canvas→output matrix once (same params as self._warp;
+        # Draw the global canvas->output matrix once (same params as self._warp;
         # scale gain from the [aug_scale_min, aug_scale_max] bounds). The mosaic
         # canvas never rotates (degrees/rotate_prob = 0).
         M = make_perspective_matrix(
@@ -835,8 +835,8 @@ class Mosaic:
         )
 
         # Per quadrant: resize the (prepared) content to fill its cell, place into
-        # the cell (crop overflow / pad voids with gray 114) — then assemble the 2×
-        # canvas and apply ONE warp canvas→output. tf.image.resize is far cheaper
+        # the cell (crop overflow / pad voids with gray 114), then assemble the 2x
+        # canvas and apply ONE warp canvas->output. tf.image.resize is far cheaper
         # per pixel than the warp op, so total resample cost is 4 small resizes +
         # 1 output-sized warp per emitted mosaic.
         cells = []
@@ -849,7 +849,7 @@ class Mosaic:
             # Placement scale: long side = output size. The content (or tile-crop
             # window) is scaled to fill its quadrant; tiles anchor at the moving
             # center corner so overflow only ever falls AWAY from the other cells
-            # and is cropped at the canvas edge by _place_in_cell — no cross-cell
+            # and is cropped at the canvas edge by _place_in_cell; no cross-cell
             # label corruption. Labels map through the same nh/nw/pad and are
             # clipped/dropped by the final warp's transform_boxes_polygons.
             long_side = tf.maximum(h_in_f, w_in_f)
@@ -857,7 +857,7 @@ class Mosaic:
             nh = tf.maximum(tf.cast(tf.round(h_in_f * place_scale), tf.int32), 1)
             nw = tf.maximum(tf.cast(tf.round(w_in_f * place_scale), tf.int32), 1)
             # Skip the resize when the source is already the placement size (the common
-            # case: images are pre-resized to H² before mosaic, so place_scale == 1 and
+            # case: images are pre-resized to H x H before mosaic, so place_scale == 1 and
             # the resize is a no-op that still allocates + runs a bilinear kernel over
             # ~5.4M pixels per quadrant). Returning `img` is bit-identical (a same-size
             # bilinear resize + uint8 round-trip is the identity on uint8 pixels).
@@ -903,7 +903,7 @@ class Mosaic:
             boxes_list.append(b_c)
             polys_list.append(p_c)
 
-        # Assemble the 2× canvas from the 4 quadrant cells and warp once.
+        # Assemble the 2x canvas from the 4 quadrant cells and warp once.
         top_row = tf.concat([cells[0], cells[1]], axis=1)   # [yc,    2W, 3]
         bot_row = tf.concat([cells[2], cells[3]], axis=1)   # [2H-yc, 2W, 3]
         canvas  = tf.concat([top_row, bot_row], axis=0)     # [2H,    2W, 3]
@@ -927,7 +927,7 @@ class Mosaic:
             'source_id':            one.get('source_id', tf.constant('mosaic')),
         }
 
-        # Annotation transform uses the same global M as the canvas→output image
+        # Annotation transform uses the same global M as the canvas->output image
         # warp, so the label math matches canvas-then-_warp exactly.
         boxes_out, keep, polys_out = transform_boxes_polygons(
             boxes_all, polys_all, M,
@@ -956,7 +956,7 @@ class Mosaic:
         Beta(32, 32) concentrates the mix ratio tightly around 0.5 (Ultralytics' MixUp
         recipe), sampled as ``g1/(g1+g2)`` with ``gi ~ Gamma(32)``. Both inputs are
         already at the output size (mosaic/single results), so the resize is a no-op
-        safeguard. Labels (boxes/classes/polygons/dist/…) from both are concatenated;
+        safeguard. Labels (boxes/classes/polygons/dist/...) from both are concatenated;
         the downstream parser caps at ``max_num_instances`` and builds the radial
         polygon target from the union.
         """

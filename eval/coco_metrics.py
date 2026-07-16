@@ -1,13 +1,10 @@
 """COCO-style detection evaluator.
 
-Computes mAP, mAP50, AR, and F1@50 over accumulated prediction/GT batches using a
-single :class:`~eval.coco_eval_custom.COCOevalCustom` instance, so every detection
-metric shares one match table, crowd policy, and don't-care absorption pass. All
-bounding boxes are expected in yxyx-normalized format from the model (matching the
-parser convention).
-
-Classes:
-    COCOEvaluator: Accumulates predictions + GT, computes mAP on evaluate().
+Computes mAP, mAP50, AR, and F1@50 over accumulated prediction/GT batches using
+a single COCOevalCustom instance, so every detection metric shares one match
+table, crowd policy, and dontcare absorption pass. All bounding boxes are
+expected in yxyx-normalized format from the model (matching the parser
+convention).
 """
 
 import io
@@ -20,26 +17,29 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-# Category ids treated as crowd regions by the project's crowd policy. Used as the
-# default ``iscrowds_labels`` when a caller does not supply its own list.
+# Category ids treated as crowd regions by the project's crowd policy. Used as
+# the default iscrowds_labels when a caller does not supply its own list.
 DEFAULT_ISCROWD_LABELS = [6, 13, 24, 36, 37]
 
 
 class COCOEvaluator:
     """Wraps pycocotools for per-epoch mAP computation.
 
-    Usage::
-
-        evaluator = COCOEvaluator(num_classes=39, image_size=(672, 672))
-        for batch in val_ds:
-            evaluator.update(predictions, groundtruths)
-        metrics = evaluator.evaluate()  # {'mAP', 'mAP50', 'AR100', 'F1score50'}
-        evaluator.reset()
+    Accumulate batches with update(), then call evaluate() for the metric dict
+    and reset() before the next epoch.
 
     Args:
-        num_classes: Number of detection categories (0-indexed).
-        image_size:  (H, W) of the input image in pixels — used to convert
-                     normalized boxes to absolute pixel coordinates.
+      num_classes: Number of detection categories (0-indexed).
+      image_size: (H, W) of the input image in pixels; used to convert
+        normalized boxes to absolute pixel coordinates.
+      ignore_dontcare: Absorb dontcare regions (see update()).
+      ignore_iscrowds: Drop crowd GT whose class is in iscrowds_labels instead
+        of keeping it.
+      iscrowds_labels: Crowd-policy category ids; defaults to
+        DEFAULT_ISCROWD_LABELS.
+      find_best_score_thresh: Run the F1 confidence-threshold sweep.
+      score_thresh_step: Confidence sweep step.
+      f1_max_dets: Detection budget for the F1 sweep.
     """
 
     def __init__(
@@ -53,14 +53,13 @@ class COCOEvaluator:
         score_thresh_step: float = 0.05,
         f1_max_dets: int = 10,
     ):
-        # Every metric comes from one COCOevalCustom: mAP / mAP50 / AR100 from its
-        # precision/recall summary, and F1score50 from a confidence-threshold sweep
-        # (step 0.05) on the cumulative precision/recall with a hallucination-GT recall
-        # correction, at IoU=0.5 / area='all' / maxDets=10, macro-averaged over
-        # categories with a valid (>= 0) bestF1. The GT-build policy is exposed as
-        # flags: the defaults absorb dontcare regions and keep crowd GT; setting
-        # ``ignore_iscrowds`` instead drops crowd GT. ``iscrowds_labels`` defaults to
-        # the project's crowd-policy category ids.
+        # Every metric comes from one COCOevalCustom: mAP / mAP50 / AR100 from
+        # its precision/recall summary, and F1score50 from a confidence-threshold
+        # sweep (step 0.05) on the cumulative precision/recall with a
+        # hallucination-GT recall correction, at IoU=0.5 / area='all' /
+        # maxDets=10, macro-averaged over categories with a valid (>= 0) bestF1.
+        # The GT-build policy is exposed as flags: the defaults absorb dontcare
+        # regions and keep crowd GT; ignore_iscrowds instead drops crowd GT.
         self._num_classes    = num_classes
         self._H, self._W     = image_size[0], image_size[1]
         self._ignore_dontcare = ignore_dontcare
@@ -77,25 +76,24 @@ class COCOEvaluator:
         # annotation with id=0 would read as unmatched. Start ids at 1.
         self._img_id  = 1
         self._ann_id  = 1
-        self._ev      = None   # single COCOevalCustom (all IoU thresholds + F1 sweep)
+        self._ev      = None   # Single COCOevalCustom (all IoU thresholds + F1 sweep).
 
     def update(self, predictions: dict, groundtruths: dict) -> None:
-        """Accumulate one batch of predictions and GT.
+        """Accumulates one batch of predictions and GT.
+
+        GT handling: is_crowd with class in iscrowds_labels -> skip the GT
+        entirely (not a missed detection). is_dontcare -> carried as a separate
+        'dontcare' field: absorbs overlapping detections (IoU >= 0.5) without
+        counting them as FP, is itself not a TP, and is removed from the recall
+        denominator.
 
         Args:
-            predictions:  Dict with keys 'bbox' [B,N,4], 'classes' [B,N],
-                          'confidence' [B,N], 'num_detections' [B].
-                          All boxes are yxyx-normalized.
-            groundtruths: Dict with keys 'bbox' [B,M,4] yxyx-normalized,
-                          'classes' [B,M] int64, 'n_gt' [B],
-                          optionally 'is_crowd' [B,M] bool,
-                          optionally 'is_dontcare' [B,M] bool.
-
-        GT handling:
-            is_crowd + class in iscrowds_labels → skip GT entirely (not a missed detection).
-            is_dontcare → carried as a separate 'dontcare' field: absorbs overlapping
-                          detections (IoU>=0.5) without counting them as FP, but is
-                          itself not a TP, and is removed from the recall denominator.
+          predictions: Dict with keys 'bbox' [B, N, 4], 'classes' [B, N],
+            'confidence' [B, N], 'num_detections' [B]. All boxes are
+            yxyx-normalized.
+          groundtruths: Dict with keys 'bbox' [B, M, 4] yxyx-normalized,
+            'classes' [B, M] int64, 'n_gt' [B], optionally 'is_crowd' [B, M]
+            bool, optionally 'is_dontcare' [B, M] bool.
         """
         import tensorflow as tf
 
@@ -111,13 +109,13 @@ class COCOEvaluator:
 
             self._gt_imgs.append({'id': img_id, 'height': H, 'width': W})
 
-            # GT annotations
+            # GT annotations.
             for j in range(n_gt):
                 cat       = int(groundtruths['classes'][i, j])
                 is_crowd  = bool(is_crowd_arr[i, j])    if is_crowd_arr    is not None else False
                 is_dc     = bool(is_dontcare_arr[i, j]) if is_dontcare_arr is not None else False
 
-                # iscrowd objects whose class is in the crowd-class list are skipped
+                # iscrowd objects whose class is in the crowd-class list are skipped.
                 if self._ignore_iscrowds and is_crowd and cat in self._iscrowds_labels:
                     continue
 
@@ -143,7 +141,7 @@ class COCOEvaluator:
                 })
                 self._ann_id += 1
 
-            # Detection results
+            # Detection results.
             for j in range(n_det):
                 y1, x1, y2, x2 = [float(v) for v in predictions['bbox'][i, j]]
                 cat   = int(predictions['classes'][i, j])
@@ -159,14 +157,14 @@ class COCOEvaluator:
             self._img_id += 1
 
     def evaluate(self) -> Dict[str, float]:
-        """Compute mAP and related metrics from accumulated data.
+        """Computes mAP and related metrics from accumulated data.
 
-        All metrics come from one :class:`COCOevalCustom`: mAP / mAP50 / AR100 from
-        its summary slots, F1score50 from the confidence-threshold sweep.
+        All metrics come from one COCOevalCustom: mAP / mAP50 / AR100 from its
+        summary slots, F1score50 from the confidence-threshold sweep.
 
         Returns:
-            Dict with keys: mAP, mAP50, AR100, F1score50, precision50, recall50,
-            best_conf_thresh.
+          Dict with keys mAP, mAP50, AR100, F1score50, precision50, recall50,
+          best_conf_thresh.
         """
         from pycocotools.coco import COCO
 
@@ -223,18 +221,19 @@ class COCOEvaluator:
         with redirect_stdout(io.StringIO()):
             ev.evaluate()
             ev.accumulate(find_best_score_thresh=self._find_best_score_thresh)
-            ev.summarize()  # fills ev.stats (12 COCO slots + F1@.5 in slot 12)
+            ev.summarize()  # Fills ev.stats (12 COCO slots + F1@.5 in slot 12).
 
-        self._ev = ev   # keep for per_category_* / metrics_tables()
+        self._ev = ev   # Keep for per_category_* / metrics_tables().
 
         map_val   = float(ev.stats[0])
         map50_val = float(ev.stats[1])
         ar100_val = float(ev.stats[8])
         f1_50     = float(ev.stats[12])
 
-        # Mean precision/recall at each class's best-F1 operating point, averaged over
-        # the SAME categories F1score50 uses (valid bestF1 >= 0), so the three scalars
-        # share a denominator (mean of per-category bestF1 == F1score50).
+        # Mean precision/recall at each class's best-F1 operating point,
+        # averaged over the same categories F1score50 uses (valid bestF1 >= 0),
+        # so the three scalars share a denominator (mean of per-category
+        # bestF1 == F1score50).
         best = self.per_category_best_f1()
         valid_best = [b for b in best if b.get('valid', True)]
         prec_50 = float(np.mean([b['precision'] for b in valid_best])) if valid_best else 0.0
@@ -253,7 +252,7 @@ class COCOEvaluator:
         }
 
     def per_category_ap50(self) -> Dict[int, float]:
-        """Per-category AP@50.  Call after evaluate()."""
+        """Returns per-category AP@50. Call after evaluate()."""
         ev = getattr(self, '_ev', None)
         if ev is None or ev.eval is None:
             return {}
@@ -268,15 +267,15 @@ class COCOEvaluator:
         return result
 
     def per_category_full_metrics(self) -> Dict[int, Dict[str, float]]:
-        """Per-category full COCO metrics (12 per category) after evaluate().
+        """Returns per-category full COCO metrics (12 per category) after evaluate().
 
         Reports the standard 12 COCO metrics per category:
-            ap, ap50, ap75, ap_s, ap_m, ap_l  (precision-based)
-            ar1, ar10, ar100, ar_s, ar_m, ar_l (recall-based)
+        ap, ap50, ap75, ap_s, ap_m, ap_l (precision-based) and
+        ar1, ar10, ar100, ar_s, ar_m, ar_l (recall-based).
 
         Returns:
-            Dict mapping category_id → dict of metric_name → float.
-            Empty if evaluate() has not been called.
+          Dict mapping category_id -> dict of metric_name -> float.
+          Empty if evaluate() has not been called.
         """
         ev = getattr(self, '_ev', None)
         if ev is None or ev.eval is None:
@@ -316,13 +315,13 @@ class COCOEvaluator:
         return result
 
     def _pr_arrays_at_50(self):
-        """(precision, scores, recThrs) at IoU=0.5, area='all', maxDets=f1_max_dets.
+        """Returns (precision, scores, recThrs) at IoU=0.5, area='all', maxDets=f1_max_dets.
 
-        Uses the same detection budget (``f1_max_dets``, default 10) as the headline
-        F1score50 and the per-category best-F1 table, so the all-conf sweep table stays
-        consistent with them. precision/scores are [R=101, K] (recall-point × class);
-        recThrs is [101].
-        Returns (None, None, None) if evaluate() hasn't run.
+        Uses the same detection budget (f1_max_dets, default 10) as the
+        headline F1score50 and the per-category best-F1 table, so the all-conf
+        sweep table stays consistent with them. precision/scores are [R=101, K]
+        (recall-point x class); recThrs is [101]. Returns (None, None, None) if
+        evaluate() has not run.
         """
         ev = getattr(self, '_ev', None)
         if ev is None or ev.eval is None:
@@ -335,8 +334,10 @@ class COCOEvaluator:
         return prec, scores, ev.params.recThrs
 
     def _gt_counts(self) -> Dict[int, Dict[str, int]]:
-        """Per-category {num_gt, dontcare} from the accumulated GT annotations.
-        Dontcare is now a separate field (not collapsed into iscrowd)."""
+        """Returns per-category {num_gt, dontcare} from the accumulated GT annotations.
+
+        Dontcare is a separate field (not collapsed into iscrowd).
+        """
         counts: Dict[int, Dict[str, int]] = {}
         for a in self._gt_anns:
             c = counts.setdefault(int(a['category_id']), {'num_gt': 0, 'dontcare': 0})
@@ -346,10 +347,13 @@ class COCOEvaluator:
         return counts
 
     def per_category_best_f1(self) -> List[Dict[str, float]]:
-        """Per-category best F1 (confidence-sweep) with its precision / recall /
-        conf threshold, at (IoU=0.5, area='all', maxDets=f1_max_dets). Categories
-        with no valid bestF1 are flagged ``valid=False`` so the macro means exclude
-        them — matching F1score50. After evaluate()."""
+        """Returns the per-category best F1 from the confidence sweep.
+
+        Each row carries the best F1 with its precision / recall / conf
+        threshold, at (IoU=0.5, area='all', maxDets=f1_max_dets). Categories
+        with no valid bestF1 are flagged valid=False so the macro means exclude
+        them, matching F1score50. Call after evaluate().
+        """
         ev = getattr(self, '_ev', None)
         if ev is None or not getattr(ev, 'eval', None):
             return []
@@ -357,21 +361,21 @@ class COCOEvaluator:
             iouThr=0.5, areaRng='all', maxDets=self._f1_max_dets)
 
     def per_category_conf_sweep(self, conf_grid, envelope=False) -> List[Dict[str, float]]:
-        """Per-category F1/precision/recall at each confidence threshold. After evaluate().
+        """Returns per-category F1/precision/recall at each confidence threshold.
 
-        Default (``envelope=False``): reads the raw confidence sweep grid stored by
-        ``COCOevalCustom.accumulate`` (sweep_f1 / sweep_precision / sweep_recall at
-        IoU=0.5, area='all', maxDets=``f1_max_dets``) — the exact operating-point
-        counts the headline F1score50 / per-category best-F1 are selected from, so the
-        all-conf table agrees with the best-conf table for the same (class, threshold).
-        Each requested ``conf_grid`` value maps to the stored threshold grid (identical
-        by default); a threshold not in the grid snaps to the nearest stored one and the
-        reported ``thresh`` is that stored value. Cells with no detection above the
-        threshold (stored -1) report f1/precision/recall = 0.0.
-
-        ``envelope=True`` keeps the legacy behavior: reads COCO's interpolated
-        (monotone-envelope) precision array with a ``score >= t`` selection. Kept for
-        back-compat / diagnostics; it can disagree with the best-conf table.
+        Call after evaluate(). Default (envelope=False): reads the raw
+        confidence sweep grid stored by COCOevalCustom.accumulate (sweep_f1 /
+        sweep_precision / sweep_recall at IoU=0.5, area='all',
+        maxDets=f1_max_dets), the exact operating-point counts the headline
+        F1score50 / per-category best-F1 are selected from, so the all-conf
+        table agrees with the best-conf table for the same (class, threshold).
+        Each requested conf_grid value maps to the stored threshold grid
+        (identical by default); a threshold not in the grid snaps to the
+        nearest stored one and the reported thresh is that stored value. Cells
+        with no detection above the threshold (stored -1) report
+        f1/precision/recall = 0.0. envelope=True keeps the legacy behavior:
+        reads COCO's interpolated (monotone-envelope) precision array with a
+        score >= t selection; it can disagree with the best-conf table.
         """
         if envelope:
             return self._per_category_conf_sweep_envelope(conf_grid)
@@ -390,12 +394,12 @@ class COCOEvaluator:
         out = []
         for k, cat in enumerate(ev.params.catIds):
             for t_req in conf_grid:
-                # Same grid by default; otherwise snap to the nearest stored threshold
-                # and report that stored value.
+                # Same grid by default; otherwise snap to the nearest stored
+                # threshold and report that stored value.
                 si = int(np.argmin(np.abs(grid - float(t_req))))
                 thr = float(grid[si])
                 f1, pp, rr = float(sf1[k, si]), float(spr[k, si]), float(srr[k, si])
-                if f1 < 0 or pp < 0 or rr < 0:   # no detection above threshold
+                if f1 < 0 or pp < 0 or rr < 0:   # No detection above threshold.
                     f1, pp, rr = 0.0, 0.0, 0.0
                 out.append({'category': int(cat), 'thresh': round(thr, 4),
                             'f1': f1, 'precision': pp, 'recall': rr})
@@ -419,7 +423,7 @@ class COCOEvaluator:
             for t in conf_grid:
                 sel = valid & (s >= t)
                 if sel.any():
-                    idx = int(np.where(sel)[0].max())     # max-recall point with score >= t
+                    idx = int(np.where(sel)[0].max())     # Max-recall point with score >= t.
                     pp, rr = float(p[idx]), float(rec[idx])
                 else:
                     pp, rr = 0.0, 0.0
@@ -429,18 +433,21 @@ class COCOEvaluator:
         return out
 
     def metrics_tables(self, conf_grid=None, envelope_sweep=False) -> Dict:
-        """Full per-category F1 report: averaged means + best-conf table + all-conf
-        sweep + per-category AP / GT counts. Numbers are full-precision floats; a
-        machine-readable structure callers serialize to JSON / csv / xlsx / txt.
+        """Builds the full per-category F1 report.
 
-        ``envelope_sweep=False`` (default) builds the all-conf table from the raw
-        operating-point sweep so it agrees with the headline F1score50 / best-conf
-        table; ``envelope_sweep=True`` uses COCO's interpolated envelope precision. The
-        chosen source is reported as ``sweep_source`` = 'raw' or 'coco_envelope'.
+        Contains averaged means, the best-conf table, the all-conf sweep, and
+        per-category AP / GT counts. Numbers are full-precision floats; the
+        structure is machine-readable for JSON / csv / xlsx / txt export.
+        envelope_sweep=False (default) builds the all-conf table from the raw
+        operating-point sweep so it agrees with the headline F1score50 /
+        best-conf table; envelope_sweep=True uses COCO's interpolated envelope
+        precision. The chosen source is reported as sweep_source = 'raw' or
+        'coco_envelope'.
         """
         if conf_grid is None:
-            # Floor 0.10 to match the best-F1 sweep grid (COCOevalCustom._scoreTreshCand);
-            # below that is too low-confidence to be a useful operating point.
+            # Floor 0.10 to match the best-F1 sweep grid
+            # (COCOevalCustom._scoreTreshCand); below that is too low-confidence
+            # to be a useful operating point.
             conf_grid = [round(float(x), 2) for x in np.arange(0.1, 1.0, 0.05)]
         best  = self.per_category_best_f1()
         sweep = self.per_category_conf_sweep(conf_grid, envelope=envelope_sweep)
@@ -454,8 +461,9 @@ class COCOEvaluator:
             'dontcare': gtc.get(k, {}).get('dontcare', 0),
         } for k in sorted(ap)] if ap else []
 
-        # Average over classes with a valid PR point only, so the report's mean F1
-        # equals the logged F1score50 (empty classes are still listed in `best_conf`).
+        # Average over classes with a valid PR point only, so the report's mean
+        # F1 equals the logged F1score50 (empty classes are still listed in
+        # best_conf).
         valid_best = [b for b in best if b.get('valid', True)]
 
         def _mean(key):
@@ -476,7 +484,7 @@ class COCOEvaluator:
         }
 
     def reset(self) -> None:
-        """Clear all accumulated predictions and GT."""
+        """Clears all accumulated predictions and GT."""
         self._dt_anns.clear()
         self._gt_anns.clear()
         self._gt_imgs.clear()

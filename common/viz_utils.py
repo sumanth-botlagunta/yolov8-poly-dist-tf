@@ -13,7 +13,7 @@ from eval.polygon_metrics import DEFAULT_POLY_CONF_THRESH
 
 log = logging.getLogger(__name__)
 
-# Distinct BGR colors (OpenCV uses BGR) for up to 80 classes — cycles if more.
+# Distinct BGR colors (OpenCV uses BGR); cycles when class ids exceed the palette.
 _PALETTE = [
     (  0, 114, 189), ( 60, 160,  75), (255,  65,  54), (148, 103, 189),
     (140,  86,  75), (227, 119, 194), (127, 127, 127), (188, 189,  34),
@@ -31,7 +31,7 @@ def _sigmoid(x: float) -> float:
 
 
 def _draw_box(canvas, y1n, x1n, y2n, x2n, color, label: str) -> None:
-    """Draw a box and label on a uint8 HWC canvas (in-place)."""
+    """Draws a box and label on a uint8 HWC canvas (in place)."""
     import cv2
     H, W = canvas.shape[:2]
     p1 = (int(x1n * W), int(y1n * H))
@@ -47,20 +47,19 @@ def _draw_box(canvas, y1n, x1n, y2n, x2n, color, label: str) -> None:
 def _draw_polygon(canvas, cxn, cyn, poly_conf, poly_dist, poly_angle=None,
                   n_verts: int = 24,
                   conf_thresh: float = DEFAULT_POLY_CONF_THRESH) -> None:
-    """Draw a PolyYOLO radial polygon on a uint8 HWC canvas (in-place).
+    """Draws a PolyYOLO radial polygon on a uint8 HWC canvas (in place).
 
     Args:
-        cxn, cyn:  Box center in normalized [0,1] coords.
-        poly_conf: [n_verts] sigmoid-activated confidences in [0,1].
+        cxn, cyn: Box center in normalized [0, 1] coords.
+        poly_conf: [n_verts] sigmoid-activated confidences in [0, 1].
         poly_dist: [n_verts] predicted radial distance (normalized image space).
-        poly_angle: Optional [n_verts] sub-bin angular offset in [0,1); the vertex
-                    angle becomes (i + offset) * (2*pi/n_verts). When None, the
-                    bin centre angle i * (2*pi/n_verts) is used.
-        n_verts:   Number of radial vertices (default 24).
+        poly_angle: Optional [n_verts] sub-bin angular offset in [0, 1); the
+            vertex angle becomes (i + offset) * (2*pi/n_verts). When None, the
+            bin start angle i * (2*pi/n_verts) is used.
+        n_verts: Number of radial vertices (default 24).
         conf_thresh: Per-bin confidence gate; bins below it are skipped. Defaults
-                    to the same value PolygonEvaluator scores with
-                    (DEFAULT_POLY_CONF_THRESH) so the drawn contour matches the
-                    scored one.
+            to the value PolygonEvaluator scores with (DEFAULT_POLY_CONF_THRESH)
+            so the drawn contour matches the scored one.
     """
     import cv2
     H, W = canvas.shape[:2]
@@ -76,8 +75,9 @@ def _draw_polygon(canvas, cxn, cyn, poly_conf, poly_dist, poly_angle=None,
         off = float(poly_angle[i]) if poly_angle is not None else 0.0
         angle_rad = (i + off) * bin_w
         d = max(0.0, float(poly_dist[i]))
-        # Reference convention: radial vector is origin − vertex, so the
-        # vertex is center MINUS r·(cos, sin), in normalized space → pixels.
+        # Reference convention: the radial vector is origin - vertex, so the
+        # vertex is center minus r*(cos, sin), converted from normalized space
+        # to pixels.
         px = int(cx_px - d * math.cos(angle_rad) * W)
         py = int(cy_px - d * math.sin(angle_rad) * H)
         pts.append([px, py])
@@ -96,28 +96,29 @@ def render_summary_images(
     class_names: list = None,
     conf_thresh: float = DEFAULT_POLY_CONF_THRESH,
 ) -> "np.ndarray":
-    """Draw predictions onto images and return a uint8 [N, H, W, 3] array.
+    """Draws predictions onto images and returns a uint8 [N, H, W, 3] array.
 
     Args:
-        images:      List of float32 [H, W, 3] arrays with pixel values in [0, 1].
-        preds_list:  List of per-image dicts with numpy arrays:
-                         bbox           [max_boxes, 4]   yxyx normalized
-                         classes        [max_boxes]
-                         confidence     [max_boxes]
-                         num_detections scalar int
-                         polygons       [max_boxes, 24, 3]  (conf, dist, angle) all sigmoid/softplus activated
-        draw_box:    Whether to draw bounding boxes.
-        draw_poly:   Whether to overlay polygon contours.
+        images: List of float32 [H, W, 3] arrays with pixel values in [0, 1].
+        preds_list: List of per-image dicts with numpy arrays:
+            bbox           [max_boxes, 4]   yxyx normalized
+            classes        [max_boxes]
+            confidence     [max_boxes]
+            num_detections scalar int
+            polygons       [max_boxes, 24, 3] (conf, dist, angle), all
+                           sigmoid/softplus activated
+        draw_box: Whether to draw bounding boxes.
+        draw_poly: Whether to overlay polygon contours.
         class_names: Optional list of class name strings.
         conf_thresh: Per-bin polygon confidence gate; defaults to the value
-                     PolygonEvaluator scores with so the overlay matches the
-                     scored contour.
+            PolygonEvaluator scores with so the overlay matches the scored
+            contour.
 
     Returns:
-        uint8 numpy array [N, H, W, 3].
+        uint8 numpy array [N, H, W, 3], or None if opencv is unavailable.
     """
     try:
-        import cv2  # noqa: F401 — just to check availability
+        import cv2  # noqa: F401 - availability check only
     except ImportError:
         log.warning("opencv-python not installed — image summaries skipped.")
         return None
@@ -158,31 +159,31 @@ def render_gt_images(
     draw_poly: bool = True,
     class_names=None,
 ) -> "np.ndarray":
-    """Draw ground-truth boxes and PolyYOLO polygons onto images.
+    """Draws ground-truth boxes and PolyYOLO polygons onto images.
 
     Mirrors render_summary_images but consumes the label dicts emitted by the
     parsers, so it serves both the train-augmentation and validation GT
-    summaries. Overlaying the (post-augmentation) GT also makes mosaic/affine/
-    flip misalignment visible at a glance.
+    summaries. Overlaying the post-augmentation GT makes mosaic/affine/flip
+    misalignment visible.
 
     Args:
-        images:    List of float32 [H, W, 3] arrays with pixel values in [0, 1].
-        gts_list:  List of per-image GT dicts with numpy arrays:
-                       bbox     [M, 4]   yxyx normalized
-                       classes  [M]
-                       n_gt     scalar int (valid GT count; rows past it are padding)
-                       polygons [M, 72]  [dist, angle, conf] x 24 interleaved,
-                                 radial about the box centre (optional / absent or
-                                 all-zero when with_polygons=False).
-        draw_box:    Whether to draw GT boxes.
-        draw_poly:   Whether to overlay GT polygons.
+        images: List of float32 [H, W, 3] arrays with pixel values in [0, 1].
+        gts_list: List of per-image GT dicts with numpy arrays:
+            bbox     [M, 4]   yxyx normalized
+            classes  [M]
+            n_gt     scalar int (valid GT count; rows past it are padding)
+            polygons [M, 72]  [dist, angle, conf] x 24 interleaved, radial
+                     about the box center (optional; absent or all-zero when
+                     with_polygons=False)
+        draw_box: Whether to draw GT boxes.
+        draw_poly: Whether to overlay GT polygons.
         class_names: Optional id->name map (list or dict) used for the box label.
 
     Returns:
         uint8 numpy array [N, H, W, 3], or None if opencv is unavailable.
     """
     try:
-        import cv2  # noqa: F401 — just to check availability
+        import cv2  # noqa: F401 - availability check only
     except Exception as e:  # not only ImportError: missing libGL / shadowed cv2
         log.warning("Ground-truth image summaries skipped — cv2 import failed (%r).", e)
         return None

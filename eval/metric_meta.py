@@ -1,17 +1,16 @@
-"""Human-readable names + formulae for every scalar written to TensorBoard.
+"""Human-readable names and formulae for every scalar written to TensorBoard.
 
-Each TensorBoard scalar gets a markdown ``description`` (shown in the UI tooltip)
-built from this registry, so a reader doesn't have to remember what a short tag
-like ``cls_loss`` or ``dist_absrel_far`` means. ``describe()`` also handles the
-per-category tags ``cls/<NN>_<name>/<metric>`` by composing the class name with
-the per-category metric's description.
+Each TensorBoard scalar gets a markdown description (shown in the UI tooltip)
+built from this registry. describe() also handles the per-category tags
+cls/<NN>_<name>/<metric> by composing the class name with the per-category
+metric's description.
 
-Keys here are the SHORT metric keys (no ``train/`` / ``val/`` prefix).
+Keys here are the short metric keys (no train/ or val/ prefix).
 """
 
 from typing import Optional
 
-# Short key → "Full Name — formula / definition".
+# Short key -> "Full Name - formula / definition".
 METRIC_DESCRIPTIONS = {
     # ---- Losses (train/val; *_loss are gain-weighted unless noted "raw") ----
     "total_loss": (
@@ -118,7 +117,7 @@ METRIC_DESCRIPTIONS = {
     "best_checkpoint_epoch": "**Best-checkpoint epoch** — epoch at which the best validation metric was last improved.",
 }
 
-# Per-category metric descriptions (the trailing segment of a ``cls/<NN>_<name>/<m>`` tag).
+# Per-category metric descriptions (the trailing segment of a cls/<NN>_<name>/<m> tag).
 _PER_CATEGORY = {
     "ap":    "AP @IoU=0.50:0.95",
     "ap50":  "AP @IoU=0.50",
@@ -136,9 +135,15 @@ _PER_CATEGORY = {
 
 
 def describe(key: str) -> Optional[str]:
-    """Return a markdown description for a short metric key, or None if unknown.
+    """Returns a markdown description for a short metric key.
 
-    Handles per-category tags of the form ``cls/<NN>_<name>/<metric>``.
+    Handles per-category tags of the form cls/<NN>_<name>/<metric>.
+
+    Args:
+      key: Short metric key (no train/ or val/ prefix).
+
+    Returns:
+      Markdown description string, or None if the key is unknown.
     """
     if key.startswith("cls/"):
         parts = key.split("/")

@@ -1,32 +1,27 @@
 """Polygon segmentation evaluator.
 
 Converts PolyYOLO radial-format predictions to Cartesian masks and computes
-mask IoU against GT polygon masks.  Matches predictions to GT via bbox IoU > 0.5.
+mask IoU against GT polygon masks. Matches predictions to GT via bbox IoU > 0.5.
 
 Prediction format (from detection_generator output):
-    pred_polygons: [B, max_boxes, 24, 3]  where [..., :] = (conf, dist, angle)
-    - dist:  radial distance for each of 24 vertices, in **normalized** image units
-    - angle: per-bin sub-bin offset in [0, 1) (vertex angle = (i + angle) * step)
-    - conf:  per-vertex confidence (sigmoid-activated); bins below ``conf_thresh``
-      are excluded from rasterization, mirroring the decode/viz gate
+    pred_polygons: [B, max_boxes, 24, 3] where [..., :] = (conf, dist, angle)
+    - dist: radial distance for each of 24 vertices, in normalized image units.
+    - angle: per-bin sub-bin offset in [0, 1) (vertex angle = (i + angle) * step).
+    - conf: per-vertex confidence (sigmoid-activated); bins below conf_thresh
+      are excluded from rasterization, mirroring the decode/viz gate.
 
 GT format (from yolo_parser._preprocess_polygons_v2):
     gt_polygons: [B, max_gt, 72] = [dist, angle, conf] x 24 interleaved
-    - dist (channel 0::3): radial distance per bin, in **normalized** image units
-    - angle (1::3): sub-bin offset in [0, 1); conf (2::3): per-bin validity
+    - dist (channel 0::3): radial distance per bin, in normalized image units.
+    - angle (1::3): sub-bin offset in [0, 1); conf (2::3): per-bin validity.
 
-Both prediction and GT radial distances are normalized [0, ~1.4] relative to the
-box-center origin (matching the parser).  The parser stores each radius as a
-single *isotropic* normalized distance (sqrt(dx^2+dy^2)); decomposing it per-axis
-(`* w` / `* h`) only reconstructs the original vertex when ``w == h``.  This
-evaluator therefore requires square inputs and asserts it at construction time
-(see PolygonEvaluator.__init__); non-square support would need the radius stored
-in pixel space.
+Both prediction and GT radial distances are normalized [0, ~1.4] relative to
+the box-center origin (matching the parser). The parser stores each radius as
+a single isotropic normalized distance (sqrt(dx^2 + dy^2)); decomposing it
+per-axis (* w / * h) only reconstructs the original vertex when w == h, so
+this evaluator requires square inputs and asserts it at construction time.
 
-Vertex angles: theta_i = (i + offset_i) * 2*pi / 24  (i = 0..23, 0 = right, CCW)
-
-Classes:
-    PolygonEvaluator: Accumulates matched polygon pairs, computes mIoU and recall.
+Vertex angles: theta_i = (i + offset_i) * 2*pi / 24 (i = 0..23, 0 = right, CCW).
 """
 
 import logging
@@ -37,15 +32,16 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-# Default radial bin count (angle_step=15 → 24 bins). _radial_to_cartesian
-# infers the actual count and angular step from len(radii) so a non-15° config
-# reconstructs at the right resolution; this is only the PolygonEvaluator default.
+# Default radial bin count (angle_step=15 -> 24 bins). _radial_to_cartesian
+# infers the actual count and angular step from len(radii) so a non-15-degree
+# config reconstructs at the right resolution; this is only the PolygonEvaluator
+# default.
 _NUM_VERTICES = 24
 
 # Per-bin confidence gate for predicted polygon vertices. The evaluator and the
-# TensorBoard polygon overlay (common/viz_utils.py) must share this threshold so the
-# visualised contour matches the one scored; viz_utils imports this value as its
-# default rather than re-hardcoding the constant.
+# TensorBoard polygon overlay (common/viz_utils.py) must share this threshold so
+# the visualized contour matches the one scored; viz_utils imports this value as
+# its default rather than re-hardcoding the constant.
 DEFAULT_POLY_CONF_THRESH = 0.4
 
 
@@ -55,26 +51,27 @@ def _radial_to_cartesian(
     w: int, h: int,
     offsets: np.ndarray = None,
 ) -> np.ndarray:
-    """Convert N normalized radial distances to Cartesian pixel vertices.
+    """Converts N normalized radial distances to Cartesian pixel vertices.
 
-    The origin and radii are in **normalized** image coordinates (matching the
-    parser's PolyYOLO encoding).  Vertices are reconstructed in normalized space
-    and then scaled to pixels per-axis (``* w`` / ``* h``).
-
-    The vertex count N is inferred from ``len(radii)`` and the angular step is
-    ``2*pi / N``, so a non-15° config (e.g. angle_step=10 → 36 bins) reconstructs
-    at the correct angular resolution instead of assuming 24 bins.
+    The origin and radii are in normalized image coordinates (matching the
+    parser's PolyYOLO encoding). Vertices are reconstructed in normalized space
+    and then scaled to pixels per-axis (* w / * h). The vertex count N is
+    inferred from len(radii) and the angular step is 2*pi / N, so a
+    non-15-degree config (e.g. angle_step=10 -> 36 bins) reconstructs at the
+    correct angular resolution instead of assuming 24 bins.
 
     Args:
-        cx_n, cy_n:  Polygon origin in normalized [0, 1] coordinates.
-        radii:       Shape [N], normalized radial distance per vertex.
-        w, h:        Image width / height in pixels.
-        offsets:     Optional shape [N], sub-bin angular offset in [0, 1) per
-                     bin (vertex angle = (i + offset) * angle_step). When None,
-                     the bin centre angle (i * angle_step) is used.
+      cx_n: Polygon origin x in normalized [0, 1] coordinates.
+      cy_n: Polygon origin y in normalized [0, 1] coordinates.
+      radii: Shape [N], normalized radial distance per vertex.
+      w: Image width in pixels.
+      h: Image height in pixels.
+      offsets: Optional shape [N], sub-bin angular offset in [0, 1) per bin
+        (vertex angle = (i + offset) * angle_step). When None, the bin start
+        angle (i * angle_step) is used.
 
     Returns:
-        Array of shape [N, 2] in pixel coordinates (x, y).
+      Array of shape [N, 2] in pixel coordinates (x, y).
     """
     radii = np.asarray(radii, dtype=np.float32)
     n_verts = radii.shape[0]
@@ -83,8 +80,8 @@ def _radial_to_cartesian(
     if offsets is not None:
         idx = idx + np.asarray(offsets, dtype=np.float32)
     angles = idx * angle_step
-    # Reference convention: the radial vector is origin − vertex, so the
-    # vertex reconstructs as center MINUS r·(cos, sin). Both the GT encoding
+    # Reference convention: the radial vector is origin - vertex, so the
+    # vertex reconstructs as center MINUS r * (cos, sin). Both the GT encoding
     # (parser) and the prediction decode follow this convention.
     xs = (cx_n - radii * np.cos(angles)) * w
     ys = (cy_n - radii * np.sin(angles)) * h
@@ -96,18 +93,19 @@ def _polygon_to_mask(
     h: int,
     w: int,
 ) -> np.ndarray:
-    """Rasterize a polygon to a binary mask using cv2.
+    """Rasterizes a polygon to a binary mask using cv2.
 
     Args:
-        vertices: [N, 2] array of (x, y) pixel coordinates.
-        h, w:     Mask height and width.
+      vertices: [N, 2] array of (x, y) pixel coordinates.
+      h: Mask height.
+      w: Mask width.
 
     Returns:
-        Boolean array of shape [h, w].
+      Boolean array of shape [h, w].
     """
     if vertices.shape[0] < 3:
         # Fewer than 3 vertices cannot enclose area (e.g. a prediction whose
-        # conf gate left < 3 bins) — empty mask, not a cv2 error.
+        # conf gate left < 3 bins): empty mask, not a cv2 error.
         return np.zeros((h, w), dtype=bool)
     try:
         import cv2
@@ -116,7 +114,7 @@ def _polygon_to_mask(
         cv2.fillPoly(mask, [pts], 1)
         return mask.astype(bool)
     except ImportError:
-        # Fallback: axis-aligned bounding box mask (rough approximation)
+        # Fallback: axis-aligned bounding box mask (rough approximation).
         mask = np.zeros((h, w), dtype=bool)
         xs, ys = vertices[:, 0].astype(int), vertices[:, 1].astype(int)
         x1, x2 = max(0, xs.min()), min(w - 1, xs.max())
@@ -126,10 +124,10 @@ def _polygon_to_mask(
 
 
 def _bbox_iou_matrix(boxes_a: np.ndarray, boxes_b: np.ndarray) -> np.ndarray:
-    """Compute pairwise IoU between two sets of yxyx-normalized boxes.
+    """Computes pairwise IoU between two sets of yxyx-normalized boxes.
 
     Returns:
-        [len(boxes_a), len(boxes_b)] float32 IoU matrix.
+      [len(boxes_a), len(boxes_b)] float32 IoU matrix.
     """
     y1a, x1a, y2a, x2a = boxes_a[:, 0], boxes_a[:, 1], boxes_a[:, 2], boxes_a[:, 3]
     y1b, x1b, y2b, x2b = boxes_b[:, 0], boxes_b[:, 1], boxes_b[:, 2], boxes_b[:, 3]
@@ -150,7 +148,7 @@ def _bbox_iou_matrix(boxes_a: np.ndarray, boxes_b: np.ndarray) -> np.ndarray:
 
 
 def _eval_gt_mask(n_g, i, gt_is_crowd, gt_is_dontcare) -> np.ndarray:
-    """Boolean [n_g] mask of GT to evaluate (drop crowd / dontcare)."""
+    """Returns a boolean [n_g] mask of GT to evaluate (drops crowd / dontcare)."""
     keep = np.ones(n_g, dtype=bool)
     if gt_is_crowd is not None:
         keep &= ~np.asarray(gt_is_crowd[i, :n_g], dtype=bool)
@@ -160,7 +158,7 @@ def _eval_gt_mask(n_g, i, gt_is_crowd, gt_is_dontcare) -> np.ndarray:
 
 
 def _count_eval_gt(n_g, i, gt_is_crowd, gt_is_dontcare) -> int:
-    """Count of evaluable (non-crowd/dontcare) GT for image i."""
+    """Returns the count of evaluable (non-crowd/dontcare) GT for image i."""
     if n_g == 0:
         return 0
     return int(_eval_gt_mask(n_g, i, gt_is_crowd, gt_is_dontcare).sum())
@@ -170,18 +168,18 @@ class PolygonEvaluator:
     """Accumulates prediction/GT polygon pairs and computes mask IoU metrics.
 
     Vertex-validity gating: only bins whose conf channel passes the gate are
-    rasterized — pred bins need ``conf >= conf_thresh`` (the same gate the
-    decode/viz path uses), GT bins need ``conf > 0.5`` (the parser writes a binary
-    validity). Empty GT bins encode ``dist = 0`` and must be gated out; rasterizing
-    them would place a vertex at the box center per empty bin. Matched pairs whose
-    gated GT has < 3 vertices are counted for recall but skipped for mask IoU (no
-    measurable GT mask).
+    rasterized. Pred bins need conf >= conf_thresh (the same gate the decode/viz
+    path uses); GT bins need conf > 0.5 (the parser writes a binary validity).
+    Empty GT bins encode dist = 0 and must be gated out; rasterizing them would
+    place a vertex at the box center per empty bin. Matched pairs whose gated GT
+    has < 3 vertices are counted for recall but skipped for mask IoU.
 
     Args:
-        image_size: (H, W) used for rasterizing polygon masks.
-        iou_thresh: Bbox IoU threshold for matching predictions to GT.
-        conf_thresh: Per-bin confidence gate for PREDICTED vertices; must match
-            the decode/viz threshold so the metric scores what is deployed.
+      image_size: (H, W) used for rasterizing polygon masks.
+      iou_thresh: Bbox IoU threshold for matching predictions to GT.
+      conf_thresh: Per-bin confidence gate for predicted vertices; must match
+        the decode/viz threshold so the metric scores what is deployed.
+      num_vertices: Number of radial bins (= 360 // angle_step).
     """
 
     def __init__(self, image_size: Tuple[int, int] = (672, 672), iou_thresh: float = 0.5,
@@ -219,27 +217,27 @@ class PolygonEvaluator:
         pred_classes:     Optional[np.ndarray] = None,
         gt_classes:       Optional[np.ndarray] = None,
     ) -> None:
-        """Accumulate one batch.
+        """Accumulates one batch.
 
         Args:
-            pred_boxes:     [B, max_det, 4] yxyx-normalized.
-            pred_polygons:  [B, max_det, 24, 3] PolyYOLO (conf, dist, angle) where
-                            angle is the sigmoid-activated sub-bin offset in [0, 1),
-                            not a raw logit.
-            pred_scores:    [B, max_det] confidence.
-            num_detections: [B] valid detection count.
-            gt_boxes:       [B, max_gt, 4] yxyx-normalized.
-            gt_polygons:    [B, max_gt, 72] PolyYOLO [dist, angle, conf] x 24.
-            n_gt:           [B] valid GT count.
-            gt_is_crowd:    [B, max_gt] bool, optional. Crowd GT are excluded from
-                            both the recall denominator and matching (COCO semantics).
-            gt_is_dontcare: [B, max_gt] bool, optional. Excluded like crowd GT.
-            pred_classes:   [B, max_det] int, optional. gt_classes: [B, max_gt] int,
-                            optional. When BOTH are given, matching is class-aware (a
-                            detection may only match a GT of the same class — COCO
-                            semantics), so cross-class bbox overlaps no longer inflate
-                            poly_recall50. When omitted, matching is class-agnostic
-                            (the fallback for callers that do not supply classes).
+          pred_boxes: [B, max_det, 4] yxyx-normalized.
+          pred_polygons: [B, max_det, 24, 3] PolyYOLO (conf, dist, angle) where
+            angle is the sigmoid-activated sub-bin offset in [0, 1), not a raw
+            logit.
+          pred_scores: [B, max_det] confidence.
+          num_detections: [B] valid detection count.
+          gt_boxes: [B, max_gt, 4] yxyx-normalized.
+          gt_polygons: [B, max_gt, 72] PolyYOLO [dist, angle, conf] x 24.
+          n_gt: [B] valid GT count.
+          gt_is_crowd: [B, max_gt] bool, optional. Crowd GT are excluded from
+            both the recall denominator and matching (COCO semantics).
+          gt_is_dontcare: [B, max_gt] bool, optional. Excluded like crowd GT.
+          pred_classes: [B, max_det] int, optional.
+          gt_classes: [B, max_gt] int, optional. When BOTH pred_classes and
+            gt_classes are given, matching is class-aware (a detection may only
+            match a GT of the same class, COCO semantics), so cross-class bbox
+            overlaps do not inflate poly_recall50. When omitted, matching is
+            class-agnostic.
         """
         B = int(num_detections.shape[0])
         for i in range(B):
@@ -260,7 +258,7 @@ class PolygonEvaluator:
             gb = np.asarray(gt_boxes[i,  :n_g])[keep_gt]        # [n_keep, 4]
             if gb.shape[0] == 0:
                 continue
-            gt_keep_idx = np.nonzero(keep_gt)[0]                # map filtered→original
+            gt_keep_idx = np.nonzero(keep_gt)[0]                # Map filtered -> original.
             iou_mat = _bbox_iou_matrix(db, gb)         # [n_det, n_keep]
 
             # Class-aware matching (COCO semantics) when classes are provided: a
@@ -283,13 +281,13 @@ class PolygonEvaluator:
                 if matched_gt:
                     ious[list(matched_gt)] = -1.0
                 if class_aware:
-                    ious[gc != dc[di]] = -1.0     # only same-class GT are matchable
+                    ious[gc != dc[di]] = -1.0     # Only same-class GT are matchable.
                 best_gt = int(ious.argmax())
                 if ious[best_gt] >= self._iou_thresh:
                     matched_gt.add(best_gt)
                     self._n_matched += 1
 
-                    # ---- compute mask IoU for this match ----
+                    # --- Compute mask IoU for this match. ---
                     # best_gt indexes the FILTERED GT (iou_mat columns); map back to
                     # the original GT index for the polygon/box lookups in *_polygons.
                     orig_gt = int(gt_keep_idx[best_gt])
@@ -317,7 +315,7 @@ class PolygonEvaluator:
                     g_dist = np.maximum(g_poly[0::3], 0.0)        # [24]
                     g_off  = np.clip(g_poly[1::3], 0.0, 1.0)      # [24] sub-bin offset
 
-                    # Bbox centres as polygon origins (normalized; scaled to px in helper)
+                    # Bbox centers as polygon origins (normalized; scaled to px in helper).
                     y1, x1, y2, x2 = db[di]
                     cx_p = (x1 + x2) / 2.0
                     cy_p = (y1 + y2) / 2.0
@@ -338,16 +336,16 @@ class PolygonEvaluator:
                     self._mask_ious.append(float(iou))
 
     def evaluate(self) -> Dict[str, float]:
-        """Compute polygon mIoU and recall@50.
+        """Computes polygon mIoU and recall@50.
 
-        poly_mIoU:     mean mask IoU over all matched (prediction, GT) pairs.
-        poly_recall50: fraction of GT objects matched at bbox IoU >= 0.5. This is
-                       recall, not average precision — it has no precision term and
-                       no score-threshold sweep, so a prediction-flooding model can
-                       inflate it. Use poly_mIoU for mask quality.
+        poly_mIoU is the mean mask IoU over all matched (prediction, GT) pairs.
+        poly_recall50 is the fraction of GT objects matched at bbox IoU >= 0.5;
+        it is recall, not average precision (no precision term, no
+        score-threshold sweep), so a prediction-flooding model can inflate it.
+        Use poly_mIoU for mask quality.
 
         Returns:
-            Dict with 'poly_mIoU' and 'poly_recall50'.
+          Dict with 'poly_mIoU' and 'poly_recall50'.
         """
         # mIoU and recall are decoupled: a matched pair whose gated GT polygon
         # is degenerate (< 3 occupied bins) counts for recall but yields no
@@ -357,7 +355,7 @@ class PolygonEvaluator:
         return {'poly_mIoU': miou, 'poly_recall50': float(recall)}
 
     def reset(self) -> None:
-        """Clear accumulated data."""
+        """Clears accumulated data."""
         self._mask_ious.clear()
         self._n_matched  = 0
         self._n_gt_total = 0

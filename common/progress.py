@@ -3,12 +3,12 @@
 An Ultralytics-style live progress bar (header columns + bar + rate + ETA + a live
 status field for losses/metrics) that is TTY-aware:
 
-  * Interactive terminal (``stdout.isatty()``): a live in-place bar updated with ``\\r``.
+  * Interactive terminal (`stdout.isatty()`): a live in-place bar updated with `\\r`.
   * Non-TTY (redirected to a file / cron): a one-line summary printed at a coarse
-    interval (``file_interval`` seconds) and once at the end, with no ``\\r``.
+    interval (`file_interval` seconds) and once at the end, with no `\\r`.
 
 Used across train/val and the batch tools (eval, re-encode, export, infer). The
-``progress`` helper wraps an iterable; the ``Progress`` class is a context manager.
+`progress` helper wraps an iterable; the `Progress` class is a context manager.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from typing import Optional, TextIO
 
 
 def _fmt_time(seconds: float) -> str:
-    """``mm:ss`` or ``h:mm:ss``."""
+    """Formats seconds as mm:ss or h:mm:ss."""
     if seconds < 0 or seconds != seconds:   # negative / NaN
         return "??:??"
     seconds = int(seconds)
@@ -33,17 +33,18 @@ class Progress:
     """A TTY-aware progress bar / periodic logger.
 
     Args:
-        total: total number of steps; ``None`` for an unknown length (no bar/ETA, just
-            a running count + rate).
-        desc: left-hand label; can be replaced each ``update`` (e.g. the formatted metric
-            row). Aligns under ``header`` when both are given.
-        unit: rate unit shown as ``{unit}/s`` (e.g. ``it``, ``img``, ``batch``).
-        header: a static column-header line printed once before the first bar (the
-            Ultralytics look). Optional.
-        min_interval: TTY refresh throttle in seconds (avoid flooding the terminal).
-        file_interval: non-TTY print interval in seconds (keeps log files readable).
-        stream: output stream (default ``sys.stdout``).
-        enable: set ``False`` to silence entirely (e.g. for nested/quiet runs).
+        total: Total number of steps; None for an unknown length (no bar/ETA,
+            just a running count + rate).
+        desc: Left-hand label; can be replaced each `update` (e.g. the formatted
+            metric row). Aligns under `header` when both are given.
+        unit: Rate unit shown as `{unit}/s` (e.g. 'it', 'img', 'batch').
+        header: Optional static column-header line printed once before the
+            first bar.
+        min_interval: TTY refresh throttle in seconds.
+        file_interval: Non-TTY print interval in seconds (keeps log files
+            readable).
+        stream: Output stream (default sys.stdout).
+        enable: Set False to silence entirely (e.g. for nested/quiet runs).
     """
 
     def __init__(self, total: Optional[int] = None, desc: str = "", unit: str = "it",
@@ -82,7 +83,7 @@ class Progress:
 
     def update(self, n: int = 1, desc: Optional[str] = None,
                status: Optional[str] = None) -> None:
-        """Advance by ``n`` steps; optionally update the left label / right status."""
+        """Advances by `n` steps; optionally updates the left label / right status."""
         if not self.enable:
             return
         self.n += n
@@ -126,14 +127,14 @@ class Progress:
             count = f"{self.n}/{self.total}"
             timing = f"[{_fmt_time(elapsed)}<{_fmt_time(eta)}, {rate:.1f}{self.unit}/s]"
             if for_tty:
-                # leave room for: " {pct}%|" + "| {count} {timing} {status}"
+                # Leave room for: " {pct}%|" + "| {count} {timing} {status}".
                 cols = shutil.get_terminal_size((100, 20)).columns
                 fixed = " ".join(p for p in parts) + f" {pct:3d}%|| {count} {timing} {self._status}"
                 bar_w = max(5, min(40, cols - len(fixed) - 1))
                 return (" ".join(parts) + f" {pct:3d}%|{self._bar_str(bar_w)}| "
                         f"{count} {timing} {self._status}").rstrip()
             return (" ".join(parts) + f" {count} ({pct}%) {timing} {self._status}").rstrip()
-        # unknown total: count + rate only
+        # Unknown total: count + rate only.
         timing = f"[{_fmt_time(elapsed)}, {rate:.1f}{self.unit}/s]"
         return (" ".join(parts) + f" {self.n}{self.unit} {timing} {self._status}").rstrip()
 
@@ -155,7 +156,7 @@ class Progress:
             self.stream.flush()
 
     def close(self) -> None:
-        """Render the final state once (and a trailing newline on a TTY)."""
+        """Renders the final state once (and a trailing newline on a TTY)."""
         if self._closed or not self.enable:
             return
         self._closed = True
@@ -164,7 +165,7 @@ class Progress:
 
 def progress(iterable, total: Optional[int] = None, desc: str = "", unit: str = "it",
              header: Optional[str] = None, **kw):
-    """Wrap an iterable with a :class:`Progress` bar (auto-advances one per item)."""
+    """Wraps an iterable with a Progress bar (auto-advances one step per item)."""
     if total is None:
         try:
             total = len(iterable)

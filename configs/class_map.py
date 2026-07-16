@@ -7,7 +7,7 @@ SERVINGBOT_CLASS_REMAP: Maps ServingBot's single foreground class (id=0) to
 
 _NUM_CLASSES = 39
 
-# Placeholder names — replace with real class names when confirmed.
+# Placeholder names; replace with real class names when confirmed.
 DETECTION_CLASSES: dict[int, str] = {i: f'label_{i}' for i in range(_NUM_CLASSES)}
 
 # index == category_id is assumed throughout eval (coco_metrics) and logging;

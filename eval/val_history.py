@@ -1,16 +1,12 @@
 """Append-only JSONL store for per-epoch validation reports.
 
-One ``<run>/val_history.jsonl`` per run. Each validation appends one line: the full
-report dict from ``eval/metrics_report.build_report`` (``mean`` / ``best_conf`` /
-``all_conf`` / ``per_category_ap``) augmented with ``epoch`` / ``step`` / ``checkpoint``
-and the headline scalar ``metrics`` (mAP / mAP50 / F1score50 / AR100).
-
-Append is O(line) regardless of file size, so it has no training-step impact; the file
-is plain text (greppable, tailable, crash-safe — an interrupted run loses at most the
-last partial line); and a record is a superset of what ``metrics_report.write_txt``
-consumes, so any epoch round-trips back to the ckpt-format txt.
-
-Read/extract with ``utils/reports/val_history.py`` (txt / json / csv, ``--best``, ``--list``).
+One <run>/val_history.jsonl per run. Each validation appends one line: the full
+report dict from eval/metrics_report.build_report (mean / best_conf / all_conf /
+per_category_ap) augmented with epoch / step / checkpoint and the headline
+scalar metrics (mAP / mAP50 / F1score50 / AR100). An interrupted run loses at
+most the last partial line. A record is a superset of what
+metrics_report.write_txt consumes, so any epoch round-trips back to the
+ckpt-format txt. Read/extract with utils/reports/val_history.py.
 """
 
 from __future__ import annotations
@@ -19,7 +15,7 @@ import json
 import os
 from typing import Dict, List, Optional
 
-# Header keys written first on each line (purely cosmetic ordering; readers key by name).
+# Header keys written first on each line (cosmetic ordering; readers key by name).
 _LEAD_KEYS = ('epoch', 'step', 'checkpoint', 'metrics')
 
 
@@ -31,11 +27,22 @@ def append_record(
     checkpoint: Optional[str] = None,
     metrics: Optional[dict] = None,
 ) -> dict:
-    """Append one validation report as a JSON line. Returns the written record.
+    """Appends one validation report as a JSON line.
 
     The record is the report dict (so it round-trips through
-    ``metrics_report.write_txt`` unchanged) plus ``epoch`` / ``step`` /
-    ``checkpoint`` / ``metrics``. ``metrics`` is coerced to plain floats.
+    metrics_report.write_txt unchanged) plus epoch / step / checkpoint /
+    metrics. metrics is coerced to plain floats.
+
+    Args:
+      jsonl_path: Path to the val_history.jsonl file.
+      report: Report dict from metrics_report.build_report.
+      epoch: Optional epoch number.
+      step: Optional global step.
+      checkpoint: Optional checkpoint path.
+      metrics: Optional headline scalar metrics dict.
+
+    Returns:
+      The written record.
     """
     os.makedirs(os.path.dirname(os.path.abspath(jsonl_path)), exist_ok=True)
 
@@ -62,7 +69,7 @@ def append_record(
 
 
 def load_records(jsonl_path: str) -> List[dict]:
-    """Read all records (skips blank / partial trailing lines)."""
+    """Reads all records, skipping blank and partial trailing lines."""
     out: List[dict] = []
     if not os.path.exists(jsonl_path):
         return out
@@ -74,19 +81,24 @@ def load_records(jsonl_path: str) -> List[dict]:
             try:
                 out.append(json.loads(line))
             except json.JSONDecodeError:
-                # tolerate a partial last line from an interrupted write
+                # Tolerate a partial last line from an interrupted write.
                 continue
     return out
 
 
 def latest_per_epoch(records: List[dict]) -> List[dict]:
-    """Collapse re-validations: keep only the LAST record per epoch (in file order).
+    """Collapses re-validations: keeps only the last record per epoch.
 
-    The store is append-only, so validating the same checkpoint twice writes two lines
-    with the same ``epoch``. For trend / best / export views we want one canonical row
-    per epoch — the most recent (a re-validation supersedes). Records without an
-    ``epoch`` fall back to ``step`` then to a per-record identity, so nothing is dropped
-    spuriously. Order is preserved (first appearance of each key).
+    Validating the same checkpoint twice appends two lines with the same epoch;
+    the most recent supersedes. Records without an epoch fall back to step and
+    then to a per-record identity, so nothing is dropped spuriously. Order is
+    preserved (first appearance of each key).
+
+    Args:
+      records: Records in file order.
+
+    Returns:
+      One canonical record per epoch, in first-appearance order.
     """
     out: Dict = {}
     order: List = []
@@ -100,13 +112,16 @@ def latest_per_epoch(records: List[dict]) -> List[dict]:
             key = ('idx', i)
         if key not in out:
             order.append(key)
-        out[key] = r       # later record wins
+        out[key] = r       # Later record wins.
     return [out[k] for k in order]
 
 
 def metric_of(record: dict, key: str = 'F1score50') -> Optional[float]:
-    """Headline metric for a record. Prefers ``metrics[key]``; for the default
-    F1score50 falls back to the report's ``mean.f1`` (they coincide by construction)."""
+    """Returns the headline metric for a record.
+
+    Prefers metrics[key]; for the default F1score50 falls back to the report's
+    mean.f1 (they coincide by construction).
+    """
     m = record.get('metrics') or {}
     if key in m:
         return float(m[key])
@@ -118,10 +133,10 @@ def metric_of(record: dict, key: str = 'F1score50') -> Optional[float]:
 
 
 def best_record(records: List[dict], key: str = 'F1score50') -> Optional[dict]:
-    """The record maximizing ``key`` (None if none have it).
+    """Returns the record maximizing key, or None if none have it.
 
-    Collapses re-validations first (``latest_per_epoch``) so a stale duplicate of an
-    epoch cannot win over its own re-validated value.
+    Collapses re-validations first (latest_per_epoch) so a stale duplicate of
+    an epoch cannot win over its own re-validated value.
     """
     scored = [(metric_of(r, key), r) for r in latest_per_epoch(records)]
     scored = [(v, r) for v, r in scored if v is not None]
@@ -136,7 +151,7 @@ def select(
     step: Optional[int] = None,
     checkpoint: Optional[str] = None,
 ) -> Optional[dict]:
-    """Return the last record matching the given selector (None if no match)."""
+    """Returns the last record matching the given selector, or None."""
     match = None
     for r in records:
         if epoch is not None and r.get('epoch') != int(epoch):
@@ -145,12 +160,12 @@ def select(
             continue
         if checkpoint is not None and checkpoint not in str(r.get('checkpoint', '')):
             continue
-        match = r   # keep the latest match
+        match = r   # Keep the latest match.
     return match
 
 
 def resolve_path(path: str) -> str:
-    """Accept either the jsonl file or a run directory containing it."""
+    """Accepts either the jsonl file or a run directory containing it."""
     if os.path.isdir(path):
         return os.path.join(path, 'val_history.jsonl')
     return path

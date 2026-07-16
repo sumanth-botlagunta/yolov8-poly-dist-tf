@@ -57,7 +57,7 @@ class ExponentialMovingAverage(tf.Module):
         """Pre-create the inner optimizer's slots in cross-replica context.
 
         Required under tf.distribute so no variable is created inside
-        strategy.run. Shadows are already created in __init__.
+        strategy.run. Shadows are already created in ``__init__``.
         """
         if hasattr(self._optimizer, 'build'):
             self._optimizer.build(variables)
@@ -136,7 +136,7 @@ class ExponentialMovingAverage(tf.Module):
             kwargs.pop('clip_norm', None)
         result = self._optimizer.apply_gradients(grads_and_vars, **kwargs)
         # Increment before computing decay (the reference reads iterations after
-        # the update): the first averaging update uses step=1 → near-zero decay,
+        # the update): the first averaging update uses step=1 -> near-zero decay,
         # so the shadow starts as a copy of the live weights and smooths in.
         self._ema_step.assign_add(1)
         decay = self._get_decay()

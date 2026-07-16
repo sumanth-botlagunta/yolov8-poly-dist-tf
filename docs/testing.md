@@ -1,6 +1,6 @@
 # Testing
 
-`pytest` suite under `tests/`. All tests run in **eager mode** (`tests/conftest.py` autouses
+`pytest` suite under `tests/`. All tests run in eager mode (`tests/conftest.py` autouses
 `tf.config.run_functions_eagerly(True)`).
 
 ## Layout
@@ -17,7 +17,7 @@ batched GPU colour aug vs the per-image `tf.image.adjust_*` reference, mask gati
 paths), `test_batch_shape_consistency.py`, `test_copy_paste.py` / `test_copy_paste_resample.py`
 (resolution correction on pre-resized backgrounds + the even-resample column fit),
 `test_distance_loss.py`, `test_loss_computation.py`, `test_loss_reference_parity.py`,
-`test_mosaic.py` / `test_mosaic_letterbox_changes.py` (group semantics: G in → G//R out, R=4
+`test_mosaic.py` / `test_mosaic_letterbox_changes.py` (group semantics: G in -> G//R out, R=4
 no-reuse, per-output frequency; canvas-warp geometry/label/mask-partition; warp-scale-bounds
 distribution), `test_parser.py`, `test_polygon_loss_conventions.py` (pins the all-bins conf
 convention), `test_polygon_negative_canvas_vertex.py` (the `-1.0` sentinel vs slightly-negative
@@ -41,17 +41,17 @@ epochs, and mid-epoch resume remainder),
 **Integration test files (4 files):** `test_full_pipeline.py`, `test_multigpu.py`,
 `test_ckpt_eval_loading.py`, `test_native_checkpoint_load.py`.
 
-`test_multigpu.py` runs a real 2-replica `MirroredStrategy` on two **virtual CPU devices** to
+`test_multigpu.py` runs a real 2-replica `MirroredStrategy` on two virtual CPU devices to
 validate the distributed-training machinery (global-count loss normalizers, cross-replica
 gradient all-reduce, EMA + pre-built optimizer slots under `strategy.run`). It must run in a
-**fresh process** — splitting the CPU into logical devices only works before TF's device context
+fresh process: splitting the CPU into logical devices only works before TF's device context
 is initialized, so in the shared suite run it self-skips. CI runs it as a separate step:
 `pytest tests/integration/test_multigpu.py`.
 
 ## Running
 
 ```bash
-# Fast, no datasets — what CI runs:
+# Fast, no datasets - what CI runs:
 pytest tests/unit tests/integration -q
 
 # A single file or test:
@@ -69,12 +69,12 @@ pytest tests/unit tests/integration --cov -q
 ```
 
 ## Conventions for new tests
-- Unit/integration tests **must not** require TFDS — build synthetic tensors inline.
-- Write **discriminating** assertions (pin a value/relationship that fails on regression), not
+- Unit/integration tests must not require TFDS; build synthetic tensors inline.
+- Write discriminating assertions (pin a value/relationship that fails on regression), not
   just "runs without error". See `tests/test_loss_reference_parity.py` for the pattern: it fails
   against the buggy behavior and passes once fixed.
-- Reuse `tests/conftest.py` fixtures (`tiny_model_cfg`, `synthetic_image`, `synthetic_labels`, …).
-- Match coordinate conventions (`yxyx` normalized GT vs `xyxy` pixels in the loss) — mismatches are
+- Reuse `tests/conftest.py` fixtures (`tiny_model_cfg`, `synthetic_image`, `synthetic_labels`, ...).
+- Match coordinate conventions (`yxyx` normalized GT vs `xyxy` pixels in the loss); mismatches are
   the most common test bug.
 
 ## Running the full suite

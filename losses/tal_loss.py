@@ -60,21 +60,22 @@ _LEVEL_STRIDES = {"3": 8, "4": 16, "5": 32}
 
 def _bbox_iou_loss(b1: tf.Tensor, b2: tf.Tensor, iou_type: str = "ciou",
                    eps: float = 1e-7) -> tf.Tensor:
-    """IoU-family box loss between two sets of xyxy boxes.
+    """Compute an IoU-family box loss between two sets of xyxy boxes.
 
     ``iou_type`` selects the penalty added to plain IoU:
-        iou   — 1 - IoU
-        giou  — Generalized IoU (enclosing-area penalty)
-        diou  — Distance IoU (center-distance penalty)
-        ciou  — Complete IoU (center distance + aspect-ratio); default
-        eiou  — Efficient IoU (center + width + height penalties)
-        siou  — SCYLLA IoU (angle + distance + shape cost)
+        iou:  1 - IoU
+        giou: Generalized IoU (enclosing-area penalty)
+        diou: Distance IoU (center-distance penalty)
+        ciou: Complete IoU (center distance + aspect-ratio); default
+        eiou: Efficient IoU (center + width + height penalties)
+        siou: SCYLLA IoU (angle + distance + shape cost)
 
     Args:
-        b1, b2: float32 [..., 4]  xyxy in the same coordinate system.
+      b1: float32 [..., 4] xyxy boxes.
+      b2: float32 [..., 4] xyxy boxes in the same coordinate system.
 
     Returns:
-        float32 [...]  per-box loss (0 = perfect overlap).
+      float32 [...] per-box loss (0 = perfect overlap).
     """
     ix1 = tf.maximum(b1[..., 0], b2[..., 0])
     iy1 = tf.maximum(b1[..., 1], b2[..., 1])
@@ -90,7 +91,7 @@ def _bbox_iou_loss(b1: tf.Tensor, b2: tf.Tensor, iou_type: str = "ciou",
     if iou_type == "iou":
         return 1.0 - iou
 
-    # Center coordinates / distance² and the enclosing box (shared by the rest).
+    # Center coordinates / distance^2 and the enclosing box (shared by the rest).
     cx1 = (b1[..., 0] + b1[..., 2]) * 0.5
     cy1 = (b1[..., 1] + b1[..., 3]) * 0.5
     cx2 = (b2[..., 0] + b2[..., 2]) * 0.5
@@ -252,7 +253,7 @@ class TaskAlignedLossExtended:
         gt_polys: Optional[tf.Tensor] = None,
         gt_dists: Optional[tf.Tensor] = None,
     ) -> Tuple:
-        """Task-Aligned label assignment.
+        """Run Task-Aligned label assignment.
 
         Assignment steps:
             1. Compute alignment metric: score^alpha * IoU^beta.
@@ -261,8 +262,8 @@ class TaskAlignedLossExtended:
             4. Handle duplicate assignments (keep max-IoU GT).
 
         Returns:
-            target_labels, target_bboxes, target_scores,
-            target_polygons, target_dists, fg_mask, target_gt_idx
+          (target_labels, target_bboxes, target_scores, target_polygons,
+          target_dists, fg_mask).
         """
         return self._assigner_fn(
             pd_scores, pd_bboxes, anc_points,
@@ -276,22 +277,24 @@ class TaskAlignedLossExtended:
         self,
         pd_bboxes: tf.Tensor,
         target_bboxes: tf.Tensor,
-        target_scores: tf.Tensor,   # [B, A, C] — per-anchor weighting (Ultralytics)
+        target_scores: tf.Tensor,   # [B, A, C] per-anchor weighting (Ultralytics)
         target_scores_sum: tf.Tensor,
         fg_mask: tf.Tensor,
         pd_box_raw: tf.Tensor,
-        anc_strides: tf.Tensor,     # [A, 1]  — added for DFL target normalisation
-        anc_points: tf.Tensor,      # [A, 2]  — added to build LTRB targets
+        anc_strides: tf.Tensor,     # [A, 1]  for DFL target normalization
+        anc_points: tf.Tensor,      # [A, 2]  to build LTRB targets
         num_objs: Optional[tf.Tensor] = None,   # required for weighting=legacy_hard
     ) -> Tuple[tf.Tensor, tf.Tensor]:
-        """CIoU loss + DFL loss for foreground anchors.
+        """Compute the box IoU loss and DFL loss for foreground anchors.
 
-        Both terms are weighted per-anchor by ``sum(target_scores, -1)`` so that
-        better-aligned anchors dominate the box gradient, matching the reference
-        Ultralytics YOLOv8 recipe (``(loss * weight).sum() / target_scores_sum``).
+        Under ``weighting == soft`` both terms are weighted per-anchor by
+        ``sum(target_scores, -1)`` and normalized by ``target_scores_sum``,
+        matching the reference Ultralytics YOLOv8 recipe
+        (``(loss * weight).sum() / target_scores_sum``). Under ``legacy_hard``
+        the weight is binary foreground and the normalizer is ``num_objs``.
 
         Returns:
-            (ciou_loss, dfl_loss) both scalar tensors.
+          (ciou_loss, dfl_loss), both scalar tensors.
         """
         fg_float = tf.cast(fg_mask, tf.float32)           # [B, A]
         if self.weighting == "legacy_hard":
@@ -303,12 +306,11 @@ class TaskAlignedLossExtended:
             weight = tf.reduce_sum(target_scores, axis=-1)  # [B, A]
             denom  = target_scores_sum
 
-        # ── Box IoU loss (ciou by default; giou/diou/eiou/siou selectable) ──
+        # Box IoU loss (ciou by default; giou/diou/eiou/siou selectable).
         ciou = _bbox_iou_loss(pd_bboxes, target_bboxes, self.box_iou_type)   # [B, A]
         ciou_loss = tf.reduce_sum(ciou * weight * fg_float) / denom
 
-        # ── DFL ───────────────────────────────────────────────────────
-        # Target LTRB offsets in feature-map units
+        # DFL. Target LTRB offsets in feature-map units.
         cx = anc_points[:, 0]   # [A]
         cy = anc_points[:, 1]   # [A]
 
@@ -358,11 +360,11 @@ class TaskAlignedLossExtended:
         target_labels: Optional[tf.Tensor] = None,   # required for legacy_hard
         num_objs: Optional[tf.Tensor] = None,        # required for legacy_hard
     ) -> tf.Tensor:
-        """Classification loss, with ignore_bg masking.
+        """Compute the classification loss, with ignore_bg masking.
 
         ``cls_loss_type`` selects the per-element loss (default ``bce``): ``focal``
         adds the focal modulating factor, ``varifocal`` (VFL) weights positives by
-        their soft target and negatives by ``alpha · p^gamma``. ``label_smoothing``
+        their soft target and negatives by ``alpha * p^gamma``. ``label_smoothing``
         (0 = off) softens the BCE targets. ``weighting == legacy_hard`` replaces
         the soft alignment-scaled targets with one-hot targets (positives pushed
         toward score 1.0 regardless of current box quality) and normalizes by
@@ -397,10 +399,10 @@ class TaskAlignedLossExtended:
 
         bce_sum = tf.reduce_sum(bce, axis=-1)   # [B, A]
 
-        # ignore_bg=1 → apply loss only on foreground anchors for that image
+        # ignore_bg=1 -> apply loss only on foreground anchors for that image.
         ignore_bg_f = tf.cast(ignore_bg, tf.float32)                   # [B]
         fg_float    = tf.cast(fg_mask, tf.float32)                     # [B, A]
-        # mask = 1.0 when ignore_bg=0; mask = fg when ignore_bg=1
+        # mask = 1.0 when ignore_bg=0; mask = fg when ignore_bg=1.
         mask = (
             (1.0 - ignore_bg_f[:, tf.newaxis]) +
             ignore_bg_f[:, tf.newaxis] * fg_float
@@ -418,7 +420,7 @@ class TaskAlignedLossExtended:
         fg_mask: tf.Tensor,
         num_objs: tf.Tensor,
     ) -> tf.Tensor:
-        """L1 loss on log-scale distances, masked to valid GT entries (> -10.0).
+        """Compute L1 loss on log-scale distances, masked to valid GTs (> -10.0).
 
         Normalized by ``num_objs`` (total GT object count in the batch); dist_gain
         is calibrated to this scale.
@@ -436,15 +438,15 @@ class TaskAlignedLossExtended:
         fg_mask: tf.Tensor,
         num_objs: tf.Tensor,
         ignore_bg: tf.Tensor,
-        anc_strides: tf.Tensor,   # [A, 1] — per-anchor stride for dist units
-        img_size: tf.Tensor,      # scalar float — input image side (square)
+        anc_strides: tf.Tensor,   # [A, 1] per-anchor stride for dist units
+        img_size: tf.Tensor,      # scalar float, input image side (square)
     ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
-        """Combined PolyYOLO polygon loss (angle + dist + conf).
+        """Compute the combined PolyYOLO polygon loss (angle + dist + conf).
 
         target_polygons layout: [dist0, angle0, conf0, dist1, angle1, conf1, ...]
-            dist:  radial distance from box center in NORMALIZED image units
-                   (pre-computed by parser); converted below to the assigned
-                   anchor's GRID units (× img_size / stride — the reference
+            dist:  radial distance from box center in normalized image units
+                   (pre-computed by the parser); converted below to the assigned
+                   anchor's grid units (x img_size / stride, the reference
                    convention, DFL-style per-level normalization) before the
                    softplus regression.
             angle: sub-bin angular offset (vertex_angle - bin_start)/angle_step
@@ -454,7 +456,7 @@ class TaskAlignedLossExtended:
 
         ``ignore_bg`` ([B] int) marks distance-stream images that carry no polygon
         GT (all-zero ``target_polygons``). Since conf trains on all bins, their
-        real foreground objects would otherwise be pushed to conf≈0 on every
+        real foreground objects would otherwise be pushed to conf ~0 on every
         vertex, so the whole polygon loss is zeroed on ignore_bg=1 rows (angle/dist
         already contribute zero there via the empty vertex mask; conf would not).
 
@@ -463,15 +465,15 @@ class TaskAlignedLossExtended:
         negative signal on empty bins.
 
         Returns:
-            (poly_total, angle_loss, dist_loss_val, conf_loss_val); poly_total is
-            the gain-weighted sum, the other three are raw pre-gain sub-losses.
+          (poly_total, angle_loss, dist_loss_val, conf_loss_val); poly_total is
+          the gain-weighted sum, the other three are raw pre-gain sub-losses.
         """
         target_dist  = target_polygons[:, :, 0::3]   # [B, A, 24] normalized units
-        target_angle = target_polygons[:, :, 1::3]   # [B, A, 24] — sub-bin offset
-        conf         = target_polygons[:, :, 2::3]   # [B, A, 24] — per-bin validity
+        target_angle = target_polygons[:, :, 1::3]   # [B, A, 24] sub-bin offset
+        conf         = target_polygons[:, :, 2::3]   # [B, A, 24] per-bin validity
         vertex_mask  = conf                          # valid-vertex mask for angle/dist
 
-        # Normalized image units → the assigned anchor's grid units.
+        # Normalized image units -> the assigned anchor's grid units.
         dist_scale  = img_size / anc_strides[:, 0]                    # [A]
         target_dist = target_dist * dist_scale[tf.newaxis, :, tf.newaxis]
 
@@ -492,7 +494,7 @@ class TaskAlignedLossExtended:
             pd_poly_conf, conf, vertex_mask, poly_fg_b, num_objs
         )
 
-        # Diagnostic only (not part of the loss): |sigmoid(pred) − target| MAE over
+        # Diagnostic only (not part of the loss): |sigmoid(pred) - target| MAE over
         # valid vertices of fg anchors. Stashed on self (not returned) so the public
         # 9-tuple contract is unchanged.
         from losses.polygon_loss import polygon_angle_mae
@@ -515,15 +517,15 @@ class TaskAlignedLossExtended:
         feats: Dict[str, Dict[str, tf.Tensor]],
         batch: Dict[str, tf.Tensor],
     ) -> Tuple[tf.Tensor, ...]:
-        """Compute total loss.
+        """Compute the total loss.
 
         Returns:
-            9-tuple: (total_loss, box_loss, dfl_loss, cls_loss, dist_loss,
-                      poly_loss, poly_angle_loss, poly_dist_loss, poly_conf_loss)
-            The last three are raw (pre-gain-weighted) polygon sub-losses;
-            poly_loss is the fully gain-weighted combined polygon term.
+          9-tuple: (total_loss, box_loss, dfl_loss, cls_loss, dist_loss,
+          poly_loss, poly_angle_loss, poly_dist_loss, poly_conf_loss).
+          The last three are raw (pre-gain-weighted) polygon sub-losses;
+          poly_loss is the fully gain-weighted combined polygon term.
         """
-        # ── 1. Flatten FPN outputs and build anchor grid ──────────────
+        # 1. Flatten FPN outputs and build the anchor grid.
         box_raw_list, cls_list = [], []
         poly_a_list, poly_d_list, poly_c_list, dist_list = [], [], [], []
         anc_list, stride_list = [], []
@@ -565,7 +567,7 @@ class TaskAlignedLossExtended:
                                [B_val, A_lvl, 1])
                 )
 
-            # Anchor grid for this FPN level
+            # Anchor grid for this FPN level.
             ys = (tf.cast(tf.range(fH), tf.float32) + 0.5) * stride_val
             xs = (tf.cast(tf.range(fW), tf.float32) + 0.5) * stride_val
             grid_x, grid_y = tf.meshgrid(xs, ys)
@@ -586,7 +588,7 @@ class TaskAlignedLossExtended:
         pd_poly_conf  = tf.concat(poly_c_list, axis=1) if self.with_polygons else None
         pd_dist       = tf.concat(dist_list,   axis=1) if self.with_distance else None
 
-        # ── 2. Decode DFL → xyxy pixel boxes ──────────────────────────
+        # 2. Decode DFL -> xyxy pixel boxes.
         B_val = tf.shape(pd_box_raw)[0]
         A_val = tf.shape(pd_box_raw)[1]
         logits_4 = tf.reshape(pd_box_raw, [B_val, A_val, 4, self.reg_max])
@@ -606,16 +608,16 @@ class TaskAlignedLossExtended:
             axis=-1,
         )  # [B, A, 4] xyxy pixels
 
-        # ── 3. Prepare GT tensors ──────────────────────────────────────
+        # 3. Prepare GT tensors.
         gt_bboxes_norm = batch["bbox"]       # [B, M, 4] yxyx normalized [0, 1]
         gt_labels      = batch["classes"]    # [B, M] int64
         n_gt           = batch["n_gt"]       # [B] int64
 
-        # Image size inferred from level-3 feature map (stride 8)
+        # Image size inferred from the level-3 feature map (stride 8).
         img_H = tf.cast(tf.shape(feats["box"]["3"])[1] * 8, tf.float32)
         img_W = tf.cast(tf.shape(feats["box"]["3"])[2] * 8, tf.float32)
 
-        # Convert yxyx normalized → xyxy pixel space
+        # Convert yxyx normalized -> xyxy pixel space.
         gt_bboxes_px = tf.stack(
             [
                 gt_bboxes_norm[..., 1] * img_W,   # x1
@@ -645,7 +647,7 @@ class TaskAlignedLossExtended:
         gt_polys = gt_polys_raw[:, :M_eff, :] if (self.with_polygons and gt_polys_raw is not None) else None
         gt_dists = gt_dists_raw[:, :M_eff]    if (self.with_distance and gt_dists_raw is not None) else None
 
-        # ── 4. TAL assignment (stop-gradient) ─────────────────────────
+        # 4. TAL assignment (stop-gradient).
         (
             target_labels,
             target_bboxes,
@@ -667,7 +669,7 @@ class TaskAlignedLossExtended:
         # Global alignment-score sum across replicas (no-op single-device).
         target_scores_sum = tf.maximum(_replica_sum(tf.reduce_sum(target_scores)), 1.0)
 
-        # ── 5. Component losses ────────────────────────────────────────
+        # 5. Component losses.
         ciou_loss, dfl_loss = self._box_loss(
             pd_bboxes, target_bboxes, target_scores, target_scores_sum, fg_mask,
             pd_box_raw, anc_strides, anc_points, num_objs=num_objs,
@@ -698,7 +700,7 @@ class TaskAlignedLossExtended:
                 anc_strides=anc_strides, img_size=img_H,
             )
 
-        # ── 6. Apply gains and aggregate ──────────────────────────────
+        # 6. Apply gains and aggregate.
         box_loss_w  = self.iou_gain  * ciou_loss
         dfl_loss_w  = self.dfl_gain  * dfl_loss
         cls_loss_w  = self.cls_gain  * cls_loss

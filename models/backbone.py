@@ -3,10 +3,10 @@
 YOLOv8-S (model_id='cspdarknetv8s'): depth_scale 0.33, width_scale 0.50.
 
 Stages:
-    Stem: Conv(32, 3x3, s=2) → Conv(64, 3x3, s=2) → C2f(64, n=1)
-    P3:   Conv(128, 3x3, s=2) → C2f(128, n=2)          stride 8  → level '3'
-    P4:   Conv(256, 3x3, s=2) → C2f(256, n=2)          stride 16 → level '4'
-    P5:   Conv(512, 3x3, s=2) → C2f(512, n=1) → SPPF   stride 32 → level '5'
+    Stem: Conv(32, 3x3, s=2) -> Conv(64, 3x3, s=2) -> C2f(64, n=1)
+    P3:   Conv(128, 3x3, s=2) -> C2f(128, n=2)          stride 8  -> level '3'
+    P4:   Conv(256, 3x3, s=2) -> C2f(256, n=2)          stride 16 -> level '4'
+    P5:   Conv(512, 3x3, s=2) -> C2f(512, n=1) -> SPPF  stride 32 -> level '5'
 
 Convolutions use BN + activation (config-driven via norm_activation.activation).
 """
@@ -30,11 +30,19 @@ _EXTRA_ACTIVATIONS = {
 
 
 def resolve_activation(name: str) -> tf.keras.layers.Layer:
-    """Return an Activation layer for ``name``.
+    """Returns an Activation layer for `name`.
 
     Standard names resolve via Keras (relu, silu/swish, gelu, leaky_relu, mish, ...);
-    hardswish is a callable since it is not a Keras built-in. An unknown name raises
-    a descriptive error.
+    hardswish resolves to a callable since it is not a Keras built-in.
+
+    Args:
+        name: Activation name.
+
+    Returns:
+        A `tf.keras.layers.Activation` layer.
+
+    Raises:
+        ValueError: If `name` is not a supported activation.
     """
     if name in _EXTRA_ACTIVATIONS:
         return tf.keras.layers.Activation(_EXTRA_ACTIVATIONS[name], name=name)
@@ -97,7 +105,7 @@ class _ConvBnAct(tf.keras.layers.Layer):
 
 
 class C2fBottleneck(tf.keras.layers.Layer):
-    """Single bottleneck block (shortcut + two 3×3 convs)."""
+    """Single bottleneck block (shortcut + two 3x3 convs)."""
 
     def __init__(
         self,
@@ -129,9 +137,9 @@ class C2f(tf.keras.layers.Layer):
     """Cross-Stage-Partial block with n C2fBottleneck repetitions.
 
     Forward:
-        cv1(1×1 → filters) → split into two halves of size filters//2
-        → pass second half through n bottlenecks
-        → concat all chunks → cv2(1×1 → filters)
+        cv1(1x1 -> filters) -> split into two halves of size filters//2
+        -> pass second half through n bottlenecks
+        -> concat all chunks -> cv2(1x1 -> filters)
     """
 
     def __init__(
@@ -180,8 +188,8 @@ class C2f(tf.keras.layers.Layer):
 class SPPF(tf.keras.layers.Layer):
     """Spatial Pyramid Pooling - Fast.
 
-    cv1(1×1 → filters//2) → three sequential max-pools →
-    concat([original, pool1, pool2, pool3]) → cv2(1×1 → filters)
+    cv1(1x1 -> filters//2) -> three sequential max-pools ->
+    concat([original, pool1, pool2, pool3]) -> cv2(1x1 -> filters)
     """
 
     def __init__(
@@ -216,7 +224,7 @@ class SPPF(tf.keras.layers.Layer):
         return self.cv2(tf.concat([x, y1, y2, y3], axis=-1), training=training)
 
 
-# Backbone configs — model_id takes precedence over constructor width/depth.
+# Backbone configs; model_id takes precedence over constructor width/depth.
 _BACKBONE_CONFIGS: Dict[str, Dict] = {
     "cspdarknetv8n": {"width": 0.25, "depth": 0.33},
     "cspdarknetv8s": {"width": 0.50, "depth": 0.33},
@@ -252,7 +260,7 @@ class CSPDarkNetV8(tf.keras.Model):
         '4': float32 [batch, H/16, W/16, C4]
         '5': float32 [batch, H/32, W/32, C5]
 
-    For cspdarknetv8s at 672×672: '3'=[B,84,84,128], '4'=[B,42,42,256], '5'=[B,21,21,512].
+    For cspdarknetv8s at 672x672: '3'=[B,84,84,128], '4'=[B,42,42,256], '5'=[B,21,21,512].
     """
 
     def __init__(
@@ -269,9 +277,25 @@ class CSPDarkNetV8(tf.keras.Model):
         use_sync_bn: bool = False,
         **kwargs,
     ):
+        """Initializes the backbone.
+
+        Args:
+            model_id: Size variant key in _BACKBONE_CONFIGS; overrides the
+                width_scale/depth_scale arguments when recognized.
+            input_specs: Unused; kept for interface compatibility.
+            min_level: Lowest output level (informational).
+            max_level: Highest output level (informational).
+            width_scale: Channel multiplier used when model_id is unknown.
+            depth_scale: Bottleneck-count multiplier used when model_id is unknown.
+            activation: Activation name for all _ConvBnAct blocks.
+            norm_momentum: BatchNormalization momentum.
+            norm_epsilon: BatchNormalization epsilon.
+            use_sync_bn: Whether to use synchronized BatchNormalization.
+            **kwargs: Passed to tf.keras.Model.
+        """
         super().__init__(**kwargs)
 
-        # model_id overrides constructor width/depth
+        # model_id overrides constructor width/depth.
         cfg = _BACKBONE_CONFIGS.get(model_id, {})
         width = cfg.get("width", width_scale)
         depth = cfg.get("depth", depth_scale)

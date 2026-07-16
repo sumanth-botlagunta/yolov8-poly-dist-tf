@@ -1,20 +1,20 @@
 """SGD optimizer with per-param-group weight decay and momentum warmup.
 
 PyTorch-style SGD over three parameter groups:
-    Group 0 — BN params  (gamma, beta, moving_mean, moving_variance): wd=0
-    Group 1 — Biases     (bias):                                      wd=0
-    Group 2 — Weights    (kernel):                                    wd=weight_decay
+    Group 0 - BN params (gamma, beta, moving_mean, moving_variance): wd=0
+    Group 1 - Biases    (bias):                                      wd=0
+    Group 2 - Weights   (kernel):                                    wd=weight_decay
 
-Momentum warms up linearly from momentum_start → momentum over warmup_steps,
+Momentum warms up linearly from momentum_start to momentum over warmup_steps,
 then holds. Weight decay is coupled into the gradient before the momentum
 update (PyTorch / TF-model-garden SGDTorch semantics):
 
-    g ← g + wd·w          # group-2 (kernel) variables only
-    v ← μ·v + g
-    w ← w − lr·(μ·v + g)  # Nesterov  (or w − lr·v without)
+    g <- g + wd*w           # group-2 (kernel) variables only
+    v <- mu*v + g
+    w <- w - lr*(mu*v + g)  # Nesterov  (or w - lr*v without)
 
-The wd·w term accumulates in the velocity buffer, so the steady-state shrink is
-≈ lr·wd/(1−μ). Train-semantics: changing the coupling requires a fresh run.
+The wd*w term accumulates in the velocity buffer, so the steady-state shrink is
+~lr*wd/(1-mu). Train-semantics: changing the coupling requires a fresh run.
 """
 
 from typing import Callable, List, Optional, Tuple
@@ -41,17 +41,17 @@ class SGDTorch(tf.Module):
     """SGD with Nesterov momentum, per-param-group weight decay, and momentum warmup.
 
     Args:
-        lr_fn: Callable(step) → learning rate scalar (e.g. CosineDecay schedule).
-        momentum: Target momentum (reached after warmup_steps).
-        momentum_start: Initial momentum at step 0.
-        nesterov: Use Nesterov look-ahead correction.
-        weight_decay: L2 weight-decay coefficient applied to group-2 variables.
-        warmup_steps: Number of steps to linearly ramp momentum to target value.
-        bias_lr_scale: Initial LR scale for bias/BN params during warmup.
-            Bias/BN groups start at this absolute LR and ramp down to the
-            schedule LR; the weight group starts at 0 and ramps up. After
-            warmup_steps all groups use the schedule LR.
-            Set to 0.0 to disable (all groups start at schedule LR).
+      lr_fn: Callable(step) -> learning rate scalar (e.g. CosineDecay schedule).
+      momentum: Target momentum (reached after warmup_steps).
+      momentum_start: Initial momentum at step 0.
+      nesterov: Use Nesterov look-ahead correction.
+      weight_decay: L2 weight-decay coefficient applied to group-2 variables.
+      warmup_steps: Number of steps to linearly ramp momentum to target value.
+      bias_lr_scale: Initial LR scale for bias/BN params during warmup. Bias/BN
+        groups start at this absolute LR and ramp down to the schedule LR; the
+        weight group starts at 0 and ramps up. After warmup_steps all groups
+        use the schedule LR. Set to 0.0 to disable (all groups start at the
+        schedule LR).
     """
 
     # Consumes a per-call ``clip_norm`` kwarg in apply_gradients (forwarded by
@@ -80,13 +80,13 @@ class SGDTorch(tf.Module):
         self.iterations = tf.Variable(0, trainable=False, dtype=tf.int64,
                                       name='sgd_step')
         # Velocity slots are created lazily on first apply_gradients, or eagerly
-        # via build() — required under tf.distribute, where variables cannot be
+        # via build(), required under tf.distribute, where variables cannot be
         # created inside a replica context (strategy.run).
         self._velocities: List[tf.Variable] = []
         self._var_refs: List = []
 
     def build(self, variables) -> None:
-        """Pre-create zero-initialized momentum slots for *variables*.
+        """Pre-create zero-initialized momentum slots for ``variables``.
 
         Call in cross-replica context (inside strategy.scope, before the
         training loop) so no variable is created inside strategy.run. The slots
@@ -111,10 +111,12 @@ class SGDTorch(tf.Module):
         return tf.cast(self._lr_fn(prev), tf.float32)
 
     def group_lrs_for_last_step(self) -> Tuple[tf.Tensor, tf.Tensor]:
-        """(bias_group_lr, weight_group_lr) — effective per-group LRs at the last
-        applied step, for TensorBoard. During warmup the bias/BN group ramps down
-        from ``bias_lr_scale`` and the weight group ramps up from 0; after warmup
-        both equal the schedule LR."""
+        """Return (bias_group_lr, weight_group_lr) at the last applied step.
+
+        For TensorBoard. During warmup the bias/BN group ramps down from
+        ``bias_lr_scale`` and the weight group ramps up from 0; after warmup
+        both equal the schedule LR.
+        """
         prev   = tf.maximum(self.iterations - 1, 0)
         base   = tf.cast(self._lr_fn(prev), tf.float32)
         warmup = tf.cast(self._warmup_steps, tf.float32)
@@ -153,18 +155,18 @@ class SGDTorch(tf.Module):
             eff_lr = self._effective_lr(base_lr, t, group)
 
             if group == 2 and self._weight_decay > 0.0:
-                # Coupled weight decay: add wd·w to the gradient before the
+                # Coupled weight decay: add wd*w to the gradient before the
                 # momentum update so it compounds through the velocity buffer
-                # (steady-state shrink ≈ lr·wd/(1−μ)).
+                # (steady-state shrink ~lr*wd/(1-mu)).
                 grad = grad + self._weight_decay * tf.cast(var, grad.dtype)
 
             vel = self._get_or_create_velocity(var)
 
-            # v ← μ·v + g
+            # v <- mu*v + g
             new_vel = mu * vel + grad
             vel.assign(new_vel)
 
-            # Nesterov: effective update = μ·v_new + g; plain momentum: v_new
+            # Nesterov: effective update = mu*v_new + g; plain momentum: v_new.
             update = mu * new_vel + grad if self._nesterov else new_vel
             var.assign_sub(eff_lr * update)
 
@@ -199,7 +201,7 @@ class SGDTorch(tf.Module):
         return [(g, v) for g, v in out]
 
     def _current_momentum(self) -> tf.Tensor:
-        """Linear warmup: momentum_start → momentum over warmup_steps."""
+        """Linear warmup: momentum_start to momentum over warmup_steps."""
         step    = tf.cast(self.iterations, tf.float32)
         warmup  = tf.cast(self._warmup_steps, tf.float32)
         t       = tf.minimum(step / tf.maximum(warmup, 1.0), 1.0)
@@ -215,10 +217,10 @@ class SGDTorch(tf.Module):
         return tf.minimum(step / tf.maximum(warmup, 1.0), 1.0)
 
     def _effective_lr(self, base_lr: tf.Tensor, t: tf.Tensor, group: int) -> tf.Tensor:
-        """Per-param-group effective LR during warmup.
+        """Return the per-param-group effective LR during warmup.
 
-        group 0 (BN) / 1 (bias): bias_lr_scale → base_lr  (ramps DOWN)
-        group 2 (weights):        0             → base_lr  (ramps UP)
+        group 0 (BN) / 1 (bias): bias_lr_scale -> base_lr  (ramps down)
+        group 2 (weights):       0             -> base_lr  (ramps up)
         After warmup (t == 1.0): all groups return base_lr.
         """
         if self._bias_lr_scale <= 0.0:
@@ -230,7 +232,7 @@ class SGDTorch(tf.Module):
             return tf.where(t < 1.0, start + t * (base_lr - start), base_lr)
 
     def _get_or_create_velocity(self, var) -> tf.Variable:
-        """Return (or lazily create) the momentum slot for *var*."""
+        """Return (or lazily create) the momentum slot for ``var``."""
         for stored_var, vel in zip(self._var_refs, self._velocities):
             if stored_var is var:
                 return vel

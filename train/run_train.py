@@ -99,7 +99,7 @@ def _validate_config(config, output_dir: str) -> None:
     # decay_steps is an explicit YAML value (not derived); if it drifts from the
     # optimizer-update count the cosine schedule ends early or never anneals. The
     # schedule advances once per optimizer update, which under gradient
-    # accumulation (grad_accum_steps=N) is one update per N micro-steps — so it
+    # accumulation (grad_accum_steps=N) is one update per N micro-steps, so it
     # should span train_steps // N updates. At N=1 that equals train_steps.
     n_accum = max(1, getattr(trainer, 'grad_accum_steps', 1))
     decay = trainer.optimizer_config.learning_rate.decay_steps

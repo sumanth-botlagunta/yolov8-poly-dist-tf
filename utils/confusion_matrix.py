@@ -1,31 +1,31 @@
 """Per-class detection confusion matrix for a checkpoint or a SavedModel.
 
 Runs the validation (or train) split through a model and accumulates a
-``(num_classes + 1) x (num_classes + 1)`` confusion matrix, where the extra
-row/column is the ``background`` class. The model comes from EITHER a trained
-checkpoint (with its config + EMA weights) OR an exported SavedModel; the
-validation dataset is always built from the config, so ``--config`` is required
+`(num_classes + 1) x (num_classes + 1)` confusion matrix, where the extra
+row/column is the `background` class. The model comes from either a trained
+checkpoint (with its config + EMA weights) or an exported SavedModel; the
+validation dataset is always built from the config, so `--config` is required
 in both modes.
 
 The exported SavedModel is the device-contract artifact (utils/export/
 export_saved_model.py): its signature exposes flat per-anchor heads (box/cls/...)
-and takes ``input_image`` pixels in [0, 255]. This tool reconstructs the boxes /
+and takes `input_image` pixels in [0, 255]. This tool reconstructs the boxes /
 classes / scores it needs from those heads (utils/export/device_decode.py). An
-older post-processed SavedModel (with ``num_detections`` in its signature) is still
+older post-processed SavedModel (with `num_detections` in its signature) is still
 consumed directly.
 
-Matrix orientation is ``matrix[predicted, ground_truth]``:
-  * a matched detection increments ``matrix[pred_class, gt_class]`` (diagonal =
+Matrix orientation is `matrix[predicted, ground_truth]`:
+  * a matched detection increments `matrix[pred_class, gt_class]` (diagonal =
     correct class, off-diagonal = misclassification),
   * an unmatched ground truth (false negative) increments the background row:
-    ``matrix[background, gt_class]``,
+    `matrix[background, gt_class]`,
   * an unmatched prediction (false positive) increments the background column:
-    ``matrix[pred_class, background]``.
+    `matrix[pred_class, background]`.
 
 Matching is greedy, highest-score-first, class-agnostic on IoU (so cross-class
-confusion is visible), at IoU >= ``--iou``; predictions below ``--conf`` are
+confusion is visible), at IoU >= `--iou`; predictions below `--conf` are
 dropped before matching. Crowd / don't-care ground truths are handled with the
-same policy as ``eval/coco_metrics.py`` (see ``ConfusionMatrix.update``).
+same policy as `eval/coco_metrics.py` (see `ConfusionMatrix.update`).
 
 Usage:
     # from a checkpoint (EMA weights preferred)
@@ -93,7 +93,7 @@ def match_detections(pred_boxes, pred_scores, gt_boxes, iou_thresh: float = 0.5)
     """Greedy highest-score-first, class-agnostic IoU matching.
 
     Predictions are visited in descending score order; each claims the
-    highest-IoU still-unclaimed ground truth whose IoU >= ``iou_thresh``. Class
+    highest-IoU still-unclaimed ground truth whose IoU >= `iou_thresh`. Class
     labels are ignored during matching so cross-class confusion is preserved.
 
     Args:
@@ -128,17 +128,17 @@ def match_detections(pred_boxes, pred_scores, gt_boxes, iou_thresh: float = 0.5)
 class ConfusionMatrix:
     """Accumulates a per-class detection confusion matrix.
 
-    The stored matrix is ``[num_classes + 1, num_classes + 1]`` indexed
-    ``[predicted, ground_truth]``; index ``num_classes`` is the background class.
+    The stored matrix is `[num_classes + 1, num_classes + 1]` indexed
+    `[predicted, ground_truth]`; index `num_classes` is the background class.
 
-    Crowd / don't-care policy mirrors ``eval/coco_metrics.py``:
-      * a crowd GT whose class is in ``iscrowds_labels`` is dropped entirely when
-        ``ignore_iscrowds`` is set (it is neither a match target nor a false
+    Crowd / don't-care policy mirrors `eval/coco_metrics.py`:
+      * a crowd GT whose class is in `iscrowds_labels` is dropped entirely when
+        `ignore_iscrowds` is set (it is neither a match target nor a false
         negative);
-      * a don't-care GT (when ``ignore_dontcare`` is set) is not scored as a
+      * a don't-care GT (when `ignore_dontcare` is set) is not scored as a
         target, but it absorbs any leftover prediction that overlaps it at
-        IoU >= ``iou_thresh`` so the prediction is not counted as a false
-        positive. When ``ignore_dontcare`` is off, don't-care GTs are scored as
+        IoU >= `iou_thresh` so the prediction is not counted as a false
+        positive. When `ignore_dontcare` is off, don't-care GTs are scored as
         ordinary GTs.
     """
 
@@ -161,8 +161,8 @@ class ConfusionMatrix:
                gt_boxes, gt_classes, gt_is_crowd=None, gt_is_dontcare=None) -> None:
         """Accumulate one image's predictions and ground truths.
 
-        All boxes are yxyx (any consistent units — IoU is scale-free). Predictions
-        below ``conf_thresh`` are dropped before matching.
+        All boxes are yxyx (any consistent units; IoU is scale-free). Predictions
+        below `conf_thresh` are dropped before matching.
         """
         pb = np.asarray(pred_boxes, dtype=np.float64).reshape(-1, 4)
         pc = np.asarray(pred_classes).reshape(-1).astype(np.int64)
@@ -226,7 +226,7 @@ class ConfusionMatrix:
 
     # ------------------------------------------------------------------
     def as_array(self) -> np.ndarray:
-        """Return a copy of the raw integer matrix ``[predicted, ground_truth]``."""
+        """Return a copy of the raw integer matrix `[predicted, ground_truth]`."""
         return self.matrix.copy()
 
     def _label(self, idx: int) -> str:
@@ -237,7 +237,7 @@ class ConfusionMatrix:
         return str(idx)
 
     def top_confusions(self, k: int = 20):
-        """Top off-diagonal cells as ``(pred_label, gt_label, count)``, count-desc."""
+        """Top off-diagonal cells as `(pred_label, gt_label, count)`, count-desc."""
         out = []
         n = self.num_classes + 1
         for i in range(n):

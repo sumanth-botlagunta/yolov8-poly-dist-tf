@@ -1,15 +1,15 @@
-"""Checkpoint loading for eval / export, preferring EMA weights.
+"""Checkpoint loading for eval and export, preferring EMA weights.
 
-The trainer writes periodic ``ckpt-N`` and ``best_*/ckpt`` checkpoints (the latter also
-carries ``global_step`` / ``completed_epochs``, so it is a valid training-resume source).
-Both store the raw (live) weights under ``model/`` and the EMA shadows under
-``optimizer/`` (the EMA wrapper). EMA weights are what the trainer validates with and
-what ships; a plain ``Checkpoint(model=model).restore(...)`` reads only ``model/`` and
+The trainer writes periodic `ckpt-N` and `best_*/ckpt` checkpoints (the latter also
+carries `global_step` / `completed_epochs`, so it is a valid training-resume source).
+Both store the raw (live) weights under `model/` and the EMA shadows under
+`optimizer/` (the EMA wrapper). EMA weights are what the trainer validates with and
+what ships; a plain `Checkpoint(model=model).restore(...)` reads only `model/` and
 silently loads the raw, non-averaged weights.
 
-``restore_eval_weights`` detects whether the checkpoint carries EMA shadows: if so it
+`restore_eval_weights` detects whether the checkpoint carries EMA shadows: if so it
 restores the EMA wrapper and swaps the shadows into the model, otherwise it restores
-``model/`` directly. Eval and export both use it so they cannot diverge.
+`model/` directly. Eval and export both use it so they cannot diverge.
 """
 
 import logging
@@ -20,12 +20,13 @@ log = logging.getLogger(__name__)
 
 
 def _checkpoint_has_ema(ckpt_path: str) -> bool:
-    """True if the checkpoint stores EMA shadow variables (a periodic ckpt-N).
+    """Returns True if the checkpoint stores EMA shadow variables (a periodic ckpt-N).
 
-    Raises if the checkpoint has an ``optimizer/`` subtree but no recognizable EMA
-    markers — that means a periodic checkpoint whose EMA wrapper attribute names
-    drifted; silently falling back to the raw weights would deploy the non-averaged
-    weights without any signal.
+    Raises:
+        RuntimeError: If the checkpoint has an `optimizer/` subtree but no
+            recognizable EMA markers. That means a periodic checkpoint whose EMA
+            wrapper attribute names drifted; silently falling back to the raw
+            weights would deploy the non-averaged weights without any signal.
     """
     try:
         names = [n for n, _ in tf.train.list_variables(ckpt_path)]
@@ -45,11 +46,11 @@ def _checkpoint_has_ema(ckpt_path: str) -> bool:
 
 
 def restore_eval_weights(model: tf.keras.Model, ckpt_path: str) -> str:
-    """Restore weights for evaluation/export, preferring EMA weights.
+    """Restores weights for evaluation/export, preferring EMA weights.
 
     Args:
-        model: a built YoloV8 model (build_and_init already called).
-        ckpt_path: checkpoint path prefix.
+        model: A built YoloV8 model (build_and_init already called).
+        ckpt_path: Checkpoint path prefix.
 
     Returns:
         'ema' if EMA shadow weights were restored and swapped into the model,
@@ -66,12 +67,12 @@ def restore_eval_weights(model: tf.keras.Model, ckpt_path: str) -> str:
         ema = ExponentialMovingAverage(optimizer=sgd, model=model)
         # expect_partial: the SGD slot variables are intentionally not rebuilt
         # here (only the EMA shadows + model graph are needed).
-        # assert_existing_objects_matched() is not used — it false-positives on the
-        # unbuilt optimizer slots even for a valid checkpoint. A missing/typo'd path
-        # still fails loudly: restore() raises NotFoundError on a nonexistent
+        # assert_existing_objects_matched() is not used; it false-positives on the
+        # unbuilt optimizer slots even for a valid checkpoint. A missing/mistyped
+        # path still fails loudly: restore() raises NotFoundError on a nonexistent
         # checkpoint, and _checkpoint_has_ema guards the renamed-EMA case.
         tf.train.Checkpoint(model=model, optimizer=ema).restore(ckpt_path).expect_partial()
-        ema.swap_in(model)   # load EMA shadows into the live model for eval/export
+        ema.swap_in(model)   # Load EMA shadows into the live model for eval/export.
         log.info("Restored EMA weights from periodic checkpoint: %s", ckpt_path)
         return 'ema'
 

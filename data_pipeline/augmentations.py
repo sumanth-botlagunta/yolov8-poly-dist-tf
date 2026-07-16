@@ -29,10 +29,10 @@ def apply_albumentations(image: tf.Tensor, freq: float = 1.0) -> tf.Tensor:
     """Colour/filter augmentations as pure TF ops (albumentations-equivalent).
 
     Transforms and probabilities:
-        Blur        3×3 box blur                        p=0.01
-        MedianBlur  3×3 box blur (mean≈median at k=3)  p=0.01
-        ToGray      rgb_to_grayscale tiled to 3ch       p=0.01
-        CLAHE       unsharp-mask local contrast boost   p=0.01
+        Blur        3x3 box blur                         p=0.01
+        MedianBlur  3x3 box blur (mean ~ median at k=3)  p=0.01
+        ToGray      rgb_to_grayscale tiled to 3ch        p=0.01
+        CLAHE       unsharp-mask local contrast boost    p=0.01
 
     Args:
         image: float32 [H, W, 3] in [0, 1].
@@ -53,7 +53,7 @@ def apply_albumentations(image: tf.Tensor, freq: float = 1.0) -> tf.Tensor:
             lambda: _box_blur_tf(img0, 3),
             lambda: img0,
         )
-        # MedianBlur (p=0.01) — 3×3 box blur is equivalent to median at this scale
+        # MedianBlur (p=0.01): 3x3 box blur approximates median at this scale.
         img2 = tf.cond(
             tf.random.uniform([]) < 0.01,
             lambda: _box_blur_tf(img1, 3),
@@ -65,7 +65,7 @@ def apply_albumentations(image: tf.Tensor, freq: float = 1.0) -> tf.Tensor:
             lambda: tf.tile(tf.image.rgb_to_grayscale(img2), [1, 1, 3]),
             lambda: img2,
         )
-        # CLAHE (p=0.01) — local contrast boost via unsharp mask at tile scale (~33px)
+        # CLAHE (p=0.01): local contrast boost via unsharp mask at tile scale (~33px).
         def _clahe_approx(img):
             local_mean = _box_blur_tf(img, 33)
             return tf.clip_by_value(img + 0.5 * (img - local_mean), 0.0, 1.0)
@@ -100,8 +100,8 @@ def letterbox_geometry(h_in, w_in, out_h: int, out_w: int):
         out_h, out_w: output dims (python ints).
 
     Returns:
-        (scale, new_h, new_w, pad_top, pad_left) — scale float32 scalar, the rest
-        int32 scalars.
+        (scale, new_h, new_w, pad_top, pad_left); scale is a float32 scalar, the
+        rest int32 scalars.
     """
     h_in_f = tf.cast(h_in, tf.float32)
     w_in_f = tf.cast(w_in, tf.float32)
@@ -192,7 +192,7 @@ def resize_with_random_method(
 ) -> tf.Tensor:
     """Resize with a uniformly drawn interpolation kernel.
 
-    Draws one of the eight ``tf.image.resize`` methods per call — an implicit
+    Draws one of the eight ``tf.image.resize`` methods per call, an implicit
     regularizer against interpolation-artifact overfitting (train-only; the
     reference pipeline applies it to mosaic-branch resizes).
 
@@ -229,8 +229,8 @@ def random_horizontal_flip(
 ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
     """Flip image left-right with 50% probability.
 
-    Boxes (yxyx normalized): xmin ↔ 1 − xmax.
-    Polygons (flat xy pairs, -1 padded): x ↔ 1 − x for valid vertices.
+    Boxes (yxyx normalized): xmin <-> 1 - xmax.
+    Polygons (flat xy pairs, -1 padded): x <-> 1 - x for valid vertices.
     The polygon width is read from the tensor itself, so any vertex count
     (raw stored width or decode-time resampled) works unchanged.
 
@@ -240,7 +240,7 @@ def random_horizontal_flip(
         polygons: float32 [N, max_vertices] flat xy pairs, -1 padded.
 
     Returns:
-        (image, boxes, polygons) – possibly flipped.
+        (image, boxes, polygons), possibly flipped.
     """
     do_flip = tf.random.uniform([]) > 0.5
 
@@ -250,18 +250,18 @@ def random_horizontal_flip(
         lambda: image,
     )
 
-    # Flip x coordinates of boxes: xmin_new = 1 - xmax, xmax_new = 1 - xmin
+    # Flip x coordinates of boxes: xmin_new = 1 - xmax, xmax_new = 1 - xmin.
     ymin, xmin, ymax, xmax = (
         boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
     )
     boxes_flipped = tf.stack([ymin, 1.0 - xmax, ymax, 1.0 - xmin], axis=1)
     boxes = tf.cond(do_flip, lambda: boxes_flipped, lambda: boxes)
 
-    # Flip x coords of polygons: x_new = 1 - x  (y unchanged, -1 padding kept)
+    # Flip x coords of polygons: x_new = 1 - x (y unchanged, -1 padding kept).
     N = tf.shape(polygons)[0]
     max_v = tf.shape(polygons)[1]
     pts = tf.reshape(polygons, [N, -1, 2])  # [N, n_pairs, (x, y)]
-    valid_x = pts[:, :, 0] > -1.0  # [N, n_pairs] — reserved sentinel is exactly -1.0
+    valid_x = pts[:, :, 0] > -1.0  # [N, n_pairs]; reserved sentinel is exactly -1.0
     x_flipped = tf.where(valid_x, 1.0 - pts[:, :, 0], pts[:, :, 0])
     pts_flipped = tf.stack([x_flipped, pts[:, :, 1]], axis=-1)
     poly_flipped = tf.reshape(pts_flipped, [N, max_v])
@@ -299,10 +299,10 @@ def make_perspective_matrix(
     scale_max: Optional[float] = None,
     rotate_prob: float = 1.0,
 ) -> tf.Tensor:
-    """Build the random 3x3 (INPUT-px → OUTPUT-px) perspective matrix.
+    """Build the random 3x3 (INPUT-px -> OUTPUT-px) perspective matrix.
 
-    Matrix construction: center on (w_in/2, h_in/2) → perspective →
-    rotation·scale → shear → translate-to-output-center. Fixed draw order
+    Matrix construction: center on (w_in/2, h_in/2) -> perspective ->
+    rotation*scale -> shear -> translate-to-output-center. Fixed draw order
     (perspective px/py, rotation angle, scale gain, shear x/y, translate x/y)
     so seeded streams shift minimally when params change.
 
@@ -318,10 +318,10 @@ def make_perspective_matrix(
             ``1 - rotate_prob`` the angle is forced to 0 (upright output);
             otherwise it is drawn from [-degrees, degrees]. Default 1.0 always
             rotates via a single unconditional draw. Mosaic passes a small value
-            so most outputs stay upright with rare ± rotation.
+            so most outputs stay upright with rare +/- rotation.
 
     Returns:
-        float32 [3, 3] input→output affine/perspective matrix M.
+        float32 [3, 3] input->output affine/perspective matrix M.
     """
     h_in = tf.cast(h_in, tf.float32)
     w_in = tf.cast(w_in, tf.float32)
@@ -361,7 +361,7 @@ def make_perspective_matrix(
     R = _mat([ca, -sa, zero,
               sa,  ca, zero,
               zero, zero, one])
-    # Shear (degrees → tan).
+    # Shear (degrees -> tan).
     shx = tf.tan(tf.random.uniform([], -shear, shear) * deg2rad)
     shy = tf.tan(tf.random.uniform([], -shear, shear) * deg2rad)
     Sh = _mat([one, shx, zero,
@@ -374,7 +374,7 @@ def make_perspective_matrix(
               zero, one, ty,
               zero, zero, one])
 
-    return T @ Sh @ R @ P @ C   # input → output
+    return T @ Sh @ R @ P @ C   # input -> output
 
 
 def apply_perspective_image(
@@ -383,7 +383,7 @@ def apply_perspective_image(
     target_h: int,
     target_w: int,
 ) -> tf.Tensor:
-    """Warp ``image`` by the input→output matrix ``M`` to (target_h, target_w).
+    """Warp ``image`` by the input->output matrix ``M`` to (target_h, target_w).
 
     Uses ImageProjectiveTransformV3 with the normalized inverse map, gray-114
     CONSTANT fill, BILINEAR interpolation. Returns uint8 [target_h, target_w, 3].
@@ -392,7 +392,7 @@ def apply_perspective_image(
     th_i = tf.cast(target_h, tf.int32)
     tw_i = tf.cast(target_w, tf.int32)
 
-    # Image warp uses the inverse (output → input) map, normalized so M_inv[2,2]=1.
+    # Image warp uses the inverse (output -> input) map, normalized so M_inv[2,2]=1.
     M_inv = tf.linalg.inv(M)
     M_inv = M_inv / M_inv[2, 2]
     transforms = tf.stack([
@@ -430,7 +430,7 @@ def transform_boxes_polygons(
 
     Boxes: transform 4 corners, re-fit AABB, clip to edge, keep by the reference
     candidate filter: visible-area fraction >= area_thresh, both sides >=
-    min_side (0.003 ~ 2px at 672 — the reference wh threshold), and aspect
+    min_side (0.003 ~ 2px at 672, the reference wh threshold), and aspect
     ratio max(h/w, w/h) < max_aspect_ratio (drops degenerate clipped slivers
     while keeping genuine partials). Polygons: transform vertices, clip to
     [0,1], keep -1 padding.
@@ -514,9 +514,9 @@ def random_perspective(
 ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
     """Full-affine geometric augmentation (Ultralytics random_perspective).
 
-    Composes center → perspective → rotation·scale → shear → translate and warps
+    Composes center -> perspective -> rotation*scale -> shear -> translate and warps
     the input to a (target_h, target_w) output (gray 114 fill on voids). When the
-    input is larger than the target (e.g. a 2× mosaic canvas) this center-crops to
+    input is larger than the target (e.g. a 2x mosaic canvas) this center-crops to
     the target while applying the affine; when input == target it warps in place.
 
     Boxes are transformed by their 4 corners then re-fit to an axis-aligned box and
@@ -532,11 +532,11 @@ def random_perspective(
         boxes:    float32 [N, 4] yxyx normalized to the INPUT size.
         polygons: float32 [N, max_vertices] flat xy pairs (normalized to INPUT), -1 padded.
         target_h, target_w: output size.
-        degrees:  max rotation magnitude (degrees, ±).
-        translate: max translation as a fraction of the output size (±).
-        scale:    scale-gain magnitude; scale ∈ [1-scale, 1+scale].
-        shear:    max shear magnitude (degrees, ±).
-        perspective: max perspective coefficient (±); 0 disables.
+        degrees:  max rotation magnitude (degrees, +/-).
+        translate: max translation as a fraction of the output size (+/-).
+        scale:    scale-gain magnitude; the gain is drawn from [1-scale, 1+scale].
+        shear:    max shear magnitude (degrees, +/-).
+        perspective: max perspective coefficient (+/-); 0 disables.
         area_thresh: min visible-area fraction (after-clip / before-clip) to keep a box.
         min_side: min normalized side length to keep a box.
         scale_min / scale_max: explicit scale-gain bounds (override ``scale``);
@@ -605,20 +605,20 @@ def random_affine(
     else:
         h_out, w_out = output_size[0], output_size[1]
 
-    # Random scale and translate
+    # Random scale and translate.
     s = tf.random.uniform([], scale_min, scale_max)
     ty = tf.random.uniform([], -translate, translate)
     tx = tf.random.uniform([], -translate, translate)
 
     # Crop region in normalised INPUT coordinates that maps to the output.
-    # Output pixel (y, x) ↦ input pixel ((y/H − 0.5 − ty)/s + 0.5, ...)
+    # Output pixel (y, x) -> input pixel ((y/H - 0.5 - ty)/s + 0.5, ...).
     # Equivalently the crop box in input normalised coords is:
     y_start = 0.5 + ty - 0.5 / s
     y_end   = 0.5 + ty + 0.5 / s
     x_start = 0.5 + tx - 0.5 / s
     x_end   = 0.5 + tx + 0.5 / s
 
-    # Resize via crop_and_resize (extrapolation_value=114 fills letterbox)
+    # Resize via crop_and_resize (extrapolation_value=114 fills letterbox).
     image_f = tf.cast(image, tf.float32)
     crop_box = tf.reshape(tf.stack([y_start, x_start, y_end, x_end]), [1, 4])
     image_out = tf.image.crop_and_resize(
@@ -634,7 +634,7 @@ def random_affine(
     else:
         image_out.set_shape([None, None, 3])
 
-    # Transform boxes: y_out = (y_in − y_start) / (y_end − y_start)
+    # Transform boxes: y_out = (y_in - y_start) / (y_end - y_start).
     dy_range = y_end - y_start
     dx_range = x_end - x_start
 
@@ -644,12 +644,12 @@ def random_affine(
     xmax_out = (boxes[:, 3] - x_start) / dx_range
     boxes_out = tf.stack([ymin_out, xmin_out, ymax_out, xmax_out], axis=1)
 
-    # Transform polygons: same linear mapping
+    # Transform polygons: same linear mapping.
     N = tf.shape(polygons)[0]
     max_v = tf.shape(polygons)[1]
     pts = tf.reshape(polygons, [N, max_v // 2, 2])  # [N, n_pairs, (x, y)]
 
-    valid_x = pts[:, :, 0] > -1.0  # [N, n_pairs] — reserved sentinel is exactly -1.0
+    valid_x = pts[:, :, 0] > -1.0  # [N, n_pairs]; reserved sentinel is exactly -1.0
 
     x_out = (pts[:, :, 0] - x_start) / dx_range
     y_out = (pts[:, :, 1] - y_start) / dy_range
@@ -723,20 +723,20 @@ def resample_polygons(
 
     Uniform arc-length resampling along the closed contour (fully vectorized,
     graph-safe): the valid vertices form a closed loop (wraparound edge
-    ``v_{c-1}→v_0``); ``K`` samples are placed at arc positions ``t_k = k·L/K``
+    ``v_{c-1} -> v_0``); ``K`` samples are placed at arc positions ``t_k = k*L/K``
     (``t_0 = 0`` keeps the first vertex), interpolating along edges via
     ``tf.searchsorted`` over cumulative segment lengths. Because samples land on
-    edges, long edges spanning several angular bins populate those bins — so the
+    edges, long edges spanning several angular bins populate those bins, so the
     24-bin radial target is well-formed even for sparse-vertex polygons (a
-    4-corner rectangle no longer collapses to a diamond). This alters the radial
+    4-corner rectangle does not collapse to a diamond). This alters the radial
     target for sparse polygons; for dense contours it is within sampling
     tolerance of plain index-subsampling.
 
     Degenerate rows:
-      - c == 0 valid vertices → all -1.
-      - c == 1                → that point repeated K times (no NaN).
-      - c >= 2                → K points spaced by arc length around the loop,
-                                each lying on an input edge.
+      - c == 0 valid vertices -> all -1.
+      - c == 1                -> that point repeated K times (no NaN).
+      - c >= 2                -> K points spaced by arc length around the loop,
+                                 each lying on an input edge.
 
     The sampling assumes valid vertices are a contiguous prefix. ``compact=True``
     first compacts scattered sentinels to a prefix via a stable argsort; pass it
@@ -757,7 +757,7 @@ def resample_polygons(
     F = tf.shape(polygons)[1]
     pts = tf.reshape(polygons, [N, F // 2, 2])                       # [N, P, 2]
     P = tf.shape(pts)[1]
-    valid = pts[:, :, 0] > -1.0                                      # [N, P] — reserved sentinel is exactly -1.0
+    valid = pts[:, :, 0] > -1.0                                      # [N, P]; reserved sentinel is exactly -1.0
 
     # Compact valid vertices to a contiguous prefix. Only copy-paste (compact=True)
     # needs it: invalidating out-of-bounds vertices in place leaves -1 holes
@@ -773,17 +773,17 @@ def resample_polygons(
     Pf = tf.maximum(P, 1)
 
     # --- Closed-loop segment geometry ---------------------------------------
-    # Segment i runs v_i → next(i) over the CLOSED valid loop of c vertices:
+    # Segment i runs v_i -> next(i) over the CLOSED valid loop of c vertices:
     #   next(i) = v_{i+1}  for 0 <= i < c-1   (interior edge), and
     #   next(i) = v_0      for i == c-1        (wrap edge that closes the loop).
     # Segments with i >= c are FAKE (their start vertex is padding) and get length 0.
-    # The wrap is to v_0 (loop start), NOT v_c (which is -1 padding) — so we must
-    # build next(i) explicitly rather than a plain roll.
+    # The wrap is to v_0 (loop start), NOT v_c (which is -1 padding), so next(i)
+    # must be built explicitly rather than by a plain roll.
     idx_row = tf.broadcast_to(tf.range(P)[tf.newaxis, :], [N, P])  # [N, P]
     c_row = counts[:, tf.newaxis]                                   # [N, 1]
     # For each segment, the index of its END vertex in the closed valid loop.
     is_last = tf.equal(idx_row, tf.maximum(c_row - 1, 0))          # [N, P] i == c-1
-    end_idx = tf.where(is_last, tf.zeros_like(idx_row), idx_row + 1)  # [N, P] wrap last→0
+    end_idx = tf.where(is_last, tf.zeros_like(idx_row), idx_row + 1)  # [N, P] wrap last -> 0
     end_idx = tf.clip_by_value(end_idx, 0, tf.maximum(P - 1, 0))
     nxt = tf.gather(pts, end_idx, batch_dims=1)                    # [N, P, 2] next(i)
     # A segment is REAL iff its start vertex is valid AND the loop has >= 2 vertices
@@ -792,14 +792,14 @@ def resample_polygons(
     seg_real = tf.logical_and(idx_row < c_row, c_row >= 2)          # [N, P]
     seg_vec = nxt - pts                                             # [N, P, 2]
     seg_len = tf.sqrt(tf.reduce_sum(seg_vec * seg_vec, axis=-1) + 1e-20)  # [N, P]
-    seg_len = tf.where(seg_real, seg_len, tf.zeros_like(seg_len))   # fake segments → 0
+    seg_len = tf.where(seg_real, seg_len, tf.zeros_like(seg_len))   # fake segments -> 0
 
     perim = tf.reduce_sum(seg_len, axis=1)                          # [N] L per row
     # Exclusive cumulative length: cum[i] = sum of seg_len[0..i-1] = arc dist to v_i.
     cum_incl = tf.cumsum(seg_len, axis=1)                           # [N, P] inclusive
     cum = cum_incl - seg_len                                        # [N, P] exclusive (arc start of seg i)
 
-    # --- Target arc positions t_k = k·L/K ------------------------------------
+    # --- Target arc positions t_k = k*L/K ------------------------------------
     k = tf.cast(tf.range(K), tf.float32)[tf.newaxis, :]            # [1, K]
     t = k * (perim[:, tf.newaxis] / tf.cast(K, tf.float32))        # [N, K] in [0, L)
 
@@ -821,16 +821,16 @@ def resample_polygons(
     p0 = tf.gather(pts, seg_idx, batch_dims=1)                     # [N, K, 2]
     v = tf.gather(seg_vec, seg_idx, batch_dims=1)                  # [N, K, 2]
     # Safe division: zero-length (degenerate / collinear-duplicate / fake) segments
-    # give frac 0 → output stays at p0, no NaN.
+    # give frac 0 -> output stays at p0, no NaN.
     frac = tf.math.divide_no_nan(t - seg_start, seg_l)            # [N, K]
     frac = tf.clip_by_value(frac, 0.0, 1.0)
     out = p0 + frac[:, :, tf.newaxis] * v                          # [N, K, 2]
 
     # --- Degenerate row handling --------------------------------------------
-    # c == 0 → all -1 sentinel. c == 1 → no real segment (perim 0), so every t_k = 0
-    # lands on segment 0 with frac 0 → out == v_0 repeated K times (the spec).
+    # c == 0 -> all -1 sentinel. c == 1 -> no real segment (perim 0), so every t_k = 0
+    # lands on segment 0 with frac 0 -> out == v_0 repeated K times (the spec).
     has = counts[:, tf.newaxis, tf.newaxis] > 0                    # [N, 1, 1]
-    out = tf.where(has, out, tf.fill(tf.shape(out), -1.0))         # empty rows → -1
+    out = tf.where(has, out, tf.fill(tf.shape(out), -1.0))         # empty rows -> -1
     _ = Pf  # P>=1 guaranteed by callers; kept explicit for graph shape clarity
     return tf.reshape(out, [N, K * 2])
 
@@ -843,7 +843,7 @@ def hsv_augment(
 ) -> tf.Tensor:
     """Random HSV jitter, PyTorch-YOLO form (multiplicative, quantized domain).
 
-    Reference math: per-channel gains ``r = 1 + U(-1, 1)·[hue, sat, val]`` are
+    Reference math: per-channel gains ``r = 1 + U(-1, 1) * [hue, sat, val]`` are
     applied in the integer-quantized HSV domain::
 
         x = floor(rgb_to_hsv(image) * [180, 255, 255])
@@ -851,7 +851,7 @@ def hsv_augment(
         h %= 180; s, v clipped to [0, 255]
         image = hsv_to_rgb(x / [180, 255, 255])
 
-    All three channels — including hue — are scaled multiplicatively; this is
+    All three channels, including hue, are scaled multiplicatively; this is
     NOT the additive hue-rotation / additive-brightness form.
 
     Args:

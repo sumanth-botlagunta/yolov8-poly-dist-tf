@@ -8,7 +8,7 @@ albumentations across the batch.
 The per-image randomness distribution matches a per-sample application exactly:
 
   * HSV: a separate 3-vector of gains is drawn per image (``[B, 3]``), applied
-    with the PyTorch-YOLO formulation — multiplicative gains in the quantized
+    with the PyTorch-YOLO formulation: multiplicative gains in the quantized
     [180, 255, 255] HSV domain (see ``apply_hsv_gains``); identical math to the
     per-sample ``hsv_augment`` in ``data_pipeline.augmentations``.
   * Albumentations: the per-image enter gate (u < freq) and the four independent
@@ -46,7 +46,7 @@ def apply_hsv_gains(
         h %= 180; s, v clipped to [0, 255]
         images = hsv_to_rgb(x / [180, 255, 255])
 
-    All three channels — including hue — are scaled multiplicatively.
+    All three channels, including hue, are scaled multiplicatively.
 
     Args:
         images: float32 [B, H, W, 3] in [0, 1].
@@ -74,7 +74,7 @@ def batch_hsv_augment(
 ) -> tf.Tensor:
     """Draw per-image HSV gains and apply them across the batch.
 
-    Gain draw (per image): ``r = 1 + U(-1, 1) · [hue, sat, val]`` — the same
+    Gain draw (per image): ``r = 1 + U(-1, 1) * [hue, sat, val]``, the same
     ranges and multiplicative semantics as the per-sample ``hsv_augment``
     (augmentations.py).
 
@@ -134,10 +134,10 @@ def apply_albumentations_masks(
     Transforms are applied in the same order as the per-sample
     ``apply_albumentations`` ``tf.cond`` chain, so each transform sees the output
     of the previous one (sequential per-image semantics):
-        Blur        3×3 box blur                       (m_blur)
-        MedianBlur  3×3 box blur (mean≈median at k=3)  (m_median)
-        ToGray      rgb_to_grayscale tiled to 3ch      (m_gray)
-        CLAHE       unsharp local-contrast boost       (m_clahe)
+        Blur        3x3 box blur                        (m_blur)
+        MedianBlur  3x3 box blur (mean ~ median at k=3) (m_median)
+        ToGray      rgb_to_grayscale tiled to 3ch       (m_gray)
+        CLAHE       unsharp local-contrast boost        (m_clahe)
 
     Args:
         images:   float32 [B, H, W, 3] in [0, 1].
@@ -152,17 +152,15 @@ def apply_albumentations_masks(
     x = images
     # Blur (p=0.01)
     x = _sel(m_blur, _box_blur_batch(x, 3), x)
-    # MedianBlur (p=0.01) — 3×3 box blur ≈ median at this scale
+    # MedianBlur (p=0.01): 3x3 box blur approximates median at this scale.
     x = _sel(m_median, _box_blur_batch(x, 3), x)
     # ToGray (p=0.01)
     gray = tf.tile(tf.image.rgb_to_grayscale(x), [1, 1, 1, 3])
     x = _sel(m_gray, gray, x)
-    # CLAHE (p=0.01) — local contrast boost via unsharp mask at tile scale (~33px).
-    # The 33×33 box blur is the most expensive op here, yet m_clahe is true with
-    # probability ~0.01·freq, so for almost every batch no image is selected. Guard
-    # the CLAHE branch behind tf.cond(reduce_any(m_clahe)) so the common (all-False)
-    # case skips the 33-px blur. The result is identical to the unconditional form
-    # (tf.where with an all-False mask returns x); this only avoids wasted compute.
+    # CLAHE (p=0.01): local contrast boost via unsharp mask at tile scale (~33px).
+    # m_clahe is true with probability ~0.01*freq, so the expensive 33x33 blur is
+    # guarded behind tf.cond(reduce_any(m_clahe)); output is identical to the
+    # unconditional form, the guard only skips wasted compute.
     def _apply_clahe():
         local_mean = _box_blur_batch(x, 33)
         clahe = tf.clip_by_value(x + 0.5 * (x - local_mean), 0.0, 1.0)
@@ -220,7 +218,7 @@ def batch_color_augment(
     albu_freq: float = 1.0,
     albu_row_mask: tf.Tensor = None,
 ) -> tf.Tensor:
-    """Full per-batch colour pipeline: cast→/255 → HSV → albumentations.
+    """Full per-batch colour pipeline: cast /255 -> HSV -> albumentations.
 
     Call once per batch inside the compiled training step so the colour work runs
     on the accelerator. The parsers emit uint8 and apply no colour augmentation

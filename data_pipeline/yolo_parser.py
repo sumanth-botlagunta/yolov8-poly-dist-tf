@@ -11,9 +11,9 @@ The geometric affine (random_perspective: rotate/scale/shear/translate) runs
 upstream in the mosaic stage (data_pipeline/mosaic.py) for both the 4-image
 mosaic and non-mosaic singles, so the parser applies none here.
 
-Colour augmentation (normalize /255 → HSV jitter → albumentations) also runs
+Colour augmentation (normalize /255 -> HSV jitter -> albumentations) also runs
 elsewhere: the parser emits a uint8 image (the whole pipeline carries uint8 for
-less host→device traffic) and the colour pipeline runs once per batch on the
+less host-to-device traffic) and the colour pipeline runs once per batch on the
 accelerator inside ``train.task.train_step`` via
 ``data_pipeline.batch_color_aug.batch_color_augment`` (eval normalizes /255 in
 ``validation_step``), with the same per-image randomness distribution.
@@ -107,7 +107,7 @@ class V8ParserExtended(Parser):
         """Parse and augment a single training example."""
         image, boxes, classes, polygons, is_crowd = self._extract_fields(data)
 
-        # 1. Filter crowd annotations
+        # 1. Filter crowd annotations.
         if self._skip_crowd:
             valid = tf.logical_not(is_crowd)
             boxes    = tf.boolean_mask(boxes,    valid)
@@ -117,7 +117,7 @@ class V8ParserExtended(Parser):
         # Resize to output_size so all images entering augmentation share a fixed
         # shape. When the image arrives from the mosaic stage it is already exactly
         # [h_out, w_out, 3] with a static shape (random_perspective calls set_shape),
-        # so skip the cast→resize→cast round trip. The decision is made at trace time
+        # so skip the cast->resize->cast round trip. The decision is made at trace time
         # via a Python `if` on the static shape. Variable-size raw inputs (tests) keep
         # the resize path.
         h_out, w_out = self._output_size[0], self._output_size[1]
@@ -134,7 +134,7 @@ class V8ParserExtended(Parser):
             )
             image.set_shape([h_out, w_out, 3])
 
-        # 2. Random horizontal flip
+        # 2. Random horizontal flip.
         if self._random_flip:
             image, boxes, polygons = random_horizontal_flip(image, boxes, polygons)
 
@@ -144,7 +144,7 @@ class V8ParserExtended(Parser):
         #    would double-warp). The image already arrives at output_size.
 
         # 4. Clip boxes; drop degenerate rows. min_side=0.0 (strict >) removes
-        #    only zero-size rows — notably the mosaic stage's padded_batch
+        #    only zero-size rows, notably the mosaic stage's padded_batch
         #    zero-padding. The 2px min_side filter applies on the MOSAIC branch
         #    only (legacy convention: non-mosaic images are not size-filtered);
         #    the area-ratio and aspect filters run in the mosaic-stage warps
@@ -161,16 +161,16 @@ class V8ParserExtended(Parser):
         classes  = tf.boolean_mask(classes,  keep)
         polygons = tf.boolean_mask(polygons, keep)
 
-        # Clip polygon coords to [0, 1]
+        # Clip polygon coords to [0, 1].
         polygons = clip_polygon_coords(polygons)
 
-        # Colour augmentation (normalize /255 → HSV → albumentations) runs once per
+        # Colour augmentation (normalize /255 -> HSV -> albumentations) runs once per
         # batch on the accelerator in train.task.train_step (see
         # data_pipeline.batch_color_aug). The image stays uint8 through batching.
 
         n_gt = tf.shape(boxes)[0]
 
-        # 5. Preprocess polygons → PolyYOLO radial format
+        # 5. Preprocess polygons to PolyYOLO radial format.
         if self._with_polygons:
             poly_labels = self._preprocess_polygons_v2(
                 boxes, polygons, self._angle_step
@@ -178,7 +178,7 @@ class V8ParserExtended(Parser):
         else:
             poly_labels = tf.zeros([n_gt, self._poly_depth], dtype=tf.float32)
 
-        # 6. Build labels dict
+        # 6. Build labels dict.
         log_dist = tf.fill([n_gt], self._invalid_sentinel)  # no distance in det stream
         boxes, classes, poly_labels, log_dist = self._pad_labels(
             boxes, classes, poly_labels, log_dist, n_gt
@@ -190,7 +190,7 @@ class V8ParserExtended(Parser):
             'polygons':     poly_labels,
             # Clamp to the padded width: _pad_labels truncates to
             # max_num_instances, so an un-clamped n_gt would make the loss build
-            # a mask_gt wider than the (truncated) label tensors → shape crash.
+            # a mask_gt wider than the (truncated) label tensors -> shape crash.
             'n_gt':         tf.cast(tf.minimum(n_gt, self._max_num_instances), tf.int64),
             'ignore_bg':    tf.constant(0, dtype=tf.int64),
             'log_distance': log_dist,
@@ -203,13 +203,13 @@ class V8ParserExtended(Parser):
         """Parse a single evaluation example (letterbox resize only)."""
         image, boxes, classes, polygons, is_crowd = self._extract_fields(data)
 
-        # Letterbox resize to output size (transforms boxes AND polygons together)
+        # Letterbox resize to output size (transforms boxes AND polygons together).
         image, boxes, polygons = self._letterbox_resize(image, boxes, polygons)
 
-        # Clip polygons to output bounds (after resize)
+        # Clip polygons to output bounds (after resize).
         polygons = clip_polygon_coords(polygons)
 
-        # Clip GT boxes to [0, 1] — the same defense the train path gets from
+        # Clip GT boxes to [0, 1], the same defense the train path gets from
         # clip_boxes. The letterbox affine cannot push a well-formed box out of
         # range, so this only fires on marginally-invalid source annotations
         # (e.g. xmax = 1.0003), which would otherwise reach the AP computation
@@ -219,7 +219,7 @@ class V8ParserExtended(Parser):
         # Image stays uint8; normalization /255 happens once per batch in
         # train.task.validation_step. Gray border (replacing near-black
         # letterbox-padding pixels with mid-gray) is applied here on uint8:
-        # mask = all channels < 8 (DN) → fill 128 (== 0.5 after /255).
+        # mask = all channels < 8 (DN) -> fill 128 (== 0.5 after /255).
         if self._eval_gray_border:
             gray_mask = tf.reduce_all(image < 8, axis=-1, keepdims=True)
             image = tf.where(
@@ -256,7 +256,7 @@ class V8ParserExtended(Parser):
         # Default from the UNPADDED per-object tensor (is_crowd is still raw
         # [N] here; `classes` was already padded to max_num_instances above, so
         # a zeros_like(classes) default would be pre-padded and _pad_bool would
-        # pad it a second time → [N+pad] reshape-to-[N] crash the first time a
+        # pad it a second time -> [N+pad] reshape-to-[N] crash the first time a
         # decoder omits groundtruth_dontcare).
         dontcare_raw = tf.cast(
             data.get('groundtruth_dontcare', tf.zeros_like(is_crowd, dtype=tf.int64)),
@@ -271,7 +271,7 @@ class V8ParserExtended(Parser):
             'n_gt':         tf.cast(tf.minimum(n_gt, self._max_num_instances), tf.int64),
             'ignore_bg':    tf.constant(0, dtype=tf.int64),
             'log_distance': log_dist,
-            # Eval extras (not present in train labels)
+            # Eval extras (not present in train labels).
             'is_crowd':     is_crowd_out,
             'is_dontcare':  is_dontcare_out,
             'source_id':    data.get('source_id', tf.constant('')),
@@ -279,7 +279,7 @@ class V8ParserExtended(Parser):
         return image, labels
 
     # ------------------------------------------------------------------
-    # Polygon → PolyYOLO conversion
+    # Polygon -> PolyYOLO conversion
     # ------------------------------------------------------------------
 
     def _preprocess_polygons_v2(
@@ -297,10 +297,10 @@ class V8ParserExtended(Parser):
                    [0, 1) on bins that hold a vertex, 0.0 on empty bins.
             conf:  1.0 if any valid vertex assigned to this bin, else 0.0.
 
-        For each of the 24 angle bins (0°, 15°, ..., 345°):
+        For each of the 24 angle bins (0, 15, ..., 345 degrees):
             - Find all valid polygon vertices whose angle from box center falls in the bin.
             - Select the vertex with maximum radial distance as the bin representative.
-            - dist = sqrt(dx² + dy²), conf = 1.0 if any vertex present, and
+            - dist = sqrt(dx^2 + dy^2), conf = 1.0 if any vertex present, and
               angle = that vertex's fractional position within the bin.
 
         Implementation uses a flat segment formulation instead of a dense
@@ -316,7 +316,7 @@ class V8ParserExtended(Parser):
         Args:
             boxes:    float32 [N, 4] yxyx normalized (used for box centers).
             polygons: float32 [N, max_vertices+2] flat xy pairs, -1 padded.
-            angle_step: degrees per bin (15 → 24 bins).
+            angle_step: degrees per bin (15 -> 24 bins).
             _unused_v1_compat: unused parameter kept for call-site compatibility.
 
         Returns:
@@ -326,7 +326,7 @@ class V8ParserExtended(Parser):
 
         N = tf.shape(boxes)[0]
 
-        # Box centers (normalized xy)
+        # Box centers (normalized xy).
         cy = (boxes[:, 0] + boxes[:, 2]) / 2.0  # [N]
         cx = (boxes[:, 1] + boxes[:, 3]) / 2.0  # [N]
 
@@ -339,15 +339,15 @@ class V8ParserExtended(Parser):
         # would drop it.
         valid = pts[:, :, 0] > -1.0  # [N, n_pairs]
 
-        # Relative positions, reference convention: origin − vertex (the box
-        # center minus the vertex, NOT vertex − center). The angle bins and the
-        # decode (vertex = center − r·(cos, sin)) both follow this convention;
+        # Relative positions, reference convention: origin - vertex (the box
+        # center minus the vertex, NOT vertex - center). The angle bins and the
+        # decode (vertex = center - r*(cos, sin)) both follow this convention;
         # the deployed on-device decoder assumes it too.
         dx = cx[:, tf.newaxis] - pts[:, :, 0]  # [N, n_pairs]
         dy = cy[:, tf.newaxis] - pts[:, :, 1]  # [N, n_pairs]
         dists = tf.sqrt(dx * dx + dy * dy)       # [N, n_pairs]
 
-        # Angle bin for each vertex
+        # Angle bin for each vertex.
         angles_rad = tf.math.atan2(dy, dx)       # [N, n_pairs] in (-pi, pi]
         angles_deg = angles_rad * (180.0 / math.pi)
         angles_deg = tf.math.floormod(angles_deg, 360.0)  # [0, 360)
@@ -373,7 +373,7 @@ class V8ParserExtended(Parser):
         max_flat = tf.math.unsorted_segment_max(flat_dist, flat_seg, n_seg)  # [n_seg]
         max_dists = tf.maximum(tf.reshape(max_flat, [N, n_angles]), 0.0)     # [N, n_angles]
 
-        # Confidence: 1.0 if any valid vertex was assigned to this bin
+        # Confidence: 1.0 if any valid vertex was assigned to this bin.
         conf_bins = tf.cast(max_dists > 0.0, tf.float32)  # [N, n_angles]
 
         # Bin representative = FIRST vertex (smallest p) attaining the bin max,
@@ -397,7 +397,7 @@ class V8ParserExtended(Parser):
         # lets the model recover the exact vertex angle, not just the bin index.
         frac = angles_deg / angle_step - tf.math.floor(angles_deg / angle_step)  # [N, n_pairs]
         # Per bin, take the offset of the vertex that owns it (the first
-        # max-radial-dist one — the same vertex whose distance is regressed).
+        # max-radial-dist one, the same vertex whose distance is regressed).
         angle_bins = tf.gather(frac, best_pair, batch_dims=1)                # [N, n_angles]
         # Empty bins (no vertex) carry offset 0.0; the loss masks them out via conf.
         angle_bins = angle_bins * conf_bins                                  # [N, n_angles]

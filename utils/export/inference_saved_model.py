@@ -8,24 +8,24 @@ extension (folder mode: the file's basename; TFDS mode: the records'
 image/filename), matching the GT annotations directly. Bboxes and scores are
 written at full float precision. Per image it produces:
 
-  * visual — an annotated image (boxes + polygons + class/score, plus distance when
+  * visual: an annotated image (boxes + polygons + class/score, plus distance when
     the model has a distance head), drawn on the model-input geometry or back on the
     original full-resolution image.
-  * predictions — a COCO-style JSON of all detections (bbox + score + class +
+  * predictions: a COCO-style JSON of all detections (bbox + score + class +
     distance) in the chosen coordinate space.
 
 The exported SavedModel is the device-contract artifact (utils/export/
 export_saved_model.py): its signature has flat per-anchor outputs (box/cls/poly_*/
-dist) and takes ``input_image`` float32 pixels in [0, 255]. This tool reconstructs
-deploy-style detections from those flat heads (utils/export/device_decode.py —
+dist) and takes `input_image` float32 pixels in [0, 255]. This tool reconstructs
+deploy-style detections from those flat heads (utils/export/device_decode.py:
 LTRB->anchor->NMS, sigmoid/softplus activations), so boxes, classes, scores,
 polygons, and distance are all available from the SavedModel path. An older
-post-processed SavedModel (with ``num_detections`` in its signature) is still
+post-processed SavedModel (with `num_detections` in its signature) is still
 consumed on its original path.
 
 --draw_on selects the output coordinate space (JSON bbox and drawn overlays):
-  * model    — the exported input size (e.g. 672 or 672x416), from the signature/config.
-  * original — mapped back to source-image pixels via the inverse letterbox. Default.
+  * model:    the exported input size (e.g. 672 or 672x416), from the signature/config.
+  * original: mapped back to source-image pixels via the inverse letterbox. Default.
 
 Usage:
     python utils/export/inference_saved_model.py --saved_model /export/saved_model \
@@ -91,7 +91,7 @@ except Exception:
 
 
 def _list_images(path: str):
-    """List image files under ``path`` recursively (any nesting depth).
+    """List image files under `path` recursively (any nesting depth).
 
     A set dedupes the lower/upper-case extension patterns, which both match the
     same file on case-insensitive filesystems.
@@ -142,8 +142,8 @@ def _per_image_preds(predictions, i):
 def _poly_vertices_norm(poly_24x3, cxn, cyn, conf_thresh):
     """Decode a radial polygon [24,(conf,dist,angle)] to model-normalized (x,y) vertices.
 
-    Reference convention: the radial vector is origin − vertex, so each vertex
-    is center MINUS r·(cos, sin).
+    Reference convention: the radial vector is origin - vertex, so each vertex
+    is center MINUS r*(cos, sin).
     """
     bin_w = 2.0 * math.pi / _N_VERTS
     pts = []
@@ -173,7 +173,7 @@ def _load_checkpoint_model(config, ckpt_path):
 
 
 def main(_):
-    # Validate the flag combination FIRST — model/SavedModel loading takes tens of
+    # Validate the flag combination FIRST: model/SavedModel loading takes tens of
     # seconds, and a bad source flag should not cost that wait.
     if FLAGS.tfds_split and FLAGS.images:
         raise SystemExit("Provide --images OR --tfds_split, not both.")
@@ -285,7 +285,7 @@ def main(_):
                     log.warning("Could not read %s — skipping", f)
                     continue
                 # image_id convention: the image BASENAME with extension (string).
-                # Subfolder paths are dropped — GT annotations key by basename.
+                # Subfolder paths are dropped; GT annotations key by basename.
                 name = os.path.basename(f)
                 yield name, name, bgr[..., ::-1]
         src_name = FLAGS.images
@@ -326,7 +326,7 @@ def main(_):
                     'image_id': img_id, 'file_name': fname,
                     'category_id': int(pred['classes'][k]),
                     'category_name': _name(pred['classes'][k]),
-                    # Full float precision — no rounding, so the JSON is bit-comparable
+                    # Full float precision, no rounding, so the JSON is bit-comparable
                     # across runs/paths.
                     'bbox': [float(px1), float(py1), float(px2 - px1), float(py2 - py1)],
                     'score': float(pred['confidence'][k]),
@@ -364,7 +364,7 @@ def main(_):
                             cv2.polylines(out_img, [opts.reshape(-1, 1, 2)], True,
                                           (0, 220, 100), 2, cv2.LINE_AA)
             if out_img is not None:
-                # fname can carry subdirectories (recursive scan) — flatten so all
+                # fname can carry subdirectories (recursive scan); flatten so all
                 # renders land in output_dir without recreating the tree.
                 stem = os.path.splitext(fname)[0].replace(os.sep, '__')
                 out_path = os.path.join(FLAGS.output_dir, stem + '_pred.png')

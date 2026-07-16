@@ -1,25 +1,25 @@
-"""COCO detection evaluator with dont-care absorption and a best-F1 sweep.
+"""COCO detection evaluator with dontcare absorption and a best-F1 sweep.
 
-``COCOevalCustom`` subclasses :class:`pycocotools.cocoeval.COCOeval` and adds:
+COCOevalCustom subclasses pycocotools.cocoeval.COCOeval and adds:
 
-1. Dont-care absorption (``evaluateImgDontcare``): dont-care GTs carry a separate
-   ``ann['dontcare']==1`` field (distinct from ``iscrowd``, which stays free for the
-   crowd policy). A detection that matches no real GT but overlaps a dont-care GT at
-   IoU >= ``iou_thresh_dontcare`` (default 0.5, fixed across IoU thresholds) is recorded
-   in ``dtMatchesDc`` and so excluded from false positives; dont-care GTs are removed
-   from ``npig``.
+1. Dontcare absorption (evaluateImgDontcare): dontcare GTs carry a separate
+   ann['dontcare'] == 1 field (distinct from iscrowd, which stays free for the
+   crowd policy). A detection that matches no real GT but overlaps a dontcare
+   GT at IoU >= iou_thresh_dontcare (default 0.5, fixed across IoU thresholds)
+   is recorded in dtMatchesDc and so excluded from false positives; dontcare
+   GTs are removed from npig.
 
-2. Best-F1 via a confidence sweep (``accumulate``): for each threshold ``s`` in
-   ``np.arange(0.1, 1.0, score_thresh_step)``, take the last detection with ``score > s``
-   (strict), read cumulative precision/recall there, and compute ``2*p*r/(p+r+eps)``;
-   keep the max. The recall denominator adds a hallucination-GT correction
-   (``npig + cumsum(isHalluGt)``) for a TP whose GT was already matched by a
-   higher-scored detection.
+2. Best-F1 via a confidence sweep (accumulate): for each threshold s in
+   np.arange(0.1, 1.0, score_thresh_step), take the last detection with
+   score > s (strict), read cumulative precision/recall there, and compute
+   2*p*r/(p+r+eps); keep the max. The recall denominator adds a
+   hallucination-GT correction (npig + cumsum(isHalluGt)) for a TP whose GT
+   was already matched by a higher-scored detection.
 
-The macro-average best-F1 at (IoU=0.5, area='all', maxDets=10) over categories with a
-valid (>= 0) best-F1 is the project's ``F1score50`` scalar used for best-checkpoint
-selection. Constants: ``eps = np.spacing(1)``, strict ``>`` threshold,
-last-index-above-threshold, ``mergesort`` by ``-score``.
+The macro-average best-F1 at (IoU=0.5, area='all', maxDets=10) over categories
+with a valid (>= 0) best-F1 is the project's F1score50 scalar used for
+best-checkpoint selection. Constants: eps = np.spacing(1), strict > threshold,
+last-index-above-threshold, mergesort by -score.
 """
 
 import copy
@@ -32,18 +32,21 @@ from pycocotools.cocoeval import COCOeval
 
 
 class COCOevalCustom(COCOeval):
-    """COCOeval with custom dontcare handling + confidence-sweep best-F1.
+    """COCOeval with custom dontcare handling and a confidence-sweep best-F1.
 
     Args:
-        cocoGt / cocoDt:        pycocotools COCO objects (GT / detections).
-        iouType:                'bbox' / 'segm' / 'keypoints'.
-        find_best_score_thresh: enable the F1 confidence sweep in accumulate().
-        ignore_dontcare:        enable the custom evaluateImgDontcare + dontcare
-                                FP-absorption / npig-subtraction path.
-        ignore_iscrowds:        iscrowd GTs get ``ignore=1`` (dropped, not FN).
-        iscrowds_labels:        GT categories in this set are treated as iscrowd.
-        iou_thresh_dontcare:    fixed IoU threshold for dontcare absorption (0.5).
-        score_thresh_step:      step of the confidence sweep grid (arange(0.1,1.0,step)).
+      cocoGt: pycocotools COCO object with the ground truth.
+      cocoDt: pycocotools COCO object with the detections.
+      iouType: 'bbox' / 'segm' / 'keypoints'.
+      verbose_eval_results_per_category: Verbose per-category printing flag.
+      find_best_score_thresh: Enable the F1 confidence sweep in accumulate().
+      ignore_dontcare: Enable the custom evaluateImgDontcare + dontcare
+        FP-absorption / npig-subtraction path.
+      ignore_iscrowds: iscrowd GTs get ignore=1 (dropped, not FN).
+      iscrowds_labels: GT categories in this set are treated as iscrowd.
+      iou_thresh_dontcare: Fixed IoU threshold for dontcare absorption (0.5).
+      score_thresh_step: Step of the confidence sweep grid
+        (arange(0.1, 1.0, step)).
     """
 
     def __init__(self, cocoGt=None, cocoDt=None, iouType='bbox',
@@ -59,10 +62,10 @@ class COCOevalCustom(COCOeval):
         self._find_best_score_thresh = find_best_score_thresh
         self._ignore_dontcare = ignore_dontcare
         self._iou_thresh_dontcare = iou_thresh_dontcare
-        # arange(0.1, 1.0, step) -> [0.10, 0.15, ..., 0.95] for step=0.05. Floor 0.10
-        # matches the all-conf grid in coco_metrics.metrics_tables, so the best-conf and
-        # all-conf tables agree; below it is too low-confidence to be a useful operating
-        # point.
+        # arange(0.1, 1.0, step) -> [0.10, 0.15, ..., 0.95] for step=0.05.
+        # Floor 0.10 matches the all-conf grid in coco_metrics.metrics_tables,
+        # so the best-conf and all-conf tables agree; below it is too
+        # low-confidence to be a useful operating point.
         self._scoreTreshCand = np.arange(0.1, 1.0, score_thresh_step)
         self._ignore_iscrowds = ignore_iscrowds
         self._iscrowds_labels = (
@@ -70,7 +73,7 @@ class COCOevalCustom(COCOeval):
             if iscrowds_labels is not None else None)
 
     def _prepare(self, ignore_iscrowds=True, iscrowds_labels=None):
-        """Prepare ._gts and ._dts for evaluation based on params."""
+        """Prepares ._gts and ._dts for evaluation based on params."""
         def _toMask(anns, coco):
             for ann in anns:
                 rle = coco.annToRLE(ann)
@@ -93,7 +96,7 @@ class COCOevalCustom(COCOeval):
         for gt in gts:
             gt['ignore'] = gt['ignore'] if 'ignore' in gt else 0
             gt['iscrowd'] = gt['iscrowd'] if 'iscrowd' in gt else 0
-            # dontcare flag is consumed by evaluateImgDontcare
+            # The dontcare flag is consumed by evaluateImgDontcare.
             gt['dontcare'] = gt['dontcare'] if 'dontcare' in gt else 0
 
             if iscrowds_labels is not None and len(iscrowds_labels) > 0:
@@ -114,7 +117,7 @@ class COCOevalCustom(COCOeval):
         self.eval = {}
 
     def evaluateImgDontcare(self, imgId, catId, aRng, maxDet):
-        """Perform evaluation for a single category and image (dontcare-aware)."""
+        """Performs evaluation for a single category and image (dontcare-aware)."""
         p = self.params
         if p.useCats:
             gt = self._gts[imgId, catId]
@@ -131,21 +134,22 @@ class COCOevalCustom(COCOeval):
             else:
                 g['_ignore'] = 0
 
-        # sort dt highest score first, sort gt ignore last
+        # Sort dt highest score first, sort gt ignore last.
         gtind = np.argsort([g['_ignore'] for g in gt], kind='mergesort')
         gt = [gt[i] for i in gtind]
         dtind = np.argsort([-d['score'] for d in dt], kind='mergesort')
         dt = [dt[i] for i in dtind[0:maxDet]]
         iscrowd = [int(o['iscrowd']) for o in gt]
-        # load computed ious (reindexed by the gt sort above)
+        # Load computed ious (reindexed by the gt sort above).
         ious = (self.ious[imgId, catId][:, gtind]
                 if len(self.ious[imgId, catId]) > 0
                 else self.ious[imgId, catId])
 
-        # gt is now sorted ignore-last. Split into dontcare/non-dontcare by ascending
-        # position (range(len(gt))), not by the permutation order, so the ignore-last
-        # ordering the matching early-out (gtIg[m]==0 and gtIg[gind]==1) depends on is
-        # preserved. Matches stock pycocotools' enumerate(gt).
+        # gt is now sorted ignore-last. Split into dontcare/non-dontcare by
+        # ascending position (range(len(gt))), not by the permutation order, so
+        # the ignore-last ordering the matching early-out (gtIg[m]==0 and
+        # gtIg[gind]==1) depends on is preserved. Matches stock pycocotools'
+        # enumerate(gt).
         gtind_nondc = []
         gtind_dc = []
         for i in range(len(gt)):
@@ -170,24 +174,24 @@ class COCOevalCustom(COCOeval):
                     m = -1
                     for gind in gtind_nondc:
                         g = gt[gind]
-                        # if this gt already matched, and not a crowd, continue
+                        # If this gt is already matched and not a crowd, continue.
                         if gtm[tind, gind] > 0 and not iscrowd[gind]:
                             continue
-                        # if dt matched to reg gt, and on ignore gt, stop
+                        # If dt matched to a regular gt and now on an ignore gt, stop.
                         if m > -1 and gtIg[m] == 0 and gtIg[gind] == 1:
                             break
-                        # continue to next gt unless better match made
+                        # Continue to the next gt unless a better match is made.
                         if ious[dind, gind] < iou:
                             continue
-                        # if match successful and best so far, store appropriately
+                        # Match successful and best so far; store appropriately.
                         iou = ious[dind, gind]
                         m = gind
-                    # if no real-GT match: try to absorb on a dontcare GT
+                    # No real-GT match: try to absorb on a dontcare GT.
                     if m == -1:
                         for gind in gtind_dc:
                             if gtIg[gind] == 1:
                                 break
-                            # dontcare gts do not care whether matched; no max-iou search.
+                            # Dontcare gts do not care whether matched; no max-iou search.
                             if ious[dind, gind] >= self._iou_thresh_dontcare:
                                 dtmdc[tind, dind] = gt[gind]['id']
                                 break
@@ -195,7 +199,7 @@ class COCOevalCustom(COCOeval):
                     dtIg[tind, dind] = gtIg[m]
                     dtm[tind, dind] = gt[m]['id']
                     gtm[tind, m] = d['id']
-        # set unmatched detections outside of area range to ignore
+        # Set unmatched detections outside of the area range to ignore.
         a = np.array(
             [d['area'] < aRng[0] or d['area'] > aRng[1] for d in dt]
         ).reshape((1, len(dt)))
@@ -217,7 +221,7 @@ class COCOevalCustom(COCOeval):
         }
 
     def evaluate(self):
-        """Run per-image evaluation; store results in self.evalImgs."""
+        """Runs per-image evaluation; stores results in self.evalImgs."""
         p = self.params
         if p.useSegm is not None:
             p.iouType = 'segm' if p.useSegm == 1 else 'bbox'
@@ -251,15 +255,16 @@ class COCOevalCustom(COCOeval):
         self._paramsEval = copy.deepcopy(self.params)
 
     def accumulate(self, p=None, find_best_score_thresh=True):
-        """Accumulate per-image evaluation results into self.eval.
+        """Accumulates per-image evaluation results into self.eval.
 
         Alongside the precision/recall/scores arrays this also fills, from the
-        confidence sweep: best_fiscore / best_fiscoreTresh / best_fiscorePrecision /
-        best_fiscoreRecall (each [T, K, A, M]); the full grid they were selected from,
-        sweep_f1 / sweep_precision / sweep_recall (each [T, K, A, M, S],
-        S = len(_scoreTreshCand)); and sweep_thresholds [S]. -1 marks a (cell,
-        threshold) with no detection above that threshold. The report's all-conf table
-        reads this raw grid so it agrees with the best-F1 operating point.
+        confidence sweep: best_fiscore / best_fiscoreTresh /
+        best_fiscorePrecision / best_fiscoreRecall (each [T, K, A, M]); the
+        full grid they were selected from, sweep_f1 / sweep_precision /
+        sweep_recall (each [T, K, A, M, S], S = len(_scoreTreshCand)); and
+        sweep_thresholds [S]. -1 marks a (cell, threshold) with no detection
+        above that threshold. The report's all-conf table reads this raw grid
+        so it agrees with the best-F1 operating point.
         """
         if not self.evalImgs:
             raise Exception('Please run evaluate() first')
@@ -280,10 +285,11 @@ class COCOevalCustom(COCOeval):
             bestF1ScoreTresh = -np.ones((T, K, A, M))
             bestPrecision = -np.ones((T, K, A, M))
             bestRecall = -np.ones((T, K, A, M))
-            # Full sweep grid stored next to the best-F1 readout so the all-conf table
-            # reads the same raw operating-point p/r/F1 the selection sees, not COCO's
-            # interpolated envelope precision. Shape [T, K, A, M, S]; -1 = no detection
-            # above that threshold. Filled inside the sweep loop below.
+            # Full sweep grid stored next to the best-F1 readout so the
+            # all-conf table reads the same raw operating-point p/r/F1 the
+            # selection sees, not COCO's interpolated envelope precision.
+            # Shape [T, K, A, M, S]; -1 = no detection above that threshold.
+            # Filled inside the sweep loop below.
             S = len(self._scoreTreshCand)
             sweepF1 = -np.ones((T, K, A, M, S))
             sweepPrecision = -np.ones((T, K, A, M, S))
@@ -313,7 +319,7 @@ class COCOevalCustom(COCOeval):
                         continue
                     dtScores = np.concatenate([e['dtScores'][0:maxDet] for e in E])
 
-                    # mergesort to be consistent with the Matlab implementation
+                    # Mergesort to be consistent with the Matlab implementation.
                     inds = np.argsort(-dtScores, kind='mergesort')
                     dtScoresSorted = dtScores[inds]
 
@@ -326,7 +332,7 @@ class COCOevalCustom(COCOeval):
                         [e['dtIgnore'][:, 0:maxDet] for e in E], axis=1)[:, inds]
                     gtIg = np.concatenate([e['gtIgnore'] for e in E])
                     if self._ignore_dontcare:
-                        # npig = tp + fn; dontcare GTs subtracted from npig
+                        # npig = tp + fn; dontcare GTs are subtracted from npig.
                         gtIgDc = np.concatenate([e['gtIgnoreDc'] for e in E])
                         npig = np.count_nonzero(
                             np.logical_and(gtIg == 0, gtIgDc == 0))
@@ -339,8 +345,9 @@ class COCOevalCustom(COCOeval):
                     if self._ignore_dontcare:
                         fps = np.logical_and(fps, np.logical_not(dtmDc))
 
-                    # hallucination-GT correction: a TP whose matched GT id was
-                    # already matched by a higher-scored det inflates recall denom.
+                    # Hallucination-GT correction: a TP whose matched GT id was
+                    # already matched by a higher-scored det inflates the recall
+                    # denominator.
                     isHalluGtAll = []
                     for tps_, dtm_ in zip(tps, dtm):
                         matchedGtIds = set()
@@ -385,8 +392,9 @@ class COCOevalCustom(COCOeval):
                                         f1Score = (
                                             2 * (pr_val * rc_val)
                                             / (pr_val + rc_val + np.spacing(1)))
-                                        # Store this operating point in the full grid
-                                        # (cells with no det above thresh stay -1).
+                                        # Store this operating point in the full
+                                        # grid (cells with no det above the
+                                        # threshold stay -1).
                                         sweepF1[t, k, a, m, si] = f1Score
                                         sweepPrecision[t, k, a, m, si] = pr_val
                                         sweepRecall[t, k, a, m, si] = rc_val
@@ -447,11 +455,11 @@ class COCOevalCustom(COCOeval):
             self.eval['sweep_thresholds'] = np.asarray(self._scoreTreshCand)
 
     def summarize_best_f1(self, iouThr=0.5, areaRng='all', maxDets=10):
-        """Macro-average bestF1 over valid (>= 0) categories.
+        """Macro-averages bestF1 over valid (>= 0) categories.
 
-        Computes the ``F1score50`` scalar at (iouThr=0.5, areaRng='all', maxDets=10).
-        Returns -1.0 if no category has a valid bestF1 (categories with no valid F1
-        are excluded from the macro-average).
+        Computes the F1score50 scalar at (iouThr=0.5, areaRng='all',
+        maxDets=10). Returns -1.0 if no category has a valid bestF1
+        (categories with no valid F1 are excluded from the macro-average).
         """
         p = self.params
         aind = [i for i, aRng in enumerate(p.areaRngLbl) if aRng == areaRng]
@@ -489,7 +497,7 @@ class COCOevalCustom(COCOeval):
         return float(avg_mF1Score)
 
     def summarize(self):
-        """Fill ``self.stats`` from the accumulated precision/recall arrays.
+        """Fills self.stats from the accumulated precision/recall arrays.
 
         Populates the 12 standard COCO detection summary slots plus a 13th slot
         carrying the best-F1 scalar:
@@ -508,9 +516,9 @@ class COCOevalCustom(COCOeval):
             stats[11] AR @[.50:.95] | area=large | maxDets=100
             stats[12] F1 @.50       | area=all   | maxDets=10  (best-F1 sweep)
 
-        Means are taken over entries ``>= 0`` (the COCO convention that drops
-        recall points with no GT / detections). ``maxDets`` is selected by value
-        against ``params.maxDets`` so the slot indices are robust to the array
+        Means are taken over entries >= 0 (the COCO convention that drops
+        recall points with no GT / detections). maxDets is selected by value
+        against params.maxDets so the slot indices are robust to the array
         being augmented with extra thresholds.
         """
         p = self.params
@@ -569,11 +577,11 @@ class COCOevalCustom(COCOeval):
         return stats
 
     def per_category_best_f1(self, iouThr=0.5, areaRng='all', maxDets=10):
-        """Per-category bestF1 / precision / recall / conf-threshold.
+        """Returns the per-category bestF1 / precision / recall / conf-threshold.
 
         Returns a list of dicts keyed by category id with the same (IoU, area,
-        maxDets) slice that ``summarize_best_f1`` averages, flagging categories with
-        no valid bestF1 (value < 0) as ``valid=False``.
+        maxDets) slice that summarize_best_f1 averages, flagging categories
+        with no valid bestF1 (value < 0) as valid=False.
         """
         p = self.params
         aind = [i for i, aRng in enumerate(p.areaRngLbl) if aRng == areaRng]

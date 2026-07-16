@@ -80,11 +80,11 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
 
     Shared by every mode. Builds the model, restores EMA weights, runs inference
     over the selected split, and returns the COCO + polygon + distance metric dict.
-    When ``collect_json`` is True, ``dt_results`` is the COCO-format detection list
+    When `collect_json` is True, `dt_results` is the COCO-format detection list
     (else an empty list).
 
     The caller is responsible for activating the precision policy
-    (``apply_eval_precision_policy``) once before the first model is built.
+    (`apply_eval_precision_policy`) once before the first model is built.
     """
     from eval.coco_metrics import COCOEvaluator
     from eval.distance_metrics import DistanceEvaluator
@@ -117,7 +117,7 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
         iscrowds_labels=task_cfg.iscrowds_labels,
     )
     # Only evaluate distance when the chosen split actually carries distance GT
-    # (distance is a training-only stream — gating on the model flag alone would
+    # (distance is a training-only stream; gating on the model flag alone would
     # print a misleading dist_mae=0.0 on a split with no distance labels).
     val_has_distance = getattr(data_cfg, 'with_distance', False)
     dist_ev = DistanceEvaluator() if (task_cfg.with_distance and val_has_distance) else None
@@ -150,9 +150,9 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
 
         if dist_ev:
             # Match each GT to its highest-IoU detection (>=0.5) and compare that
-            # detection's distance to the GT distance. preds['distance'] is in METRES
-            # (already exp'd by the generator); convert to log to match the GT and
-            # the DistanceEvaluator's log-space contract.
+            # detection's distance to the GT distance. preds['distance'] is in
+            # meters (already exponentiated by the generator); convert to log to
+            # match the GT and the DistanceEvaluator's log-space contract.
             n_gt  = labels['n_gt'].numpy()
             gt_ld = labels['log_distance'].numpy()
             gt_bx = labels['bbox'].numpy()

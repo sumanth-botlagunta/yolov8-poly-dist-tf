@@ -1,19 +1,16 @@
-"""Failure-case mining for evaluation: records why a class is weak, not just its score.
+"""Failure-case mining for evaluation.
 
-During eval, ``FailureCollector`` greedily matches detections to GT per class (COCO-style)
-and records three failure kinds, keeping the worst-K per class:
+FailureCollector greedily matches detections to GT per class (COCO-style) and
+records three failure kinds, keeping the worst-K per (class, kind); an evicted
+record's image is dropped:
 
-  * FP — a confident detection with no GT match (sorted by score; the worst are the
-    high-confidence false positives).
-  * FN — a GT object no detection matched (a miss; sorted by GT area).
-  * low-IoU — a correct-class match that is poorly localized (sorted by lowest IoU).
+  * FP: a confident detection with no GT match (sorted by score).
+  * FN: a GT object no detection matched (sorted by GT area).
+  * low-IoU: a correct-class match that is poorly localized (sorted by lowest IoU).
 
-``write()`` renders each kept case as an annotated image under
-``<out_dir>/<NN_name>/<kind>_<rank>_*.png`` (GT green, the failing box red/orange, with the
+write() renders each kept case as an annotated image under
+<out_dir>/<NN_name>/<kind>_<rank>_*.png (GT green, failing box red/orange,
 class/score/IoU labelled).
-
-Only the worst-K records per (class, kind) are retained; an evicted record's image is
-dropped. Complements the ``per_class/`` TensorBoard metrics.
 """
 
 from __future__ import annotations
@@ -36,6 +33,8 @@ def _iou_yxyx(a: np.ndarray, b: np.ndarray) -> float:
 
 
 class _Record:
+    """One kept failure case; badness is the sort key (higher = worse)."""
+
     __slots__ = ('badness', 'image', 'pred_box', 'gt_box', 'score', 'iou', 'img_id')
 
     def __init__(self, badness, image, pred_box, gt_box, score, iou, img_id):
@@ -49,6 +48,8 @@ class _Record:
 
 
 class FailureCollector:
+    """Collects the worst-K failure cases per (class, kind) during eval."""
+
     def __init__(self, class_names: Optional[List[str]] = None, per_class: int = 8,
                  match_iou: float = 0.5, lowiou_below: float = 0.7,
                  score_thresh: float = 0.25):
@@ -70,10 +71,13 @@ class FailureCollector:
             bucket.pop()              # drop the least-bad (its image is released)
 
     def update(self, image_uint8: np.ndarray, pred: dict, gt: dict) -> None:
-        """Match one image's detections vs GT and record failures.
+        """Matches one image's detections against GT and records failures.
 
-        pred: {'bbox' [N,4] yxyx-norm, 'classes' [N], 'confidence' [N], 'num_detections'}.
-        gt:   {'bbox' [M,4] yxyx-norm, 'classes' [M], 'n_gt'}.
+        Args:
+          image_uint8: uint8 HxWx3 RGB image.
+          pred: Dict with 'bbox' [N, 4] yxyx-norm, 'classes' [N],
+            'confidence' [N], 'num_detections'.
+          gt: Dict with 'bbox' [M, 4] yxyx-norm, 'classes' [M], 'n_gt'.
         """
         img_id = self._img_id
         self._img_id += 1
@@ -121,7 +125,14 @@ class FailureCollector:
         return f"{c:02d}"
 
     def write(self, out_dir: str) -> int:
-        """Render all kept failures to annotated PNGs. Returns the count written."""
+        """Renders all kept failures to annotated PNGs.
+
+        Args:
+          out_dir: Output directory; one subdirectory per class.
+
+        Returns:
+          Number of images written.
+        """
         import cv2
         os.makedirs(out_dir, exist_ok=True)
         _COLORS = {'fp': (0, 0, 255), 'fn': (0, 220, 255), 'lowiou': (0, 140, 255)}  # BGR
@@ -150,6 +161,7 @@ class FailureCollector:
         return written
 
     def summary(self) -> Dict[str, int]:
+        """Returns the kept-record count per failure kind."""
         out = {'fp': 0, 'fn': 0, 'lowiou': 0}
         for (_, kind), bucket in self._kept.items():
             out[kind] += len(bucket)

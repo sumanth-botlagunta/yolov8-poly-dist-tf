@@ -1,16 +1,17 @@
-"""Write a self-describing provenance record for a training run.
+"""Writes a self-describing provenance record for a training run.
 
-A checkpoint is the product of **config + code + data**; ``params.yaml`` already captures
-the config. This adds the other two (plus the invocation and environment) so the run
-directory answers "what exactly produced this checkpoint?" on its own:
+A checkpoint is the product of config + code + data; params.yaml already
+captures the config. This records the other two, plus the invocation and
+environment, so the run directory answers "what exactly produced this
+checkpoint?" on its own:
 
-  * **code** — git commit + branch + dirty flag.
-  * **data** — each TFDS dataset's requested AND *resolved* version (best-effort).
-  * **invocation** — the command line + the seed-init / resume sources.
-  * **environment** — TF / Python / platform / host / GPUs + start time.
+  * code: git commit + branch + dirty flag.
+  * data: each TFDS dataset's requested and resolved version (best-effort).
+  * invocation: the command line + the seed-init / resume sources.
+  * environment: TF / Python / platform / host / GPUs + start time.
 
-Writes ``<output_dir>/run_metadata.json``. Runs
-once at startup, never raises (provenance must not break training): every probe is wrapped.
+Writes <output_dir>/run_metadata.json. Runs once at startup and never raises
+(provenance must not break training): every probe is wrapped.
 """
 
 from __future__ import annotations
@@ -64,7 +65,7 @@ def _env_info() -> dict:
 
 
 def _dataset_specs(config) -> list:
-    """Collect every (role, name, requested_version) the config references."""
+    """Collects every (role, name, requested_version) the config references."""
     td = config.task.train_data
     vd = config.task.validation_data
     sources = [('train', getattr(td, 'tfds_name', None)),
@@ -90,7 +91,7 @@ def _dataset_specs(config) -> list:
 
 
 def _resolve_version(name_with_ver: str, data_dir) -> Optional[str]:
-    """Best-effort: the version TFDS would actually load (catches unpinned names)."""
+    """Returns the version TFDS would actually load (best-effort; catches unpinned names)."""
     try:
         import tensorflow_datasets as tfds
         builder = tfds.builder(name_with_ver, data_dir=data_dir)
@@ -101,8 +102,13 @@ def _resolve_version(name_with_ver: str, data_dir) -> Optional[str]:
 
 def write_run_metadata(output_dir: str, config, resume_from: Optional[str] = None,
                        started_at: Optional[str] = None) -> Optional[str]:
-    """Write ``run_metadata.json``. Returns the path, or None
-    on failure (never raises — provenance must not break a training run)."""
+    """Writes run_metadata.json to output_dir.
+
+    Never raises (provenance must not break a training run).
+
+    Returns:
+      The written path, or None on failure.
+    """
     try:
         os.makedirs(output_dir, exist_ok=True)
         task = config.task

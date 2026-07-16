@@ -1,10 +1,7 @@
 """Distance estimation evaluator.
 
 Matches predicted distances to GT distances for valid samples (gt_dist > sentinel)
-and computes MAE, RMSE, relative MAE, and near/far splits in metric (meter) space.
-
-Classes:
-    DistanceEvaluator: Accumulates (pred, gt) pairs, computes metrics.
+and computes MAE, RMSE, relative MAE, and near/far splits in meter space.
 """
 
 import logging
@@ -15,33 +12,24 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 INVALID_SENTINEL = -10.0
-_NEAR_FAR_THRESHOLD = 5.0   # metres
+_NEAR_FAR_THRESHOLD = 5.0   # meters
 
 
 class DistanceEvaluator:
     """Accumulates log-scale distance predictions and computes metric-space errors.
 
-    Predictions and GT values are stored in log scale.  evaluate() exponentiates
-    both before computing errors so all metrics are reported in meters.
-
-    GT samples with value <= INVALID_SENTINEL are excluded entirely.
+    Predictions and GT values are stored in log scale. evaluate() exponentiates
+    both before computing errors, so all metrics are reported in meters. GT
+    samples with value <= INVALID_SENTINEL are excluded entirely.
 
     Metrics returned by evaluate():
-        dist_mae:         MAE across all valid samples
-        dist_rmse:        RMSE across all valid samples
-        dist_absrel:      Relative MAE (|pred-gt|/gt) across all valid samples
-        dist_abs_near:    MAE for gt < 5m
-        dist_absrel_near: Relative MAE for gt < 5m
-        dist_abs_far:     MAE for gt >= 5m
-        dist_absrel_far:  Relative MAE for gt >= 5m
-
-    Usage::
-
-        ev = DistanceEvaluator()
-        for batch in val_ds:
-            ev.update(pred_log_dist, gt_log_dist)
-        metrics = ev.evaluate()
-        ev.reset()
+        dist_mae: MAE across all valid samples.
+        dist_rmse: RMSE across all valid samples.
+        dist_absrel: Relative MAE (|pred-gt|/gt) across all valid samples.
+        dist_abs_near: MAE for gt < 5m.
+        dist_absrel_near: Relative MAE for gt < 5m.
+        dist_abs_far: MAE for gt >= 5m.
+        dist_absrel_far: Relative MAE for gt >= 5m.
     """
 
     def __init__(self):
@@ -49,32 +37,32 @@ class DistanceEvaluator:
         self._gt:   list = []
 
     def update(self, pred_log_dist: np.ndarray, gt_log_dist: np.ndarray) -> None:
-        """Accumulate one batch of matched prediction/GT pairs.
+        """Accumulates one batch of matched prediction/GT pairs.
 
         Args:
-            pred_log_dist: Predicted log-scale distances, shape [N] or [B, N].
-                           Already matched to valid GT objects (caller's responsibility).
-            gt_log_dist:   GT log-scale distances, same shape as pred_log_dist.
-                           Entries with value <= INVALID_SENTINEL are skipped.
+          pred_log_dist: Predicted log-scale distances, shape [N] or [B, N].
+            Already matched to valid GT objects (caller's responsibility).
+          gt_log_dist: GT log-scale distances, same shape as pred_log_dist.
+            Entries with value <= INVALID_SENTINEL are skipped.
         """
         pred = np.asarray(pred_log_dist, dtype=np.float32).ravel()
         gt   = np.asarray(gt_log_dist,   dtype=np.float32).ravel()
 
         # Drop sentinels and any non-finite pred/gt: a single nan/inf prediction
         # (e.g. from an upstream log(0)) would otherwise poison every aggregate
-        # (mean/rmse → nan) and break JSON serialization of the metrics.
+        # (mean/rmse -> nan) and break JSON serialization of the metrics.
         valid = (gt > INVALID_SENTINEL) & np.isfinite(pred) & np.isfinite(gt)
         if valid.any():
             self._pred.append(pred[valid])
             self._gt.append(gt[valid])
 
     def evaluate(self) -> Dict[str, float]:
-        """Compute distance metrics in meter space.
+        """Computes distance metrics in meter space.
 
         Returns:
-            Dict with keys: dist_mae, dist_rmse, dist_absrel,
-            dist_abs_near, dist_absrel_near, dist_abs_far, dist_absrel_far.
-            All values are 0.0 when no valid samples have been accumulated.
+          Dict with keys dist_mae, dist_rmse, dist_absrel, dist_abs_near,
+          dist_absrel_near, dist_abs_far, dist_absrel_far. All values are 0.0
+          when no valid samples have been accumulated.
         """
         _zero = {
             'dist_mae': 0.0, 'dist_rmse': 0.0, 'dist_absrel': 0.0,
@@ -117,6 +105,6 @@ class DistanceEvaluator:
         }
 
     def reset(self) -> None:
-        """Clear accumulated data."""
+        """Clears accumulated data."""
         self._pred.clear()
         self._gt.clear()

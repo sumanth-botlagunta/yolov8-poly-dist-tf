@@ -6,12 +6,12 @@ maps via top-down FPN and bottom-up PAN paths, each using C2f blocks.
 Channel flow for cspdarknetv8s (c3=128, c4=256, c5=512):
 
   FPN top-down:
-    P5(512) → upsample → concat(P4=256) → C2f(256) → P4'(256)
-    P4'(256)→ upsample → concat(P3=128) → C2f(128) → P3'(128)
+    P5(512)  -> upsample -> concat(P4=256) -> C2f(256) -> P4'(256)
+    P4'(256) -> upsample -> concat(P3=128) -> C2f(128) -> P3'(128)
 
   PAN bottom-up:
-    P3'(128)→ conv(s=2,128) → concat(P4'=256)  → C2f(256) → P4''(256)
-    P4''(256)→ conv(s=2,256) → concat(P5=512)  → C2f(512) → P5''(512)
+    P3'(128)  -> conv(s=2,128) -> concat(P4'=256) -> C2f(256) -> P4''(256)
+    P4''(256) -> conv(s=2,256) -> concat(P5=512)  -> C2f(512) -> P5''(512)
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from configs.registry import DECODERS
 from models.backbone import C2f, _ConvBnAct
 
 
-# Bottleneck repetitions per decoder size variant
+# Bottleneck repetitions per decoder size variant.
 _DECODER_DEPTH: Dict[str, int] = {
     "s": 1,
     "m": 2,
@@ -38,15 +38,14 @@ class YoloDecoder(tf.keras.Model):
     """FPN-PAN neck for YOLOv8.
 
     FPN (top-down):
-        P5 → upsample → concat(P4) → C2f → P4'
-        P4'→ upsample → concat(P3) → C2f → P3'
+        P5   -> upsample -> concat(P4) -> C2f -> P4'
+        P4'  -> upsample -> concat(P3) -> C2f -> P3'
 
     PAN (bottom-up):
-        P3'→ conv(s=2) → concat(P4') → C2f → P4''
-        P4''→ conv(s=2) → concat(P5)  → C2f → P5''
+        P3'  -> conv(s=2) -> concat(P4') -> C2f -> P4''
+        P4'' -> conv(s=2) -> concat(P5)  -> C2f -> P5''
 
-    Returns:
-        dict with keys '3', '4', '5' containing the enriched feature maps.
+    Returns a dict with keys '3', '4', '5' containing the enriched feature maps.
     """
 
     def __init__(
@@ -61,9 +60,23 @@ class YoloDecoder(tf.keras.Model):
         use_separable_conv: bool = False,
         **kwargs,
     ):
+        """Initializes the decoder.
+
+        Args:
+            input_specs: Dict keyed by level ('3', '4', '5') giving each backbone
+                output's channel count as an int or TensorShape.
+            model_id: Size variant (e.g. 'v8s'); selects the C2f repetition count.
+            version: Unused; kept for interface compatibility.
+            activation: Activation name for all conv blocks.
+            norm_momentum: BatchNormalization momentum.
+            norm_epsilon: BatchNormalization epsilon.
+            use_sync_bn: Whether to use synchronized BatchNormalization.
+            use_separable_conv: Unused; kept for interface compatibility.
+            **kwargs: Passed to tf.keras.Model.
+        """
         super().__init__(**kwargs)
 
-        # Channel counts — accept both int and TensorShape values.
+        # Channel counts; accept both int and TensorShape values.
         def _ch(v: Union[int, tf.TensorShape]) -> int:
             return int(v) if isinstance(v, int) else int(v[-1])
 
@@ -82,11 +95,11 @@ class YoloDecoder(tf.keras.Model):
             use_sync_bn=use_sync_bn,
         )
 
-        # FPN top-down: concat(P5↑, P4) → C2f → c4; concat(P4'↑, P3) → C2f → c3.
+        # FPN top-down: concat(P5 up, P4) -> C2f -> c4; concat(P4' up, P3) -> C2f -> c3.
         self.fpn_c2f_p4 = C2f(c4, n=n, shortcut=False, **norm_kw, name="fpn_c2f_p4")
         self.fpn_c2f_p3 = C2f(c3, n=n, shortcut=False, **norm_kw, name="fpn_c2f_p3")
 
-        # PAN bottom-up: stride-2 downsample → concat → C2f, twice.
+        # PAN bottom-up: stride-2 downsample -> concat -> C2f, twice.
         self.pan_down_p3 = _ConvBnAct(c3, 3, strides=2, **norm_kw, name="pan_down_p3")
         self.pan_c2f_p4 = C2f(c4, n=n, shortcut=False, **norm_kw, name="pan_c2f_p4")
 
@@ -96,19 +109,19 @@ class YoloDecoder(tf.keras.Model):
         # Upsample mode. Default dynamic (tf.image.resize to the target level's runtime
         # size) can never disagree with the level it concatenates to. The device
         # exporter sets static_resize=True at a fixed input size so the upsample size is
-        # a compile-time constant, dropping the Shape→StridedSlice the SNPE converter
+        # a compile-time constant, dropping the Shape->StridedSlice the SNPE converter
         # rejects; numerically identical when the static size is the runtime size.
         self.static_resize = False
 
     # ------------------------------------------------------------------
 
     def _upsample(self, src: tf.Tensor, ref: tf.Tensor) -> tf.Tensor:
-        """Nearest upsample ``src`` to ``ref``'s spatial size.
+        """Nearest-upsamples `src` to `ref`'s spatial size.
 
-        Dynamic by default (size read from the runtime ``ref``). When ``static_resize``
-        is set (device export at a fixed input size) the size is a compile-time constant,
-        so the graph carries no Shape→StridedSlice; identical output when the static size
-        equals the runtime size.
+        Dynamic by default (size read from the runtime `ref`). When `static_resize`
+        is set (device export at a fixed input size) the size is a compile-time
+        constant, so the graph carries no Shape->StridedSlice; the output is
+        identical when the static size equals the runtime size.
         """
         s = ref.shape
         if self.static_resize and s.rank == 4 and s[1] is not None and s[2] is not None:
@@ -123,7 +136,11 @@ class YoloDecoder(tf.keras.Model):
         name: str = "",
         training: bool = False,
     ) -> tf.Tensor:
-        """Apply a pre-built C2f layer looked up by attribute name."""
+        """Applies a pre-built C2f layer looked up by attribute name.
+
+        Raises:
+            ValueError: If no C2f layer with the given name exists.
+        """
         layer = getattr(self, name, None)
         if layer is None:
             raise ValueError(f"YoloDecoder has no C2f layer named '{name}'")
@@ -139,17 +156,17 @@ class YoloDecoder(tf.keras.Model):
         p5 = inputs["5"]   # [B, H/32, W/32, c5]
 
         # --- FPN: top-down ---
-        p5_up  = self._upsample(p5, p4)                                               # upsample P5(c5) → P4 size
-        p4_fpn = self.fpn_c2f_p4(tf.concat([p5_up, p4], axis=-1), training=training)  # concat c5+c4 → C2f → c4
+        p5_up  = self._upsample(p5, p4)                                               # upsample P5(c5) -> P4 size
+        p4_fpn = self.fpn_c2f_p4(tf.concat([p5_up, p4], axis=-1), training=training)  # concat c5+c4 -> C2f -> c4
 
-        p4_up  = self._upsample(p4_fpn, p3)                                           # upsample P4'(c4) → P3 size
-        p3_out = self.fpn_c2f_p3(tf.concat([p4_up, p3], axis=-1), training=training)  # concat c4+c3 → C2f → c3
+        p4_up  = self._upsample(p4_fpn, p3)                                           # upsample P4'(c4) -> P3 size
+        p3_out = self.fpn_c2f_p3(tf.concat([p4_up, p3], axis=-1), training=training)  # concat c4+c3 -> C2f -> c3
 
         # --- PAN: bottom-up ---
-        p3_down = self.pan_down_p3(p3_out, training=training)                          # stride-2 → c3
-        p4_out  = self.pan_c2f_p4(tf.concat([p3_down, p4_fpn], axis=-1), training=training)  # → c4
+        p3_down = self.pan_down_p3(p3_out, training=training)                          # stride-2 -> c3
+        p4_out  = self.pan_c2f_p4(tf.concat([p3_down, p4_fpn], axis=-1), training=training)  # -> c4
 
-        p4_down = self.pan_down_p4(p4_out, training=training)                          # stride-2 → c4
-        p5_out  = self.pan_c2f_p5(tf.concat([p4_down, p5], axis=-1), training=training)      # → c5
+        p4_down = self.pan_down_p4(p4_out, training=training)                          # stride-2 -> c4
+        p5_out  = self.pan_c2f_p5(tf.concat([p4_down, p5], axis=-1), training=training)      # -> c5
 
         return {"3": p3_out, "4": p4_out, "5": p5_out}

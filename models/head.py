@@ -1,7 +1,7 @@
 """Multi-head output layer for YOLOv8 with polygon and distance branches.
 
 Six output heads per FPN level (strides 8, 16, 32):
-    box:        float32 [batch, H, W, 64]   DFL distribution (4 × 16 bins)
+    box:        float32 [batch, H, W, 64]   DFL distribution (4 x 16 bins)
     cls:        float32 [batch, H, W, 39]   class logits
     poly_angle: float32 [batch, H, W, 24]   per-vertex angle sub-bin offset
     poly_dist:  float32 [batch, H, W, 24]   per-vertex radial distance
@@ -9,9 +9,9 @@ Six output heads per FPN level (strides 8, 16, 32):
     dist:       float32 [batch, H, W,  1]   object distance (log-scale)
 
 Head architecture:
-    cv2feat: 2 × Conv(4*reg_max + 3*poly_size, 3×3) — shared stem for box and poly branches
-    cls:     2 × Conv(128, 3×3)                      — cls stem (128 ch at all levels)
-    dist:    num_dist_block × Conv(128, 3×3)          — dist stem (128 ch at all levels)
+    cv2feat: 2 x Conv(4*reg_max + 3*poly_size, 3x3)  shared stem for box and poly branches
+    cls:     2 x Conv(128, 3x3)                      cls stem (128 ch at all levels)
+    dist:    num_dist_block x Conv(128, 3x3)         dist stem (128 ch at all levels)
 
 Smart bias init (smart_bias=True):
     class bias: log(5 / num_classes / (input_size/stride)^2)   # input_size=672
@@ -29,8 +29,8 @@ from configs.registry import HEADS
 from models.backbone import _ConvBnAct
 
 _STRIDES   = {"3": 8, "4": 16, "5": 32}
-_CLS_HIDDEN  = 128   # cls stem channels — fixed at all levels
-_DIST_HIDDEN = 128   # dist stem channels — fixed at all levels
+_CLS_HIDDEN  = 128   # cls stem channels, fixed at all levels
+_DIST_HIDDEN = 128   # dist stem channels, fixed at all levels
 
 
 @HEADS.register("yolov8_head")
@@ -59,6 +59,23 @@ class YoloV8Head(tf.keras.layers.Layer):
         use_sync_bn: bool = False,
         **kwargs,
     ):
+        """Initializes the head.
+
+        Args:
+            num_classes: Number of detection classes.
+            output_poly_size: Number of polygon radial bins per anchor.
+            output_dist_size: Distance output channels.
+            num_dist_block: Conv blocks in the dist stem.
+            reg_max: DFL bins per box side (box channels = 4 * reg_max).
+            smart_bias: Whether initialize_biases applies the smart bias init.
+            with_polygons: Whether to build the polygon branches.
+            with_distance: Whether to build the distance branch.
+            activation: Activation name for the stem conv blocks.
+            norm_momentum: BatchNormalization momentum.
+            norm_epsilon: BatchNormalization epsilon.
+            use_sync_bn: Whether to use synchronized BatchNormalization.
+            **kwargs: Passed to tf.keras.layers.Layer.
+        """
         super().__init__(**kwargs)
         self.num_classes      = num_classes
         self.output_poly_size = output_poly_size
@@ -81,10 +98,10 @@ class YoloV8Head(tf.keras.layers.Layer):
         self._levels: Optional[List[str]] = None
 
     def build(self, input_shape: Dict) -> None:
-        """Build per-level branch layers.
+        """Builds per-level branch layers.
 
         Args:
-            input_shape: dict like {'3': TensorShape([None,84,84,128]), ...}
+            input_shape: Dict like {'3': TensorShape([None, 84, 84, 128]), ...}.
         """
         levels = sorted(input_shape.keys())
         self._levels = levels
@@ -106,7 +123,7 @@ class YoloV8Head(tf.keras.layers.Layer):
                                            padding="same", dtype="float32",
                                            name=f"box_pred_{level}"))
 
-            # cls stem: 2 × Conv(128, 3×3).
+            # cls stem: 2 x Conv(128, 3x3).
             setattr(self, f"cls_s1_{level}", _ConvBnAct(_CLS_HIDDEN, 3, **nk))
             setattr(self, f"cls_s2_{level}", _ConvBnAct(_CLS_HIDDEN, 3, **nk))
             setattr(self, f"cls_pred_{level}",
@@ -115,7 +132,7 @@ class YoloV8Head(tf.keras.layers.Layer):
                                            name=f"cls_pred_{level}"))
 
             if self.with_polygons:
-                # poly preds come directly from cv2feat output (no separate stems).
+                # Poly preds come directly from cv2feat output (no separate stems).
                 setattr(self, f"pa_pred_{level}",
                         tf.keras.layers.Conv2D(self.output_poly_size, 1, use_bias=True,
                                                padding="same", dtype="float32",
@@ -130,7 +147,7 @@ class YoloV8Head(tf.keras.layers.Layer):
                                                name=f"pc_pred_{level}"))
 
             if self.with_distance:
-                # dist stem: num_dist_block × Conv(128, 3×3).
+                # dist stem: num_dist_block x Conv(128, 3x3).
                 for bi in range(self.num_dist_block):
                     setattr(self, f"dist_s{bi}_{level}", _ConvBnAct(_DIST_HIDDEN, 3, **nk))
                 setattr(self, f"dist_pred_{level}",
@@ -145,10 +162,10 @@ class YoloV8Head(tf.keras.layers.Layer):
         features: Dict[str, tf.Tensor],
         training: bool = False,
     ) -> Dict[str, Dict[str, tf.Tensor]]:
-        """Apply all heads to each FPN level.
+        """Applies all heads to each FPN level.
 
         Returns:
-            Nested dict keyed by head name → level:
+            Nested dict keyed by head name -> level:
             {
                 'box':        {'3': ..., '4': ..., '5': ...},
                 'cls':        {'3': ..., '4': ..., '5': ...},
@@ -168,7 +185,7 @@ class YoloV8Head(tf.keras.layers.Layer):
         for level in self._levels:
             x = features[level]
 
-            # shared cv2feat feeds box and all poly branches
+            # Shared cv2feat feeds box and all poly branches.
             h = getattr(self, f"cv2feat_s1_{level}")(x, training=training)
             h = getattr(self, f"cv2feat_s2_{level}")(h, training=training)
             cv2 = h
@@ -205,10 +222,16 @@ class YoloV8Head(tf.keras.layers.Layer):
         return result
 
     def initialize_biases(self, input_size: int = 672) -> None:
-        """Set class and box prediction biases after first forward pass.
+        """Sets class and box prediction biases after the first forward pass.
 
         class bias = log(5 / num_classes / (input_size / stride)^2)
         box bias   = 1.0
+
+        Args:
+            input_size: Model input size in pixels (square).
+
+        Raises:
+            RuntimeError: If the head has not been built yet.
         """
         if not self.built:
             raise RuntimeError("Call the head once before initializing biases.")

@@ -140,7 +140,7 @@ class LossConfig:
     box_iou_type: str = "ciou"
     # Cls loss variant: bce (default) | focal | varifocal; label_smoothing 0 = off.
     cls_loss_type: str = "bce"
-    # Positive weighting scheme for box/DFL/cls: soft (default — per-anchor
+    # Positive weighting scheme for box/DFL/cls: soft (default: per-anchor
     # target_scores weight, target_scores_sum normalizer) | legacy_hard
     # (one-hot cls targets, binary fg weight, num_objs normalizer).
     weighting: str = "soft"
@@ -169,7 +169,7 @@ class MosaicConfig:
     # Mosaic-path candidate filter (the legacy mosaic value): a box keeps its
     # label only if >= this fraction of its area stays visible after the
     # canvas warp. The single-image path filters at the parser-level
-    # area_thresh (0.1) instead — the two paths are independent.
+    # area_thresh (0.1) instead; the two paths are independent.
     area_thresh: float = 0.5
     jitter: float = 0.0
     # Mosaic image diversity (see data_pipeline/mosaic.py). A group of `group_size`
@@ -318,7 +318,7 @@ class TrainerConfig:
     train_epochs: int = 300
     train_total_examples: int = 0
     validation_total_examples: int = 0
-    # Derived — computed by _fill_derived_fields in yaml_loader from the above
+    # Derived: computed by _fill_derived_fields in yaml_loader from the above.
     train_steps: int = 0
     steps_per_loop: int = 0
     validation_steps: int = 0
@@ -327,7 +327,7 @@ class TrainerConfig:
     best_checkpoint_metric_comp: str = "higher"
     max_to_keep: int = 300
     # Gradient accumulation: apply the optimizer once every N micro-batches
-    # (effective batch = global_batch_size × N; 1 = off). The LR schedule and the
+    # (effective batch = global_batch_size x N; 1 = off). The LR schedule and the
     # SGD momentum/bias warmup both advance per optimizer update, so with N>1
     # express them in update units: decay_steps = train_steps // N (validated in
     # run_train) and warmup_steps likewise. Epoch accounting is unaffected.
@@ -353,7 +353,7 @@ class TaskConfig:
     # precedence over init_checkpoint; both are no-ops once the run has its own
     # checkpoints (resume wins).
     finetune_from: Optional[str] = None
-    # Freeze whole modules (trainable=False) — names from {backbone, decoder,
+    # Freeze whole modules (trainable=False); names from {backbone, decoder,
     # head}. Frozen weights stop updating and their BatchNorm runs in inference
     # mode (running stats held). Empty = nothing frozen (default).
     freeze_modules: List[str] = dataclasses.field(default_factory=list)

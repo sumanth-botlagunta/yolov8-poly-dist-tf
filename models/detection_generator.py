@@ -7,9 +7,9 @@ Converts raw head outputs to final detections:
     4. Sigmoid the class logits.
     5. Top-1 class masking (each anchor keeps only its highest-scoring class).
     6. Greedy NMS (score_threshold=0.001, iou_threshold=0.65), either per class
-       or once class-agnostically (``nms_class_mode``).
+       or once class-agnostically (`nms_class_mode`).
     7. Merge survivors, sort by score, keep top-max_boxes.
-    8. Polygon activations: softplus(dist) × stride/img (radial distances train
+    8. Polygon activations: softplus(dist) * stride/img (radial distances train
        in the assigned anchor's grid units), sigmoid(angle), sigmoid(conf).
     9. Distance: exp(log_dist), clamped to [min_distance, max_distance].
 """
@@ -29,11 +29,11 @@ class YoloV8Layer:
 
     Top-1 class masking zeroes all classes except the argmax per anchor;
     score_threshold=0.001 filters boxes before NMS. Suppression scope is set by
-    ``nms_class_mode``:
+    `nms_class_mode`:
 
-    - ``per_class``: NMS independently per class — overlapping boxes with
+    - `per_class`: NMS independently per class; overlapping boxes with
       different argmax classes never suppress each other.
-    - ``agnostic``: one NMS over all boxes; at each location only the
+    - `agnostic`: one NMS over all boxes; at each location only the
       highest-scored box survives, removing cross-class duplicates.
 
     Output predictions schema:
@@ -42,7 +42,7 @@ class YoloV8Layer:
         confidence:     float32 [batch, max_boxes]
         num_detections: int32   [batch]
         polygons:       float32 [batch, max_boxes, 24, 3] (conf,dist,angle) activated
-        distance:       float32 [batch, max_boxes]        metres
+        distance:       float32 [batch, max_boxes]        meters
     """
 
     def __init__(
@@ -58,6 +58,23 @@ class YoloV8Layer:
         min_distance: float = 0.5,
         max_distance: float = 10.0,
     ):
+        """Initializes the post-processing layer.
+
+        Args:
+            input_image_size: Model input size [H, W] in pixels.
+            num_classes: Number of detection classes.
+            max_boxes: Maximum detections kept per image.
+            nms_thresh: NMS IoU threshold.
+            score_thresh: Score threshold applied before NMS.
+            nms_class_mode: 'per_class' or 'agnostic' suppression scope.
+            reg_max: DFL bins per box side.
+            output_poly_size: Number of polygon radial bins.
+            min_distance: Lower distance clamp in meters.
+            max_distance: Upper distance clamp in meters.
+
+        Raises:
+            ValueError: If nms_class_mode is not 'per_class' or 'agnostic'.
+        """
         if nms_class_mode not in ("per_class", "agnostic"):
             raise ValueError(
                 f"nms_class_mode must be 'per_class' or 'agnostic', got "
@@ -74,7 +91,7 @@ class YoloV8Layer:
         self.min_distance     = min_distance
         self.max_distance     = max_distance
 
-        # Bin indices for DFL decoding: [0, 1, ..., reg_max-1]
+        # Bin indices for DFL decoding: [0, 1, ..., reg_max-1].
         self._bins = tf.cast(tf.range(reg_max), tf.float32)   # [reg_max]
 
     # ------------------------------------------------------------------
@@ -84,10 +101,10 @@ class YoloV8Layer:
     def _generate_anchor_grid(
         self, feature_shape: List[int], stride: int
     ) -> tf.Tensor:
-        """Generate anchor center coordinates for a single FPN level.
+        """Generates anchor center coordinates for a single FPN level.
 
         Returns:
-            float32 [H*W, 2]  (cx, cy) in input-image pixels, offset by 0.5
+            float32 [H*W, 2] (cx, cy) in input-image pixels, offset by 0.5.
         """
         H, W = feature_shape[0], feature_shape[1]
         ys = (tf.cast(tf.range(H), tf.float32) + 0.5) * stride   # [H]
@@ -102,12 +119,13 @@ class YoloV8Layer:
     # ------------------------------------------------------------------
 
     def _decode_dfl(self, box_logits: tf.Tensor) -> tf.Tensor:
-        """Convert DFL distribution logits to (l, t, r, b) offsets.
+        """Converts DFL distribution logits to (l, t, r, b) offsets.
 
         Args:
-            box_logits: float32 [B, H, W, 4*reg_max]
+            box_logits: float32 [B, H, W, 4*reg_max].
+
         Returns:
-            float32 [B, H, W, 4]  unnormalized pixel offsets
+            float32 [B, H, W, 4] unnormalized pixel offsets.
         """
         B = tf.shape(box_logits)[0]
         H = tf.shape(box_logits)[1]
@@ -134,11 +152,11 @@ class YoloV8Layer:
 
         Steps:
             1. Top-1 masking: zero out all classes except argmax per anchor.
-            2. NMS with score_threshold=self.score_thresh — per class
-               (``per_class``) or once over all boxes (``agnostic``).
+            2. NMS with score_threshold=self.score_thresh, per class
+               ('per_class') or once over all boxes ('agnostic').
             3. Merge survivors, sort by score, pad to max_boxes.
         """
-        # Top-1 class masking
+        # Top-1 class masking.
         top_class     = tf.argmax(scores, axis=-1)                         # [N]
         one_hot       = tf.one_hot(top_class, self.num_classes, dtype=tf.float32)  # [N, nc]
         scores_masked = scores * one_hot                                    # [N, nc]
@@ -161,7 +179,7 @@ class YoloV8Layer:
             c_pc = [tf.gather(poly_conf,  nms_idx)] if poly_angle is not None else []
             c_di = [tf.gather(distance,   nms_idx)] if distance   is not None else []
         else:
-            # Per-class NMS
+            # Per-class NMS.
             c_boxes, c_scores, c_classes = [], [], []
             c_pa, c_pd, c_pc, c_di = [], [], [], []
 
@@ -183,12 +201,12 @@ class YoloV8Layer:
                 if distance is not None:
                     c_di.append(tf.gather(distance, nms_idx))
 
-            # Merge survivors from all classes
+            # Merge survivors from all classes.
             m_boxes   = tf.concat(c_boxes,   axis=0)   # [?, 4]
             m_scores  = tf.concat(c_scores,  axis=0)   # [?]
             m_classes = tf.concat(c_classes, axis=0)   # [?]
 
-        # Sort by score descending, keep top-max_boxes
+        # Sort by score descending, keep top-max_boxes.
         sort_idx = tf.argsort(m_scores, direction='DESCENDING')
         k   = tf.minimum(tf.shape(m_scores)[0], self.max_boxes)
         top = sort_idx[:k]
@@ -201,7 +219,7 @@ class YoloV8Layer:
         sel_classes = tf.ensure_shape(
             tf.pad(tf.gather(m_classes, top), [[0, pad]]),          [self.max_boxes])
 
-        # Polygon: apply activations to detected boxes, then pad with zeros
+        # Polygon: apply activations to detected boxes, then pad with zeros.
         if poly_angle is not None:
             m_pa = tf.concat(c_pa, axis=0)
             m_pd = tf.concat(c_pd, axis=0)
@@ -209,8 +227,8 @@ class YoloV8Layer:
             sel_pa = tf.ensure_shape(
                 tf.pad(tf.math.sigmoid(tf.gather(m_pa, top)),  [[0, pad], [0, 0]]),
                 [self.max_boxes, self.output_poly_size])
-            # poly_dist arrives already activated (softplus × stride/img at the
-            # per-level flatten) — gather only, no second activation.
+            # poly_dist arrives already activated (softplus * stride/img at the
+            # per-level flatten); gather only, no second activation.
             sel_pd = tf.ensure_shape(
                 tf.pad(tf.gather(m_pd, top), [[0, pad], [0, 0]]),
                 [self.max_boxes, self.output_poly_size])
@@ -222,7 +240,7 @@ class YoloV8Layer:
             sel_pd = tf.zeros([self.max_boxes, self.output_poly_size])
             sel_pc = tf.zeros([self.max_boxes, self.output_poly_size])
 
-        # Distance: exp + clamp, then pad
+        # Distance: exp + clamp, then pad.
         if distance is not None:
             m_di     = tf.concat(c_di, axis=0)
             # Clamp in log space before exp: the head emits log-distance, and large
@@ -250,7 +268,16 @@ class YoloV8Layer:
         raw_outputs: Dict[str, Dict[str, tf.Tensor]],
         image_info: Optional[tf.Tensor] = None,
     ) -> Dict[str, tf.Tensor]:
-        """Decode and NMS the raw head outputs."""
+        """Decodes and NMS-filters the raw head outputs.
+
+        Args:
+            raw_outputs: Nested dict keyed by head name -> level, as emitted by
+                YoloV8Head.
+            image_info: Unused; kept for interface compatibility.
+
+        Returns:
+            Predictions dict (see class docstring for the schema).
+        """
         H_img, W_img = self.input_image_size
         H_f = tf.cast(H_img, tf.float32)
         W_f = tf.cast(W_img, tf.float32)
@@ -276,12 +303,12 @@ class YoloV8Layer:
             fH = tf.shape(box_raw)[1]
             fW = tf.shape(box_raw)[2]
 
-            # Decode DFL offsets (in feature-map pixel units)
+            # Decode DFL offsets (in feature-map pixel units).
             ltrb = self._decode_dfl(box_raw)            # [B, H, W, 4]
-            # Scale to input-image pixel units
+            # Scale to input-image pixel units.
             ltrb_scaled = ltrb * tf.cast(stride, tf.float32)
 
-            # Anchor centres
+            # Anchor centers.
             anchors = self._generate_anchor_grid([fH, fW], stride)  # [H*W, 2] cx,cy
             cx = tf.reshape(anchors[:, 0], [1, -1])    # [1, H*W]
             cy = tf.reshape(anchors[:, 1], [1, -1])    # [1, H*W]
@@ -289,7 +316,7 @@ class YoloV8Layer:
             ltrb_flat = tf.reshape(ltrb_scaled, [B, -1, 4])          # [B, H*W, 4]
             l, t, r, b = (ltrb_flat[..., i] for i in range(4))
 
-            # xyxy → yxyx normalized
+            # xyxy -> yxyx normalized.
             x1 = cx - l;  y1 = cy - t
             x2 = cx + r;  y2 = cy + b
             yxyx = tf.stack([y1 / H_f, x1 / W_f, y2 / H_f, x2 / W_f], axis=-1)  # [B, H*W, 4]
@@ -300,9 +327,9 @@ class YoloV8Layer:
 
             if has_poly:
                 all_poly_angle.append(tf.cast(tf.reshape(raw_outputs["poly_angle"][level], [B, -1, self.output_poly_size]), tf.float32))
-                # Radial distances train in the assigned anchor's GRID units
+                # Radial distances train in the assigned anchor's grid units
                 # (reference convention), so the decode to a normalized-image
-                # radius is softplus(raw) × stride / img. Activated per level
+                # radius is softplus(raw) * stride / img. Activated per level
                 # (stride is constant within a level) so the NMS gather below
                 # carries final values.
                 pd_raw = tf.cast(tf.reshape(raw_outputs["poly_dist"][level], [B, -1, self.output_poly_size]), tf.float32)
@@ -320,7 +347,7 @@ class YoloV8Layer:
         poly_c = tf.concat(all_poly_conf,  axis=1) if has_poly else None
         dist   = tf.concat(all_dist, axis=1)         if has_dist else None
 
-        # Per-image NMS via tf.map_fn
+        # Per-image NMS via tf.map_fn.
         def _map_fn(args):
             b, s = args[0], args[1]
             pa = args[2] if has_poly else None
@@ -364,7 +391,7 @@ class YoloV8Layer:
         poly_out = tf.stack([out_pc, out_pd, out_pa], axis=-1)   # [B, max_boxes, 24, 3]
 
         # Clip final boxes to the image: the DFL decode can place edges beyond the
-        # borders (cx − l < 0 etc.). Clipping after NMS leaves suppression unchanged.
+        # borders (cx - l < 0 etc.). Clipping after NMS leaves suppression unchanged.
         out_boxes = tf.clip_by_value(out_boxes, 0.0, 1.0)
 
         return {

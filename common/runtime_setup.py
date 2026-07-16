@@ -1,11 +1,11 @@
 """Shared runtime setup for offline tools (eval / export).
 
 The offline tools build the same model from the same config as the trainer
-(``train/run_train.py:_apply_runtime_config``), so they must activate the same global
-Keras mixed-precision policy before building it. Otherwise a bfloat16-trained checkpoint
-computes in float32 — a different numerical path than training/serving (the weights
-still restore, since dtypes cast on assign). This helper centralizes that step so every
-tool matches the trainer.
+(train/run_train.py:_apply_runtime_config), so they must activate the same global
+Keras mixed-precision policy before building it. Otherwise a bfloat16-trained
+checkpoint computes in float32, a different numerical path than training/serving
+(the weights still restore, since dtypes cast on assign). This helper centralizes
+that step so every tool matches the trainer.
 
 It sets only the precision policy (the part that affects model numerics); XLA, threading,
 and distribution strategy are trainer-loop concerns irrelevant to single-process offline
@@ -20,14 +20,16 @@ log = logging.getLogger(__name__)
 
 
 def apply_eval_precision_policy(config) -> str:
-    """Set the global Keras mixed-precision policy from ``config.runtime``.
+    """Sets the global Keras mixed-precision policy from config.runtime.
 
     Mirrors the bfloat16/float32 branch of
-    ``train/run_train.py:_apply_runtime_config`` so offline model construction
-    matches the trained checkpoint's compute dtype. Returns the normalized precision
-    string actually applied (for logging/tests). float16 is rejected as the trainer
-    rejects it (no loss scaling); since these tools are inference-only it falls back to
-    the float32 policy with a warning rather than raising.
+    train/run_train.py:_apply_runtime_config so offline model construction
+    matches the trained checkpoint's compute dtype. float16 is rejected as the
+    trainer rejects it (no loss scaling); since these tools are inference-only
+    it falls back to the float32 policy with a warning rather than raising.
+
+    Returns:
+      The normalized precision string actually applied.
     """
     import tensorflow as tf
 

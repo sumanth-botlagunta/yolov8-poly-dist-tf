@@ -1,7 +1,7 @@
 """Stage-by-stage data-pipeline throughput attribution (CPU only, no model).
 
-Builds the training pipeline cumulatively — read, +decode, +copy-paste, +mosaic,
-+parser, +batch, full merged stream — and reports each stage's samples/sec so the
+Builds the training pipeline cumulatively (read, +decode, +copy-paste, +mosaic,
++parser, +batch, full merged stream) and reports each stage's samples/sec so the
 bottleneck is identified directly. Also prints TFDS dataset sizes and stored image
 encodings. Rates only decrease down the table; the first big drop is the
 bottleneck stage.
@@ -36,9 +36,9 @@ def _options(threadpool: int):
 
 
 def _measure(ds, n_elems: int, samples_per_elem, warmup: int = 16) -> float:
-    """Iterate ``warmup`` then ``n_elems`` elements; return samples/sec.
+    """Iterate `warmup` then `n_elems` elements; return samples/sec.
 
-    ``samples_per_elem`` is 1 for unbatched stages, or a callable(elem)->int
+    `samples_per_elem` is 1 for unbatched stages, or a callable(elem)->int
     for batched stages. Eager iteration fully materializes every element.
     """
     it = iter(ds)
@@ -81,7 +81,7 @@ def _print_dataset_info(cfg) -> None:
             print(f"  {name:<35s} {split:<8s} {n:>9,d} examples   image: {enc} {shape}")
             if i < len(names):
                 total_det += n
-        except Exception as e:  # noqa: BLE001 — report and continue
+        except Exception as e:  # noqa: BLE001 - report and continue
             print(f"  {name:<35s} {split:<8s} ERROR: {e}")
     bs = td.global_batch_size
     print(f"  detection total: {total_det:,d}  → steps/epoch at batch {bs}: {total_det // bs}")
@@ -103,7 +103,7 @@ def main() -> None:
                          'on the full merged stream, e.g. "0,13,26"')
     args = ap.parse_args()
 
-    import tensorflow as tf  # noqa: F401 — after sys.path setup
+    import tensorflow as tf  # noqa: F401 - after sys.path setup
     from configs.yaml_loader import load_config
     from data_pipeline.input_reader import build_input_reader_from_config
 
@@ -134,10 +134,10 @@ def main() -> None:
     s1 = base.prefetch(AUTOTUNE).with_options(opts)
     stages.append(("1. read + sample + shuffle (encoded records)", s1, 1, args.samples))
 
-    # NOTE: stage order MUST mirror InputReader._build_detection_dataset —
-    # currently: decode → pre-resize → copy-paste → padded_batch(group_size) → mosaic →
-    # unbatch → shuffle(128) → parser → batch. Keep in sync when the pipeline
-    # changes, or the attribution lies.
+    # NOTE: stage order MUST mirror InputReader._build_detection_dataset,
+    # currently: decode -> pre-resize -> copy-paste -> padded_batch(group_size) ->
+    # mosaic -> unbatch -> shuffle(128) -> parser -> batch. Keep in sync when the
+    # pipeline changes, or the attribution lies.
     s2 = base.map(reader._decoder.decode, num_parallel_calls=AUTOTUNE)
     stages.append(("2. + decode (image bytes → pixels)",
                    s2.prefetch(AUTOTUNE).with_options(opts), 1, args.samples))

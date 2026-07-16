@@ -8,7 +8,7 @@ in-graph NMS) and bakes /255 so the device can feed raw [0, 255] pixels; the
 forward pass runs in float32.
 
 Device contract (input node, then one flat [N, C] tensor per head with the FPN
-levels concatenated 3→4→5, channels-last, batch dim dropped):
+levels concatenated 3->4->5, channels-last, batch dim dropped):
 
     node         shape                dtype    status
     input_image  [1, 672, 416, 3]     float32  pixels in [0, 255] (/255 baked in)
@@ -19,7 +19,7 @@ levels concatenated 3→4→5, channels-last, batch dim dropped):
     poly_conf    [N, 24]  (5733, 24)  float32  raw (pre-sigmoid)
     dist         [N, 1]   (5733, 1)   float32  raw log-distance
 
-N = total anchors over the 3 FPN levels (672×416 → 84·52 + 42·26 + 21·13 = 5733).
+N = total anchors over the 3 FPN levels (672x416 -> 84*52 + 42*26 + 21*13 = 5733).
 Only box is decoded in-graph (the deployed DLC bakes it in); every other head is
 raw, with the on-device YoloV8LayerModified applying sigmoid/softplus/exp and the
 stride/anchor/NMS decode.
@@ -76,26 +76,33 @@ except flags.DuplicateFlagError:
 
 log = logging.getLogger(__name__)
 
-# Output-node order is irrelevant to the extractor (it reads by name), but we
-# keep the canonical head order for readable logs / signature.
+# Output-node order is irrelevant to the extractor (it reads by name); the
+# canonical head order is kept for readable logs / signature.
 _LEVELS = ["3", "4", "5"]
 
 
 def _concat_levels(per_level: dict, channels: int) -> tf.Tensor:
-    """Flatten + concat one head across FPN levels → [B, N, channels].
+    """Flatten and concatenate one head across FPN levels to [B, N, channels].
 
     Mirrors models/detection_generator.py: each level [B,H,W,C] is reshaped to
-    [B, H*W, C] (row-major over H then W) and the levels are concatenated 3→4→5
+    [B, H*W, C] (row-major over H then W) and the levels are concatenated 3->4->5
     on the anchor axis. Channels-last, raw (no activation).
+
+    Args:
+        per_level: Mapping of FPN level name ('3'/'4'/'5') to a [B,H,W,C] tensor.
+        channels: Channel count C of this head.
+
+    Returns:
+        A float32 [B, N, channels] tensor with the levels concatenated.
     """
     parts = []
     for lvl in _LEVELS:
         x = tf.cast(per_level[lvl], tf.float32)
-        # Prefer a FULLY STATIC reshape target. The device export fixes the input
-        # (input_signature [1, H, W, 3] → SNPE --input_dim 1,H,W,3), so each level's
+        # Prefer a fully static reshape target. The device export fixes the input
+        # (input_signature [1, H, W, 3] -> SNPE --input_dim 1,H,W,3), so each level's
         # [1, Hl, Wl, C] shape is known at trace time. A dynamic
-        # ``tf.reshape(x, [tf.shape(x)[0], -1, C])`` would emit Shape→StridedSlice→
-        # Pack→Reshape; the Pack/Shape subgraph is needless friction for the SNPE
+        # `tf.reshape(x, [tf.shape(x)[0], -1, C])` would emit Shape->StridedSlice->
+        # Pack->Reshape; the Pack/Shape subgraph is needless friction for the SNPE
         # converter. With a static shape it is a single clean Reshape. Fall back to
         # the dynamic form only if the spatial dims are unknown (non-export use).
         s = x.shape
@@ -139,7 +146,7 @@ def main(_):
     # Force a clean float32 graph for the SNPE converter. The training
     # mixed_bfloat16 policy (heads pinned float32) is for throughput only; float32
     # restores from the same checkpoint and avoids bf16 ops the SNPE converter
-    # rejects. Do not call common.runtime_setup.apply_eval_precision_policy here —
+    # rejects. Do not call common.runtime_setup.apply_eval_precision_policy here;
     # it re-enables bf16.
     tf.keras.mixed_precision.set_global_policy('float32')
 
@@ -148,12 +155,12 @@ def main(_):
 
     # Re-assert float32 immediately before building the model. load_config (or an
     # earlier import) can leave a mixed_bfloat16 policy active, in which case the
-    # conv stems build in bf16 while the heads stay pinned float32 — the frozen
+    # conv stems build in bf16 while the heads stay pinned float32; the frozen
     # float32 SavedModel would then silently disagree with the bf16 reference.
     _force_float32_policy()
 
     # Build at the device input size. The model is fully convolutional, so a
-    # 672×672-trained checkpoint restores and runs at 672×416 unchanged (the
+    # 672x672-trained checkpoint restores and runs at 672x416 unchanged (the
     # input size the deployed DLC runs at).
     model_cfg.input_size = [H, W, 3]
     poly_size  = model_cfg.output_poly_size
@@ -165,9 +172,9 @@ def main(_):
     t0 = time.time()
     log.info("Building model at %dx%d...", H, W)
     model = build_yolov8(model_cfg)
-    model.deploy = False                 # raw head dict, NOT the NMS/deploy path
+    model.deploy = False                 # raw head dict, not the NMS/deploy path
     # Fixed-size export: use compile-time-constant FPN upsample sizes so the graph has
-    # no Shape→StridedSlice (SNPE-clean). Safe because the export builds/traces at one
+    # no Shape->StridedSlice (SNPE-clean). Safe because the export builds/traces at one
     # size; training/eval keep the dynamic (robust) path. Numerically identical here.
     if getattr(model, 'decoder', None) is not None:
         model.decoder.static_resize = True
@@ -183,8 +190,8 @@ def main(_):
 
     do_norm = FLAGS.normalize
 
-    # Head order → channel count. tf.identity(name=...) tags each output so the op
-    # survives freezing as ``StatefulPartitionedCall/<name>`` and can be promoted to
+    # Head order -> channel count. tf.identity(name=...) tags each output so the op
+    # survives freezing as `StatefulPartitionedCall/<name>` and can be promoted to
     # a clean top-level node below.
     head_chan = [('box', 4 * reg_max), ('cls', n_classes)]
     if with_poly:
@@ -206,12 +213,13 @@ def main(_):
         log.info("legacy_box_order ON — box emitted as [top,left,bottom,right] (y-first) "
                  "to match the on-device box_ops.dist2bbox(ver=1) + (y,x) anchors.")
 
-    # The on-device SNPE pipeline resolves ``--out_node box`` to tensor ``box:0`` and
-    # dumps ``box:0.raw``, so the GraphDef must contain TOP-LEVEL ops literally named
+    # The on-device SNPE pipeline resolves `--out_node box` to tensor `box:0` and
+    # dumps `box:0.raw`, so the GraphDef must contain top-level ops literally named
     # box/cls/poly_*/dist (and input_image). A plain tf.saved_model.save buries them
-    # in a StatefulPartitionedCall and renames the outputs to Identity:0.. — so we
-    # freeze (inline + variables→constants), promote each tagged op to a clean
-    # top-level Identity, and re-emit a v1 SavedModel with those top-level nodes.
+    # in a StatefulPartitionedCall and renames the outputs to Identity:0.., so the
+    # graph is frozen (inline + variables->constants), each tagged op is promoted to
+    # a clean top-level Identity, and a v1 SavedModel is re-emitted with those
+    # top-level nodes.
     t0 = time.time()
     log.info("Freezing + writing the SavedModel (function inlining, variables->constants, "
              "graph optimization — typically the longest phase)...")
@@ -235,23 +243,38 @@ def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16, debug_taps=F
                      legacy_box_order=True):
     """Build the device serving tf.function (deployed-DLC contract).
 
-    Bakes /255 (when ``normalize``), runs the raw (deploy=False) model, concatenates
-    each head across FPN levels 3→4→5 (row-major), and emits one ``tf.identity``-tagged
-    tensor per head named exactly box/cls/poly_*/dist — with the batch dim dropped so
-    shapes are ``[N, C]`` (matching the deployed DLC nodes).
+    Bakes /255 (when `normalize`), runs the raw (deploy=False) model, concatenates
+    each head across FPN levels 3->4->5 (row-major), and emits one `tf.identity`-tagged
+    tensor per head named exactly box/cls/poly_*/dist, with the batch dim dropped so
+    shapes are `[N, C]` (matching the deployed DLC nodes).
 
-    The ``box`` head additionally bakes the DFL "integral" decode the deployed DLC
-    contains: reshape ``[1,N,64]→[1,N,4,16]`` → ``softmax`` over the 16 bins → a 1×1
-    ``conv2d`` with constant weights ``[0,1,…,15]`` (shape [1,1,16,1], bias 0) → reshape
-    ``[N,4]``. So ``box`` is the 4 LTRB distances (pre-stride), NOT the raw [N,64]
-    logits. This is exactly ``distance = Σ softmax(logits)·bin`` and matches
-    ``models/detection_generator.py::_decode_dfl``. cls/poly_*/dist stay RAW — the
+    The `box` head additionally bakes the DFL "integral" decode the deployed DLC
+    contains: reshape `[1,N,64] -> [1,N,4,16]` -> `softmax` over the 16 bins -> a 1x1
+    `conv2d` with constant weights `[0,1,...,15]` (shape [1,1,16,1], bias 0) -> reshape
+    `[N,4]`. So `box` is the 4 LTRB distances (pre-stride), not the raw [N,64]
+    logits. This is exactly `distance = sum(softmax(logits) * bin)` and matches
+    `models/detection_generator.py::_decode_dfl`. cls/poly_*/dist stay raw; the
     on-device YoloV8LayerModified applies sigmoid/softplus/exp and the stride/anchor/NMS
     decode (including box) to them.
+
+    Args:
+        model: Built YOLOv8 model with deploy=False (raw head dict).
+        H: Device input height.
+        W: Device input width.
+        head_chan: List of (head_name, channel_count) pairs to emit.
+        normalize: If True, bake /255 into the graph.
+        reg_max: DFL bin count per box side (16).
+        debug_taps: If True, also emit tap_norm / tap_backbone_* / tap_neck_*.
+        legacy_box_order: If True, emit box as [t,l,b,r] (y-first) for the
+            deployed on-device decoder.
+
+    Returns:
+        A tf.function with input_signature [1, H, W, 3] float32 returning the
+        named head tensors.
     """
     import numpy as np
     N = sum((H // s) * (W // s) for s in (8, 16, 32))
-    # DFL integral weights: a 1×1 conv over the 16-bin axis, filter = bin indices.
+    # DFL integral weights: a 1x1 conv over the 16-bin axis, filter = bin indices.
     bin_w = tf.constant(np.arange(reg_max, dtype=np.float32).reshape(1, 1, reg_max, 1))
 
     @tf.function(input_signature=[
@@ -274,8 +297,8 @@ def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16, debug_taps=F
                 x = tf.reshape(d, [N, 4])                   # [N, 4] [left,top,right,bottom]
                 if legacy_box_order:
                     # Reorder to [top,left,bottom,right] (y-first) so the deployed
-                    # box_ops.dist2bbox(ver=1) — which does anchor(y,x) - lt with NO axis
-                    # reverse — reads each offset on the correct axis. Without this the
+                    # box_ops.dist2bbox(ver=1), which does anchor(y,x) - lt with no axis
+                    # reverse, reads each offset on the correct axis. Without this the
                     # on-device decoder applies the left/right (x) offsets to the y-axis.
                     x = tf.gather(x, [1, 0, 3, 2], axis=1)  # [l,t,r,b] -> [t,l,b,r]
             else:
@@ -283,10 +306,10 @@ def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16, debug_taps=F
             out[n] = tf.identity(x, name=n)
         if debug_taps:
             # Bisection taps along the whole forward path, each flattened to [1, -1].
-            # Compare these SavedModel-vs-DLC node by node: the FIRST tap that diverges
+            # Compare these SavedModel-vs-DLC node by node: the first tap that diverges
             # localizes the break.
             #   tap_norm           = input_image/255 (the tensor actually fed to the model)
-            #   tap_backbone_3/4/5 = backbone P3/P4/P5 (strides 8/16/32) — catches the
+            #   tap_backbone_3/4/5 = backbone P3/P4/P5 (strides 8/16/32); catches a
             #                        SAME-padding / stem issue (and a wrong W shows as a
             #                        different element count here)
             #   tap_neck_3/4/5     = decoder (FPN-PAN) outputs that feed the heads
@@ -305,7 +328,7 @@ def build_serving_fn(model, H, W, head_chan, normalize, reg_max=16, debug_taps=F
     return serving_fn
 
 
-# Inference batch-norm op names — none of these may survive into a graph that is about to
+# Inference batch-norm op names; none of these may survive into a graph that is about to
 # be quantized; each is folded into its preceding Conv2D by _fold_batch_norms below.
 _BN_OPS = ('FusedBatchNormV3', 'FusedBatchNormV2', 'FusedBatchNorm')
 
@@ -314,15 +337,15 @@ def _fold_batch_norms(gd):
     """Fold inference BatchNorm into the preceding Conv2D, in place on a FROZEN GraphDef.
 
     Why: a standalone FusedBatchNormV3 left in the graph makes snpe-tensorflow-to-dlc warn
-    ``can only merge 1 encoding for src op: .../FusedBatchNormV3 .../Conv2D, but found 0`` and
+    `can only merge 1 encoding for src op: .../FusedBatchNormV3 .../Conv2D, but found 0` and
     keeps a separate BN layer. In float that runs exactly; once QUANTIZED, the BN's per-channel
     scale (gamma/sqrt(var+eps)) is forced into one per-tensor int8 activation encoding, crushing
     narrow-range channels and cascading downstream. Folding the scale into the conv's per-channel
-    weights lets SNPE quantize it per-channel correctly — no standalone BN, no bad encoding.
+    weights lets SNPE quantize it per-channel correctly: no standalone BN, no bad encoding.
 
-    Math (BN inference): y = (x - mean) * gamma/sqrt(var+eps) + beta. With ``s = gamma/sqrt(var+eps)``
-    and a preceding ``conv(x) [+ bias]``: fold ``W' = W * s`` (per output channel) and
-    ``bias' = (bias - mean) * s + beta``, then replace BN with a BiasAdd. Numerically identical
+    Math (BN inference): y = (x - mean) * gamma/sqrt(var+eps) + beta. With `s = gamma/sqrt(var+eps)`
+    and a preceding `conv(x) [+ bias]`: fold `W' = W * s` (per output channel) and
+    `bias' = (bias - mean) * s + beta`, then replace BN with a BiasAdd. Numerically identical
     to the original (verified to ~1e-6 on synthetic conv-BN and conv-bias-BN graphs).
 
     Safe by construction: only folds when the conv output feeds ONLY this BN (else scaling the
@@ -368,7 +391,7 @@ def _fold_batch_norms(gd):
             skipped += 1; continue
         allowed = {bn.name} | ({bias_node.name} if bias_node else set())
         if any(c not in allowed for c in consumers.get(conv.name, [])):
-            skipped += 1; continue              # conv feeds something else — folding would corrupt it
+            skipped += 1; continue              # conv feeds something else - folding would corrupt it
         if bias_node and any(c != bn.name for c in consumers.get(bias_node.name, [])):
             skipped += 1; continue
         W, Wn = const_of(conv.input[1]); g, _ = const_of(bn.input[1]); b, _ = const_of(bn.input[2])
@@ -408,7 +431,7 @@ def _fold_batch_norms(gd):
 
 
 def _save_named_savedmodel(serving_fn, head_names, output_dir):
-    """Freeze ``serving_fn``, promote each tagged head op to a clean top-level node
+    """Freeze `serving_fn`, promote each tagged head op to a clean top-level node
     named exactly box/cls/..., and write a v1 SavedModel (SNPE-ready graph)."""
     import shutil
     from tensorflow.python.framework.convert_to_constants import convert_variables_to_constants_v2
@@ -418,7 +441,7 @@ def _save_named_savedmodel(serving_fn, head_names, output_dir):
     gd     = frozen.graph.as_graph_def()
 
     # Fold inference BatchNorm into the preceding conv so the DLC has NO standalone
-    # FusedBatchNormV3 (which quantizes badly — see _fold_batch_norms). Numerically identical.
+    # FusedBatchNormV3 (which quantizes badly; see _fold_batch_norms). Numerically identical.
     gd, folded, skipped = _fold_batch_norms(gd)
     log.info("BatchNorm fold: folded %d BN into conv, skipped %d", folded, skipped)
     remaining = [n.name for n in gd.node if n.op in _BN_OPS]

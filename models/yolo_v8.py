@@ -1,7 +1,7 @@
 """Top-level YOLOv8 model assembling backbone, decoder, head, and generator.
 
-Training  → returns raw head outputs (dict of dicts).
-Inference → passes raw outputs through YoloV8Layer for decoded detections.
+Training:  returns raw head outputs (dict of dicts).
+Inference: passes raw outputs through YoloV8Layer for decoded detections.
 
 The deploy flag (experiment_config: deploy=True) selects the two modes.
 build_yolov8(config) assembles a YoloV8 from a ModelConfig.
@@ -40,6 +40,17 @@ class YoloV8(tf.keras.Model):
         deploy: bool = False,
         **kwargs,
     ):
+        """Initializes the model.
+
+        Args:
+            backbone: Feature extractor producing levels '3', '4', '5'.
+            decoder: FPN-PAN neck.
+            head: Multi-branch prediction head.
+            detection_generator: Post-processing layer; required when deploy=True.
+            deploy: Whether call() returns decoded detections instead of raw
+                head outputs.
+            **kwargs: Passed to tf.keras.Model.
+        """
         super().__init__(**kwargs)
         self.backbone           = backbone
         self.decoder            = decoder

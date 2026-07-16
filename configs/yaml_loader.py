@@ -1,7 +1,7 @@
 """Load experiment configuration from a YAML file into dataclass trees.
 
 The YAML structure mirrors the experiment YAML (configs/experiments/yolo/*.yaml).
-A hand-rolled mapper (NOT dacite) maps the parsed dict onto the typed dataclasses
+A hand-rolled mapper (not dacite) maps the parsed dict onto the typed dataclasses
 defined in configs/model_config.py.
 
 Usage:
@@ -31,8 +31,8 @@ def _warn_unknown_keys(
 ) -> None:
     """Warn (never raise) about keys the loader does not consume in a section.
 
-    The loader pulls keys with ``.get()``, so a typo falls back to the default
-    with no signal; this surfaces such typos. ``ignored`` lists keys that are
+    The loader pulls keys with `.get()`, so a typo falls back to the default
+    with no signal; this surfaces such typos. `ignored` lists keys that are
     intentionally unparsed. Unknown keys outside the sections passed through here
     are silently dropped.
     """
@@ -70,19 +70,25 @@ from configs.model_config import (
 
 
 def load_config(yaml_path: str | Path) -> ExperimentConfig:
-    """Parse *yaml_path* and return a fully-populated ExperimentConfig.
+    """Parse a YAML config file into a fully-populated ExperimentConfig.
 
-    A config may set a top-level ``base: <relative path>`` to inherit from another
+    A config may set a top-level `base: <relative path>` to inherit from another
     config; its own keys are then deep-merged on top (override wins). This lets a
     thin variant (e.g. a bf16 runtime override) reuse a full experiment without
-    duplicating it. ``base`` may itself chain to another ``base``.
+    duplicating it. `base` may itself chain to another `base`.
+
+    Args:
+        yaml_path: Path to the experiment YAML file.
+
+    Returns:
+        The populated ExperimentConfig with derived fields filled in.
     """
     raw = _load_raw(Path(yaml_path))
     return load_config_from_dict(raw)
 
 
 def _load_raw(yaml_path: Path) -> Dict[str, Any]:
-    """Read a YAML file into a dict, resolving an optional ``base:`` include."""
+    """Read a YAML file into a dict, resolving an optional `base:` include."""
     if not yaml_path.exists():
         raise FileNotFoundError(f"Config file not found: {yaml_path}")
     with open(yaml_path) as f:
@@ -95,7 +101,7 @@ def _load_raw(yaml_path: Path) -> Dict[str, Any]:
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
-    """Recursively merge ``override`` onto ``base`` (override wins; dicts merge)."""
+    """Recursively merge `override` onto `base` (override wins; dicts merge)."""
     merged = dict(base)
     for key, val in override.items():
         if isinstance(val, dict) and isinstance(merged.get(key), dict):
@@ -109,8 +115,14 @@ def load_config_from_dict(raw: Dict[str, Any]) -> ExperimentConfig:
     """Convert a raw YAML dict (experiment-YAML layout) to ExperimentConfig.
 
     The experiment YAML has a deeply-nested structure (runtime / task / trainer at
-    the top level).  We extract the task, trainer, and runtime subtrees and map
-    them onto the dataclasses.
+    the top level). The task, trainer, and runtime subtrees are extracted and
+    mapped onto the dataclasses.
+
+    Args:
+        raw: Parsed YAML dict in the experiment-YAML layout.
+
+    Returns:
+        The populated ExperimentConfig with derived fields filled in.
     """
     task_cfg    = _build_task_config(raw.get("task", {}))
     trainer_cfg = _build_trainer_config(raw.get("trainer", {}))
@@ -126,7 +138,7 @@ def _fill_derived_fields(config: ExperimentConfig) -> None:
 
     Derived fields are overwritten every time so they stay consistent when
     batch size or epoch count changes without manually updating the YAML.
-    Checkpoint_interval defaults to one epoch (steps_per_loop) if not set.
+    checkpoint_interval defaults to one epoch (steps_per_loop) if not set.
     """
     t  = config.trainer
     td = config.task.train_data
@@ -146,7 +158,7 @@ def _fill_derived_fields(config: ExperimentConfig) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Private helpers — one per major sub-tree
+# Private helpers, one per major sub-tree.
 # ---------------------------------------------------------------------------
 
 _RUNTIME_KEYS = frozenset({
@@ -477,7 +489,7 @@ def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
     opt_type   = opt_block.get("type", "sgd")
     sgd_raw    = opt_block.get(opt_type, opt_block)
     # `name` is a cosmetic YAML label; `type` selects the nested block one level
-    # up — both are ignored here.
+    # up. Both are ignored here.
     _warn_unknown_keys(sgd_raw, _OPT_PARAM_KEYS, f"optimizer.{opt_type}",
                        ignored=frozenset({"name", "type"}))
     _warn_unknown_keys(lr_raw, _LR_SCHED_KEYS, f"learning_rate.{lr_type}",
