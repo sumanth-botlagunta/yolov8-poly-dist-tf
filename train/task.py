@@ -402,6 +402,7 @@ class YoloV8Task:
             ignore_dontcare=task_cfg.ignore_dontcare,
             ignore_iscrowds=task_cfg.ignore_iscrowds,
             iscrowds_labels=task_cfg.iscrowds_labels,
+            find_best_score_thresh=task_cfg.find_best_score_thresh,
         )
         val_has_distance = getattr(task_cfg.validation_data, 'with_distance', False)
         dist_ev = DistanceEvaluator() if (task_cfg.with_distance and val_has_distance) else None

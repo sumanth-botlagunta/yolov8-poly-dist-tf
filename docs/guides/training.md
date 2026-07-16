@@ -50,7 +50,8 @@ python -m train.run_train \
 
 `train/run_train.py:_validate_config` checks invariants before training starts (e.g.
 `output_poly_size == 360 // angle_step`, mosaic `group_size % decodes_per_output == 0`,
-`rotate_prob ∈ [0,1]`) and **warns** if `learning_rate.decay_steps != train_steps`.
+and — when `parser.rotate` is on — `parser.rotate_degrees` is a positive number) and **warns**
+if `learning_rate.decay_steps != train_steps`.
 
 ## 3. What an epoch is
 

@@ -474,18 +474,37 @@ _LR_SCHED_KEYS = frozenset({
     "initial_learning_rate", "decay_steps", "alpha", "step_size",
     "gamma", "power", "warmup_steps", "warmup_init_lr",
 })
+# Wrapper levels between `trainer` and the leaf param blocks. Warned separately so
+# a typo one level off (e.g. `emaa:` under optimizer_config, or a stray key beside
+# `type`) is surfaced rather than silently dropped to the default.
+_OPT_CONFIG_KEYS = frozenset({"ema", "learning_rate", "optimizer"})
+_EMA_KEYS = frozenset({"average_decay", "dynamic_decay"})
+# The `type` selector picks one nested block; every registered type name is a
+# valid sibling key (only the selected one is read). Keep in sync with
+# optimizers/factory.py OPTIMIZERS / LR_SCHEDULES registries.
+_OPT_WRAPPER_KEYS = frozenset({"sgd", "adamw", "adam"})
+_LR_WRAPPER_KEYS = frozenset({"cosine", "linear", "polynomial", "step", "constant"})
 
 
 def _build_trainer_config(t: Dict[str, Any]) -> TrainerConfig:
     _warn_unknown_keys(t, _TRAINER_KEYS, "trainer")
     opt_raw    = t.get("optimizer_config", {})
+    _warn_unknown_keys(opt_raw, _OPT_CONFIG_KEYS, "optimizer_config")
     ema_raw    = opt_raw.get("ema", {})
+    _warn_unknown_keys(ema_raw, _EMA_KEYS, "optimizer_config.ema")
     # The optimizer/schedule `type` selects which nested param block to read, e.g.
     # `optimizer: {type: adamw, adamw: {...}}`; defaults are 'sgd' / 'cosine'.
     lr_block   = opt_raw.get("learning_rate", {})
+    # Accept both the nested form (a `<type>:` sub-block) and the flat form
+    # (leaf params directly under `learning_rate`); the loader falls back to the
+    # flat form when no `<type>:` block is present.
+    _warn_unknown_keys(lr_block, _LR_WRAPPER_KEYS | _LR_SCHED_KEYS, "learning_rate",
+                       ignored=frozenset({"name", "type"}))
     lr_type    = lr_block.get("type", "cosine")
     lr_raw     = lr_block.get(lr_type, lr_block.get("cosine", lr_block))
     opt_block  = opt_raw.get("optimizer", {})
+    _warn_unknown_keys(opt_block, _OPT_WRAPPER_KEYS | _OPT_PARAM_KEYS, "optimizer",
+                       ignored=frozenset({"name", "type"}))
     opt_type   = opt_block.get("type", "sgd")
     sgd_raw    = opt_block.get(opt_type, opt_block)
     # `name` is a cosmetic YAML label; `type` selects the nested block one level

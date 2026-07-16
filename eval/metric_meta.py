@@ -84,7 +84,7 @@ METRIC_DESCRIPTIONS = {
     # ---- Optimizer / runtime (train/epoch/system) ----
     "lr":                   "**Learning Rate** — current value (cosine decay from 0.01, α=0.01, after linear warmup).",
     "momentum":             "**SGD Momentum** — Nesterov momentum, linearly warmed 0.8 → 0.937.",
-    "ema_decay":            "**EMA Decay** — current weight-averaging decay `min(average_decay, (1+step)/(10+step))` (average_decay=0.9999 by default).",
+    "ema_decay":            "**EMA Decay** — current weight-averaging decay `average_decay·(1 − exp(−step/2000))` (average_decay=0.9999 by default).",
     "step_time_ms":         "**Step Time** (ms) — GPU compute per training step "
                             "(`_compiled_train_step` only; excludes waiting for data).",
     "data_wait_ms":         "**Data Wait** (ms) — time per step spent waiting for the input "

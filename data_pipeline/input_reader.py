@@ -554,6 +554,7 @@ def build_input_reader_from_config(
         decoder = PolygonDecoder(
             max_vertices=parser_cfg.max_vertices,
             num_classes=num_classes,
+            class_remap_json_path=data_cfg.class_remap_json_path,
         )
 
     # Parser: augment + resize images and build fixed-shape label tensors.

@@ -47,14 +47,14 @@ for strides 8/16/32, built inside the loss (`losses/tal_loss.py`) and the detect
 
 ## Detection generator - `models/detection_generator.py`
 Post-processing for inference (`deploy=True`): DFL decode to xyxy boxes, greedy NMS
-(`max_boxes=300`, `nms_thresh=0.65`, `score_thresh=0.05`), and decode of polygon + distance
+(`max_boxes=300`, `nms_thresh=0.65`, `score_thresh=0.001`), and decode of polygon + distance
 outputs. The NMS suppression scope is config-selectable (`detection_generator.nms_class_mode`):
 `per_class` (default) filters each class independently, with no cross-class suppression;
 `agnostic` runs one NMS over all boxes, suppressing cross-class duplicates at the same location.
 This is eval-time post-processing only and has no effect on training. Distance is decoded from
 log scale via `exp` and clipped to `[min_distance, max_distance]` (`[0.5, 10.0]` m).
-Polygon outputs `(conf, dist, angle)` are all sigmoid/softmax-activated; `conf` values are not
-raw logits.
+Polygon outputs are activated per channel: `conf` and `angle` via sigmoid, `dist` via softplus
+(then scaled by `stride/img`). `conf` values are already activated, not raw logits.
 
 ## Polygon representation (PolyYOLO radial)
 24 vertices in 15-degree bins. The distance head predicts the radial distance per bin; the

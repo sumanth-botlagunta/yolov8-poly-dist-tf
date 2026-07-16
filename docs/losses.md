@@ -23,7 +23,7 @@ Pure (stop-gradient) label assignment per the Ultralytics YOLOv8 recipe:
 ## Box loss - `tal_loss.py:_box_loss`
 - CIoU (default): `1 − (IoU − ρ²/c² − α·v)`. The IoU variant is config-selectable via
   `losses.box_iou_type` (`_bbox_iou_loss`): `ciou` (default), `giou`, `diou`, `eiou`, `siou`.
-- DFL: LTRB targets in feature-map units, clipped to `[0, reg_max−1.001]`, floor/ceil
+- DFL: LTRB targets in feature-map units, clipped to `[0, reg_max−1−0.01]` (= 14.99), floor/ceil
   log-softmax interpolation, mean over the 4 sides.
 - The CIoU α (aspect-penalty) coefficient is under stop-gradient: a constant weighting
   term, as in the reference recipe, which computes it under no-grad. Forward values are

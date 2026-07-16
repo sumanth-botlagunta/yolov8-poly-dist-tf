@@ -115,6 +115,7 @@ def evaluate_checkpoint(config, task, ckpt_path: str, split: str = 'val',
         ignore_dontcare=task_cfg.ignore_dontcare,
         ignore_iscrowds=task_cfg.ignore_iscrowds,
         iscrowds_labels=task_cfg.iscrowds_labels,
+        find_best_score_thresh=task_cfg.find_best_score_thresh,
     )
     # Only evaluate distance when the chosen split actually carries distance GT
     # (distance is a training-only stream; gating on the model flag alone would

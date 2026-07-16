@@ -3,14 +3,16 @@
 All three components run on foreground anchors only and normalize by num_objs
 (total GT object count in the batch). A valid vertex is a bin holding a GT
 vertex, supplied as vertex_mask; angle/dist average over the valid count (their
-targets are undefined on empty bins), conf averages over all bins.
+targets are undefined on empty bins), conf sums over all 24 bins and divides by
+that anchor's valid-vertex count.
 
   angle: BCE on the sub-bin angular offset (continuous target in [0, 1)),
     averaged over the valid vertices of each anchor.
   dist: L2 on (target - softplus(pred))^2, averaged over the valid vertices.
-  conf: BCE on per-bin vertex validity, averaged over all 24 bins (occupied
-    -> 1, empty -> 0). Conf is the decode gate, so empty bins need a negative
-    target or their confidence drifts past the 0.4 threshold.
+  conf: BCE on per-bin vertex validity over all 24 bins (occupied -> 1,
+    empty -> 0), summed then divided by the anchor's valid-vertex count. Conf is
+    the decode gate, so empty bins need a negative target or their confidence
+    drifts past the 0.4 threshold.
 """
 
 import tensorflow as tf
