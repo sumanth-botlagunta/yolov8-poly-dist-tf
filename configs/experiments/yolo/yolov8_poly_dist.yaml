@@ -70,10 +70,14 @@ task:
     cls_gain: 0.5
     dfl_gain: 1.5
     dist_gain: 1.0
-    poly_dist_gain: 0.45
+    # Polygon weight held strictly below every detection term (box/cls/dfl) so the
+    # shared backbone is not pulled toward polygon: dist-favoured component gains
+    # with a small poly_gain -> weighted poly ~0.6-0.7 vs box ~0.75 / cls ~0.85 /
+    # dfl ~1.0. Priority: detection > polygon > distance.
+    poly_dist_gain: 2.0
     poly_conf_gain: 0.2
-    poly_angle_gain: 0.4
-    poly_gain: 0.5
+    poly_angle_gain: 0.5
+    poly_gain: 0.05
     tal_alpha: 0.5
     tal_beta: 6.0
     topk: 10
