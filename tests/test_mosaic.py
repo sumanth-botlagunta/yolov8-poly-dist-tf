@@ -926,9 +926,9 @@ if __name__ == "__main__":
 
 
 def test_candidate_filter_legacy_parity():
-    """Legacy-parity candidate filter: mosaic path culls at 0.5 area + 2px
-    sides; single path culls at 0.1 area with NO min_side floor. Aspect
-    ratio < 20 applies on both paths."""
+    """Legacy-parity candidate filter: both the mosaic and single paths cull at
+    0.1 visible area (the reference/legacy value); the mosaic path adds a 2px
+    min_side floor, the single path has none. Aspect ratio < 20 on both."""
     import tensorflow as tf
     from configs.yaml_loader import load_config
     from data_pipeline.augmentations import transform_boxes_polygons
@@ -936,9 +936,9 @@ def test_candidate_filter_legacy_parity():
 
     for tier in ('yolov8_bbox', 'yolov8_poly', 'yolov8_poly_dist'):
         cfg = load_config(f'configs/experiments/yolo/{tier}.yaml')
-        # Legacy split: mosaic tiles cull at 0.5 visible area, non-mosaic
-        # singles at the parser-level 0.1.
-        assert cfg.task.train_data.parser.mosaic.area_thresh == 0.5, tier
+        # Legacy value 0.1 on the mosaic path (clipped/warped visible fraction);
+        # the single path uses the parser-level 0.1 too.
+        assert cfg.task.train_data.parser.mosaic.area_thresh == 0.1, tier
         assert cfg.task.train_data.parser.area_thresh == 0.1, tier
     m = Mosaic([64, 64], area_thresh=0.4, single_area_thresh=0.1)
     assert m._area_thresh == 0.4 and m._single_area_thresh == 0.1

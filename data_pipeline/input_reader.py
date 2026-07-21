@@ -181,21 +181,29 @@ class InputReader:
         """Build the weighted-sampled detection stream (infinite via repeat)."""
         raw_datasets = self._load_tfds_datasets()
 
-        # Repeat each SOURCE before sampling so the sampling weights stay
-        # stationary: sample_from_datasets keeps drawing from the remaining
-        # sources as smaller ones exhaust, so repeating the merged stream would
-        # replay a tail skewed toward the largest source every cycle. The
-        # resulting stream is infinite; epoch length is enforced by the trainer
-        # (steps_per_loop), not by data exhaustion.
-        raw_datasets = [d.repeat() for d in raw_datasets]
-
+        # Sample from the FINITE sources, then repeat the MERGED stream. With the
+        # default stop_on_empty_dataset=False, sample_from_datasets emits every
+        # element of every source exactly once per lap (the weights bias only the
+        # interleave ORDER, not the counts), so one lap = one true pass over all
+        # images at their real proportion; .repeat() then loops that. This matches
+        # the legacy reader (repeat AFTER sample). Repeating each source BEFORE
+        # sampling instead turns the weights into draw FREQUENCIES and over-samples
+        # small sources (a 416-image source at weight 0.02 would be seen ~13x/epoch).
         if len(raw_datasets) == 1:
             ds = raw_datasets[0]
         else:
             weights = self._normalize_weights(self._sampling_weights, len(raw_datasets))
             ds = tf.data.Dataset.sample_from_datasets(
-                raw_datasets, weights=weights, seed=self._seed
+                raw_datasets, weights=weights, seed=self._seed,
+                # Explicit (matches the TF default): emit EVERY element of EVERY
+                # source once per lap, dropping each source as it empties and
+                # continuing until all are empty. stop_on_empty_dataset=True would
+                # instead end the lap when the SMALLEST source empties (~8% of an
+                # epoch here), badly under-covering the largest source. Pinned so a
+                # future TF default flip cannot silently change epoch coverage.
+                stop_on_empty_dataset=False,
             )
+        ds = ds.repeat()   # infinite AFTER sampling: each image once per lap, true proportion
 
         # Detection source shuffle: seed=self._seed (the base seed). The cnp source
         # shuffle uses self._seed+1 and the post-unbatch shuffle uses self._seed+2 so

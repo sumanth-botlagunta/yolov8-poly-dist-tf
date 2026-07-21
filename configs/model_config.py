@@ -166,11 +166,11 @@ class MosaicConfig:
     tile_crop_min: float = 0.0
     tile_crop_max: float = 0.0
     mosaic_crop_mode: str = "scale"
-    # Mosaic-path candidate filter (the legacy mosaic value): a box keeps its
-    # label only if >= this fraction of its area stays visible after the
+    # Mosaic-path candidate filter (0.1, the reference/legacy value): a box keeps
+    # its label only if >= this fraction of its area stays visible after the
     # canvas warp. The single-image path filters at the parser-level
-    # area_thresh (0.1) instead; the two paths are independent.
-    area_thresh: float = 0.5
+    # area_thresh (0.1) too; the two paths are independent.
+    area_thresh: float = 0.1
     jitter: float = 0.0
     # Mosaic image diversity (see data_pipeline/mosaic.py). A group of `group_size`
     # decoded images maps to `group_size // decodes_per_output` outputs; each

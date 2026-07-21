@@ -52,9 +52,9 @@ Configuration (parser.mosaic in the experiment YAML):
     shear: 0.0               (shear +/-, degrees; 0 = no shear)
     perspective: 0.0         (perspective coefficient +/-; 0 disables)
     translate: 0.1           (translation +/- as a fraction of output size)
-    area_thresh: 0.5         (min visible box-area fraction to keep on the
-                              MOSAIC path, the legacy mosaic value; the single
-                              path filters at the parser-level 0.1 instead)
+    area_thresh: 0.1         (min visible box-area fraction to keep on the
+                              MOSAIC path, the reference/legacy value; the single
+                              path filters at the parser-level 0.1 too)
 
 Classes:
     Mosaic: manages both Mosaic and MixUp augmentations.
