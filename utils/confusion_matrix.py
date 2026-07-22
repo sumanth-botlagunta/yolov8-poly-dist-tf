@@ -497,8 +497,8 @@ def _run(FLAGS) -> None:
     # Derive the batch count so the progress bar shows a real bar + %/ETA (the
     # val split is finite; drop_remainder is off, so round up).
     import math
-    n_examples = (task_cfg.train_total_examples if FLAGS.split == 'train'
-                  else task_cfg.validation_total_examples)
+    n_examples = (config.trainer.train_total_examples if FLAGS.split == 'train'
+                  else config.trainer.validation_total_examples)
     bs = int(getattr(data_cfg, 'global_batch_size', 0) or 0)
     total_batches = int(math.ceil(n_examples / bs)) if (n_examples and bs) else None
 
