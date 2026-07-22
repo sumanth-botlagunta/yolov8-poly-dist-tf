@@ -43,10 +43,17 @@ Usage:
 """
 
 import logging
+import os
 
 import numpy as np
 
 log = logging.getLogger(__name__)
+
+
+def _ensure_parent_dir(path: str) -> None:
+    """Create the parent directory of `path` if it does not exist."""
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
 
 # Mirror the project's crowd-policy category ids (eval/coco_metrics.py). Imported
 # so the two stay in lock-step; falls back to a literal if the import path moves.
@@ -248,6 +255,59 @@ class ConfusionMatrix:
         out.sort(key=lambda t: t[2], reverse=True)
         return out[:k]
 
+    def per_class_report(self):
+        """Per-GT-class stats, worst-recall first.
+
+        For each ground-truth class j (column j), reads straight off the matrix:
+          * n_gt   = sum over the column (every GT of class j lands in some row:
+                     a predicted class on a match, or the background row on a miss),
+          * recall = matrix[j, j] / n_gt   (matched AND correctly classified),
+          * miss   = matrix[background, j] / n_gt   (detected as nothing),
+          * top-confusion = the largest off-diagonal, non-background row i for
+                     this column (the class the model most often calls a j), and
+          * fp     = matrix[j, background]   (class-j predictions matching no GT).
+        Classes with no GT in the split are omitted.
+        """
+        bg = self.bg
+        rows = []
+        for j in range(self.num_classes):
+            n_gt = int(self.matrix[:, j].sum())
+            if n_gt == 0:
+                continue
+            best_i, best_c = -1, 0
+            for i in range(self.num_classes):
+                if i != j and self.matrix[i, j] > best_c:
+                    best_c, best_i = int(self.matrix[i, j]), i
+            rows.append({
+                'idx': j, 'name': self._label(j), 'n_gt': n_gt,
+                'recall': int(self.matrix[j, j]) / n_gt,
+                'miss_frac': int(self.matrix[bg, j]) / n_gt,
+                'conf_idx': best_i, 'conf_frac': (best_c / n_gt) if best_i >= 0 else 0.0,
+                'fp': int(self.matrix[j, bg]),
+            })
+        rows.sort(key=lambda r: r['recall'])
+        return rows
+
+    def format_per_class(self, max_name: int = 16) -> str:
+        """Readable per-class table (the terminal headline; the full grid is in the CSV/PNG)."""
+        rows = self.per_class_report()
+        lines = [
+            f'Per-class detection report   conf>={self.conf_thresh:.2f}  iou>={self.iou_thresh:.2f}'
+            '   (sorted: worst recall first)',
+            f'  {"class":<{max_name}} {"n_gt":>6} {"recall":>7} {"miss→bg":>8}   '
+            f'{"most-confused-with":<{max_name}} {"":>5} {"FP":>6}',
+        ]
+        for r in rows:
+            if r['conf_idx'] >= 0:
+                conf = f'{self._label(r["conf_idx"])[:max_name]:<{max_name}} {r["conf_frac"]*100:>4.0f}%'
+            else:
+                conf = f'{"-":<{max_name}} {"":>5}'
+            lines.append(
+                f'  {r["name"][:max_name]:<{max_name}} {r["n_gt"]:>6} '
+                f'{r["recall"]*100:>6.1f}% {r["miss_frac"]*100:>7.1f}%   {conf} {r["fp"]:>6}'
+            )
+        return '\n'.join(lines)
+
     def format_table(self, max_name: int = 14, top: int = 20) -> str:
         """Render a row-normalized (%) table plus a top-confusions summary."""
         n = self.num_classes + 1
@@ -285,6 +345,7 @@ class ConfusionMatrix:
 
     def save_csv(self, path: str) -> None:
         """Write the raw integer matrix with a labeled header row/column."""
+        _ensure_parent_dir(path)
         n = self.num_classes + 1
         header = ['pred\\gt'] + [self._label(j) for j in range(n)]
         rows = [header]
@@ -303,12 +364,15 @@ class ConfusionMatrix:
             log.warning('matplotlib unavailable (%s); skipping --output_png', e)
             return False
 
+        _ensure_parent_dir(path)
         n = self.num_classes + 1
         row_sums = self.matrix.sum(axis=1, keepdims=True)
         norm = np.where(row_sums > 0, self.matrix / np.maximum(row_sums, 1), 0.0)
         labels = [self._label(j) for j in range(n)]
 
-        fig, ax = plt.subplots(figsize=(max(8, n * 0.4), max(7, n * 0.4)))
+        # Scale the figure and annotation font with class count so cells stay legible.
+        cell = max(0.38, min(0.6, 22.0 / n))
+        fig, ax = plt.subplots(figsize=(max(9, n * cell + 3), max(8, n * cell + 2)))
         im = ax.imshow(norm, cmap='Blues', vmin=0.0, vmax=1.0)
         ax.set_xlabel('ground truth')
         ax.set_ylabel('predicted')
@@ -316,6 +380,19 @@ class ConfusionMatrix:
         ax.set_yticks(range(n))
         ax.set_xticklabels(labels, rotation=90, fontsize=6)
         ax.set_yticklabels(labels, fontsize=6)
+
+        # Annotate each non-trivial cell with the row-normalized percentage so the
+        # heat map carries numbers, not just colour. Zeros and <1% are left blank to
+        # cut clutter; text flips to white on dark (high) cells for contrast.
+        ann_fs = max(3.0, min(7.0, 26.0 / n))
+        for i in range(n):
+            for j in range(n):
+                v = norm[i, j]
+                if v < 0.01:
+                    continue
+                ax.text(j, i, f'{v*100:.0f}', ha='center', va='center',
+                        fontsize=ann_fs, color=('white' if v > 0.5 else 'black'))
+
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         fig.tight_layout()
         fig.savefig(path, dpi=150)
@@ -417,7 +494,15 @@ def _run(FLAGS) -> None:
         iscrowds_labels=task_cfg.iscrowds_labels,
     )
 
-    pbar = Progress(total=None, desc='Confusion', unit='batch')
+    # Derive the batch count so the progress bar shows a real bar + %/ETA (the
+    # val split is finite; drop_remainder is off, so round up).
+    import math
+    n_examples = (task_cfg.train_total_examples if FLAGS.split == 'train'
+                  else task_cfg.validation_total_examples)
+    bs = int(getattr(data_cfg, 'global_batch_size', 0) or 0)
+    total_batches = int(math.ceil(n_examples / bs)) if (n_examples and bs) else None
+
+    pbar = Progress(total=total_batches, desc='Confusion', unit='batch')
     for images, labels in val_ds:
         preds = predict(images)
         B = int(preds['num_detections'].shape[0])
@@ -438,8 +523,16 @@ def _run(FLAGS) -> None:
         pbar.update(1)
     pbar.close()
 
+    # Headline: the readable per-class report + top confusions. The full 41x41
+    # grid is unreadable in a terminal, so it goes to the CSV/PNG instead (a
+    # numbered heat map), not stdout.
     print()
-    print(cm.format_table(top=FLAGS.top))
+    print(cm.format_per_class())
+    print()
+    confs = cm.top_confusions(FLAGS.top)
+    print(f'Top {len(confs)} raw confusions  (predicted <- ground_truth : count):')
+    for pred_l, gt_l, cnt in confs:
+        print(f'  {pred_l:<18} <- {gt_l:<18} {cnt}')
 
     if FLAGS.output_csv:
         cm.save_csv(FLAGS.output_csv)
