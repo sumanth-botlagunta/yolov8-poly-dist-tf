@@ -74,17 +74,18 @@ class _ConvBnAct(tf.keras.layers.Layer):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        # Stride>1 convs use explicit ZeroPadding2D + 'valid' instead of 'same'. TF
-        # 'same' pads a stride-2 conv asymmetrically (k=3 on even input -> 0 before,
-        # 1 after), which the Qualcomm SNPE converter mishandles; an explicit Pad node
-        # converts correctly and is byte-identical to 'same' for the model's even,
-        # /32-divisible input sizes. Stride-1 'same' is symmetric and left unchanged.
+        # Stride>1 convs use explicit SYMMETRIC ZeroPadding2D + 'valid' (PyTorch /
+        # Ultralytics autopad: k//2 on every side, e.g. k=3 -> (1,1)). This is the
+        # convention the warm-start checkpoint and the legacy detector were trained
+        # under, so the downsampled feature lattice stays aligned with the loaded
+        # weights. Applied uniformly for training, eval, AND export (no train/export
+        # split), so the on-device model matches the trained model exactly. TF 'same'
+        # would pad a stride-2 conv asymmetrically ((0,1) for k=3) and shift the
+        # lattice by one pixel per downsample. Stride-1 'same' is already symmetric.
         self._pad = None
         if strides > 1 and kernel_size > 1:
-            total = max(kernel_size - strides, 0)          # TF SAME total pad
-            before = total // 2
-            after = total - before                          # k=3,s=2 -> (0, 1)
-            self._pad = tf.keras.layers.ZeroPadding2D(((before, after), (before, after)))
+            p = kernel_size // 2                             # symmetric autopad (k=3 -> 1)
+            self._pad = tf.keras.layers.ZeroPadding2D(((p, p), (p, p)))
         self.conv = tf.keras.layers.Conv2D(
             filters,
             kernel_size,

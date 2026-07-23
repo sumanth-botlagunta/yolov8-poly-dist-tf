@@ -69,6 +69,7 @@ import tensorflow as tf
 from data_pipeline.augmentations import (
     apply_perspective_image,
     letterbox_geometry,
+    letterbox_resize,
     make_perspective_matrix,
     random_horizontal_flip,
     random_perspective,
@@ -588,10 +589,11 @@ class Mosaic:
             scale_max=self._single_scale_max,
             translate=self._single_translate,
             area_thresh=self._single_area_thresh,
-            # Legacy convention: the ~2px min_side floor applies on the mosaic
-            # branch only; non-mosaic images keep sub-2px objects' labels. A
-            # fully warped-out box still drops via the zero-area ratio term.
-            min_side=0.0,
+            # Legacy applies the ~2px min-side floor UNIFORMLY on both the mosaic
+            # and non-mosaic paths (boxes_candidates wh_thr=2 at both call sites),
+            # so the single path drops sub-2px boxes too. A fully warped-out box
+            # also drops via the zero-area ratio term.
+            min_side=0.003,
         )
         anns = self._filtered_anns(ex, boxes_out, polys_out, keep)
         anns['image']  = img_out
@@ -782,6 +784,137 @@ class Mosaic:
     # ------------------------------------------------------------------
 
     def _mosaic(
+        self,
+        one:   Dict[str, tf.Tensor],
+        two:   Dict[str, tf.Tensor],
+        three: Dict[str, tf.Tensor],
+        four:  Dict[str, tf.Tensor],
+    ) -> Dict[str, tf.Tensor]:
+        """Assemble a mosaic via the configured mode (``mosaic_crop_mode``).
+
+        ``scale`` (the legacy/reference mode): 4 full-letterbox tiles on a fixed
+        2x grid, whole-canvas pan by ``mosaic_center``, one warp -> output; every
+        object keeps its natural letterboxed scale. ``crop``: a random split point
+        sizes variable cells, so per-tile scale/crop vary. Both end in one
+        canvas->output warp with identical label handling.
+        """
+        if self._crop_mode == "scale":
+            return self._mosaic_scale(one, two, three, four)
+        return self._mosaic_crop(one, two, three, four)
+
+    def _mosaic_scale(
+        self,
+        one:   Dict[str, tf.Tensor],
+        two:   Dict[str, tf.Tensor],
+        three: Dict[str, tf.Tensor],
+        four:  Dict[str, tf.Tensor],
+    ) -> Dict[str, tf.Tensor]:
+        """Legacy 'scale'-mode mosaic: fixed 2x grid of full-letterbox tiles.
+
+        Each tile's content is letterboxed to the FULL output size (aspect
+        preserved, gray-114 pad) and placed in a fixed quadrant, so every tile is
+        exactly 1/4 of the 2x canvas and every object keeps its natural scale.
+        ``mosaic_center`` pans the whole assembled canvas; it is folded into the
+        single canvas->output warp as an input-space (canvas-px) translation
+        ``Tpan`` so image and labels move identically (legacy pans the image then
+        warps -- geometrically identical to the fold, and keeps the one-warp path).
+        The warp's ``[aug_scale_min, aug_scale_max]`` gain + crop window select the
+        visible region. Matches legacy ``claude_ops_mosaic._mosaic_crop_image``
+        (non-'crop' branch): 4 full 672 tiles, fixed midline, whole-canvas pan.
+        """
+        H, W = self._H, self._W
+        H2 = tf.constant(2 * H, tf.int32)
+        W2 = tf.constant(2 * W, tf.int32)
+
+        # Per-tile content (slice -> copy-paste -> flip -> tile-crop), then
+        # re-letterbox each to the FULL output size (a complete tile, 1/4 canvas).
+        examples = [self._prepare_tile(ex) for ex in (one, two, three, four)]
+
+        tiles = []
+        boxes_list, polys_list = [], []
+        # Fixed quadrant pixel offsets on the 2x canvas: TL, TR, BL, BR.
+        quads = [(0, 0), (0, W), (H, 0), (H, W)]
+        for ex, (off_y, off_x) in zip(examples, quads):
+            img_lb, boxes_lb, polys_lb = letterbox_resize(
+                ex['image'],
+                ex.get('groundtruth_boxes', tf.zeros([0, 4])),
+                ex.get('groundtruth_polygons', tf.zeros([0, 2])),
+                H, W,
+            )
+            tiles.append(img_lb)
+            ex_lb = dict(ex)
+            ex_lb['groundtruth_boxes'] = boxes_lb
+            ex_lb['groundtruth_polygons'] = polys_lb
+            # Map full-tile (H x W-normalized) GT into the fixed quadrant:
+            # canvas_norm = (coord * tile_dim + quad_off) / canvas_dim.
+            b_c, p_c = _scale_box_poly_to_canvas(ex_lb, H, W, off_y, off_x, H2, W2)
+            boxes_list.append(b_c)
+            polys_list.append(p_c)
+
+        # Assemble the fixed 2x grid (each tile exactly H x W).
+        top_row = tf.concat([tiles[0], tiles[1]], axis=1)   # [H,  2W]
+        bot_row = tf.concat([tiles[2], tiles[3]], axis=1)   # [H,  2W]
+        canvas  = tf.concat([top_row, bot_row], axis=0)     # [2H, 2W]
+
+        boxes_all = tf.concat(boxes_list, axis=0)
+        polys_all = tf.concat(polys_list, axis=0)
+
+        # Canvas->output warp: centered crop + [aug_scale_min,max] gain + translate,
+        # no rotation. Fold the mosaic_center whole-canvas pan in as an input-space
+        # (canvas-px) translation so one warp moves image and labels together.
+        M = make_perspective_matrix(
+            h_in=H2, w_in=W2,
+            target_h=H, target_w=W,
+            degrees=0.0,
+            translate=self._translate,
+            scale_min=self._scale_min,
+            scale_max=self._scale_max,
+            shear=self._shear,
+            perspective=self._perspective,
+            rotate_prob=0.0,
+        )
+        # pan ~ U(-center, center) * canvas_dim, matching legacy
+        # center = shape * mosaic_center; U(-center, center) (symmetric, so sign
+        # is immaterial as long as image and labels share the same Tpan).
+        pan_y = tf.random.uniform([], -self._center, self._center) * tf.cast(H2, tf.float32)
+        pan_x = tf.random.uniform([], -self._center, self._center) * tf.cast(W2, tf.float32)
+        Tpan = tf.reshape(tf.stack([
+            1.0, 0.0, pan_x,
+            0.0, 1.0, pan_y,
+            0.0, 0.0, 1.0,
+        ]), [3, 3])
+        M = M @ Tpan
+
+        image = apply_perspective_image(canvas, M, H, W)
+        boxes_out, keep, polys_out = transform_boxes_polygons(
+            boxes_all, polys_all, M,
+            h_in=H2, w_in=W2,
+            target_h=H, target_w=W,
+            area_thresh=self._area_thresh, min_side=0.003,
+        )
+
+        # Concatenate per-box side tensors across the 4 examples (same order as
+        # boxes_all), then filter by the warp keep mask.
+        def _cat(key, default, dtype):
+            return tf.concat(
+                [tf.cast(ex.get(key, tf.zeros([0], dtype)), dtype) for ex in examples],
+                axis=0,
+            )
+        merged_src = {
+            'groundtruth_classes':  _cat('groundtruth_classes',  0, tf.int64),
+            'groundtruth_is_crowd': _cat('groundtruth_is_crowd', False, tf.bool),
+            'groundtruth_area':     _cat('groundtruth_area',     0.0, tf.float32),
+            'groundtruth_dontcare': _cat('groundtruth_dontcare', 0, tf.int64),
+            'groundtruth_dists':    _cat('groundtruth_dists',    0.0, tf.float32),
+            'source_id':            one.get('source_id', tf.constant('mosaic')),
+        }
+        anns = self._filtered_anns(merged_src, boxes_out, polys_out, keep)
+        anns['image']  = image
+        anns['height'] = tf.constant(H, tf.int32)
+        anns['width']  = tf.constant(W, tf.int32)
+        return anns
+
+    def _mosaic_crop(
         self,
         one:   Dict[str, tf.Tensor],
         two:   Dict[str, tf.Tensor],

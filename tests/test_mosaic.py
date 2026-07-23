@@ -926,19 +926,21 @@ if __name__ == "__main__":
 
 
 def test_candidate_filter_legacy_parity():
-    """Legacy-parity candidate filter: both the mosaic and single paths cull at
-    0.1 visible area (the reference/legacy value); the mosaic path adds a 2px
-    min_side floor, the single path has none. Aspect ratio < 20 on both."""
+    """Legacy-parity candidate filter: the poly_dist mosaic path culls at 0.5
+    visible area (the legacy value); the single path uses the parser-level 0.1;
+    BOTH paths apply the ~2px min_side floor uniformly (legacy boxes_candidates
+    wh_thr=2). Aspect ratio < 20 on both."""
     import tensorflow as tf
     from configs.yaml_loader import load_config
     from data_pipeline.augmentations import transform_boxes_polygons
     from data_pipeline.mosaic import Mosaic
 
+    # poly_dist restores the legacy 0.5 mosaic value; bbox/poly are separate
+    # experiments left at 0.1. The parser-level area_thresh stays 0.1 on all.
+    expected_mosaic = {'yolov8_bbox': 0.1, 'yolov8_poly': 0.1, 'yolov8_poly_dist': 0.5}
     for tier in ('yolov8_bbox', 'yolov8_poly', 'yolov8_poly_dist'):
         cfg = load_config(f'configs/experiments/yolo/{tier}.yaml')
-        # Legacy value 0.1 on the mosaic path (clipped/warped visible fraction);
-        # the single path uses the parser-level 0.1 too.
-        assert cfg.task.train_data.parser.mosaic.area_thresh == 0.1, tier
+        assert cfg.task.train_data.parser.mosaic.area_thresh == expected_mosaic[tier], tier
         assert cfg.task.train_data.parser.area_thresh == 0.1, tier
     m = Mosaic([64, 64], area_thresh=0.4, single_area_thresh=0.1)
     assert m._area_thresh == 0.4 and m._single_area_thresh == 0.1
@@ -965,39 +967,51 @@ def test_candidate_filter_legacy_parity():
     _, keep_2px, _ = transform_boxes_polygons(ok2px, tf.fill([1, 8], -1.0),
                                               M, 672, 672, 672, 672)
     assert bool(keep_2px[0]), "a ~2.4px box must survive the 2px mosaic floor"
-    # min_side floor is mosaic-only: at min_side=0.0 (the single path) a sub-2px
-    # box keeps its label.
+    # The ~2px min_side floor applies UNIFORMLY (legacy): both geometric paths
+    # pass min_side=0.003, so a sub-2px box drops. Only the explicit min_side=0.0
+    # (used for the parser's zero-row cleanup, not either warp) would keep it.
     tiny = tf.constant([[0.10, 0.10, 0.1015, 0.1015]], tf.float32)  # ~1px at 672
-    _, keep_tiny_mosaic, _ = transform_boxes_polygons(
-        tiny, tf.fill([1, 8], -1.0), M, 672, 672, 672, 672)
-    assert not bool(keep_tiny_mosaic[0]), "sub-2px box drops on the mosaic path"
-    _, keep_tiny_single, _ = transform_boxes_polygons(
+    _, keep_tiny_floor, _ = transform_boxes_polygons(
+        tiny, tf.fill([1, 8], -1.0), M, 672, 672, 672, 672)   # default 0.003
+    assert not bool(keep_tiny_floor[0]), "sub-2px box drops at the 2px floor"
+    _, keep_tiny_nofloor, _ = transform_boxes_polygons(
         tiny, tf.fill([1, 8], -1.0), M, 672, 672, 672, 672, min_side=0.0)
-    assert bool(keep_tiny_single[0]), "sub-2px box survives the single path"
+    assert bool(keep_tiny_nofloor[0]), "at min_side=0.0 the sub-2px box survives"
 
 
-def test_single_path_keeps_sub2px_box_and_parser_drops_zero_rows():
-    """The non-mosaic single path applies no min_side floor (legacy), while the
-    parser's clip_boxes still drops the mosaic stage's zero-padding rows."""
+def test_single_path_drops_sub2px_box_and_parser_drops_zero_rows():
+    """The non-mosaic single path applies the ~2px min-side floor uniformly with
+    the mosaic path (legacy boxes_candidates wh_thr=2), so a sub-2px box drops; a
+    box above 2px keeps its label. The parser's own clip_boxes still runs at
+    min_side=0.0 to strip only the mosaic stage's zero-padding rows."""
     import tensorflow as tf
     from data_pipeline.augmentations import clip_boxes
     from data_pipeline.mosaic import Mosaic
 
-    # Identity-warp single path (scale 1, translate 0): a ~1px box survives.
+    # Identity-warp single path (scale 1, translate 0).
     m = Mosaic([672, 672], mosaic_frequency=0.0,
                single_scale_min=1.0, single_scale_max=1.0, single_translate=0.0,
                single_area_thresh=0.1)
-    ex = {
+    base = {
         'image': tf.zeros([672, 672, 3], tf.uint8),
-        'groundtruth_boxes': tf.constant([[0.10, 0.10, 0.1015, 0.1015]], tf.float32),
         'groundtruth_polygons': tf.fill([1, 8], -1.0),
         'groundtruth_classes': tf.constant([1], tf.int64),
         'height': tf.constant(672, tf.int32),
         'width': tf.constant(672, tf.int32),
     }
-    out = m._single(ex)
-    assert int(tf.shape(out['groundtruth_boxes'])[0]) == 1, (
-        "sub-2px box must keep its label on the single path")
+    tiny = dict(base)
+    tiny['groundtruth_boxes'] = tf.constant(
+        [[0.10, 0.10, 0.1015, 0.1015]], tf.float32)  # ~1px at 672
+    out_tiny = m._single(tiny)
+    assert int(tf.shape(out_tiny['groundtruth_boxes'])[0]) == 0, (
+        "sub-2px box must drop on the single path (uniform 2px floor)")
+
+    ok = dict(base)
+    ok['groundtruth_boxes'] = tf.constant(
+        [[0.10, 0.10, 0.1060, 0.1060]], tf.float32)   # ~4px at 672
+    out_ok = m._single(ok)
+    assert int(tf.shape(out_ok['groundtruth_boxes'])[0]) == 1, (
+        "a >2px box must keep its label on the single path")
 
     # clip_boxes at min_side=0.0 (the parser call): zero rows drop, 1px boxes stay.
     boxes = tf.constant([
@@ -1006,3 +1020,88 @@ def test_single_path_keeps_sub2px_box_and_parser_drops_zero_rows():
     ], tf.float32)
     _, keep = clip_boxes(boxes, min_side=0.0)
     assert not bool(keep[0]) and bool(keep[1])
+
+
+def test_mosaic_scale_mode_places_tiles_in_correct_quadrants():
+    """Legacy 'scale' mode: 4 full-letterbox tiles on a fixed 2x grid, then one
+    centered crop. With mosaic_center=0 (no pan), scale=1, translate=0, the output
+    is the center HxW window of the 2H x 2W canvas, so each solid-color tile shows
+    in its own output quadrant (TL/TR/BL/BR preserved)."""
+    import numpy as np
+    import tensorflow as tf
+    from data_pipeline.mosaic import Mosaic
+
+    H = W = 64
+    # Lenient area_thresh so a tile-center box (which lands at the center-crop
+    # boundary, ~25% visible) still survives, exercising the label path.
+    m = Mosaic([H, W], mosaic_crop_mode='scale', mosaic_center=0.0,
+               aug_scale_min=1.0, aug_scale_max=1.0, translate=0.0,
+               area_thresh=0.05, shear=0.0, perspective=0.0, random_flip=False)
+
+    colors = {  # (R,G,B) per quadrant
+        'TL': (200, 0, 0), 'TR': (0, 200, 0),
+        'BL': (0, 0, 200), 'BR': (200, 200, 0),
+    }
+
+    def _tile(rgb):
+        img = tf.constant(np.tile(np.array(rgb, np.uint8), (H, W, 1)))
+        return {
+            'image': img,
+            'groundtruth_boxes': tf.constant([[0.4, 0.4, 0.6, 0.6]], tf.float32),
+            'groundtruth_polygons': tf.fill([1, 8], -1.0),
+            'groundtruth_classes': tf.constant([1], tf.int64),
+            'groundtruth_is_crowd': tf.constant([False], tf.bool),
+            'groundtruth_area': tf.constant([0.04], tf.float32),
+            'groundtruth_dontcare': tf.constant([0], tf.int64),
+            'groundtruth_dists': tf.constant([-10.0], tf.float32),
+            'height': tf.constant(H, tf.int32),
+            'width': tf.constant(W, tf.int32),
+        }
+
+    out = m._mosaic(_tile(colors['TL']), _tile(colors['TR']),
+                    _tile(colors['BL']), _tile(colors['BR']))
+
+    img = out['image'].numpy()
+    assert img.shape == (H, W, 3)
+    # Sample the interior of each output quadrant; argmax channel identifies which
+    # source tile landed there (R=TL, G=TR, B=BL, Y=BR -> R&G).
+    def _chan(y, x):
+        return int(np.argmax(img[y, x].astype(np.int32)))
+    assert _chan(H // 4, W // 4) == 0, "output TL quadrant should be the red tile"
+    assert _chan(H // 4, 3 * W // 4) == 1, "output TR quadrant should be the green tile"
+    assert _chan(3 * H // 4, W // 4) == 2, "output BL quadrant should be the blue tile"
+    # BR tile is yellow (R and G high); assert it is NOT blue-dominant.
+    assert _chan(3 * H // 4, 3 * W // 4) != 2, "output BR quadrant should be the yellow tile"
+
+    # Labels stay within [0, 1] and at least one box survives the center crop.
+    b = out['groundtruth_boxes'].numpy()
+    assert b.shape[0] >= 1
+    assert np.all(b >= -1e-6) and np.all(b <= 1.0 + 1e-6)
+
+
+def test_mosaic_mode_dispatch_runs_both():
+    """Both 'scale' and 'crop' modes assemble a valid mosaic of the output size."""
+    import tensorflow as tf
+    from data_pipeline.mosaic import Mosaic
+
+    H = W = 64
+
+    def _tile():
+        return {
+            'image': tf.zeros([H, W, 3], tf.uint8),
+            'groundtruth_boxes': tf.constant([[0.3, 0.3, 0.7, 0.7]], tf.float32),
+            'groundtruth_polygons': tf.fill([1, 8], -1.0),
+            'groundtruth_classes': tf.constant([1], tf.int64),
+            'groundtruth_is_crowd': tf.constant([False], tf.bool),
+            'groundtruth_area': tf.constant([0.16], tf.float32),
+            'groundtruth_dontcare': tf.constant([0], tf.int64),
+            'groundtruth_dists': tf.constant([-10.0], tf.float32),
+            'height': tf.constant(H, tf.int32),
+            'width': tf.constant(W, tf.int32),
+        }
+
+    for mode in ('scale', 'crop'):
+        m = Mosaic([H, W], mosaic_crop_mode=mode, aug_scale_min=1.0, aug_scale_max=1.0)
+        out = m._mosaic(_tile(), _tile(), _tile(), _tile())
+        assert tuple(out['image'].shape) == (H, W, 3), mode
+        assert int(out['height']) == H and int(out['width']) == W, mode

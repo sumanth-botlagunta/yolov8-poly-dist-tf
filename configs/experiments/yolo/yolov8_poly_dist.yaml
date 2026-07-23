@@ -153,12 +153,15 @@ task:
         # whole-canvas warp.
         tile_crop_min: 0.0
         tile_crop_max: 0.0
+        # scale = legacy mode: 4 full-letterbox tiles on a fixed 2x grid, whole-
+        # canvas pan by mosaic_center, one warp->output (every object keeps its
+        # natural scale). crop = variable cells from a random split point.
         mosaic_crop_mode: scale
-        # Mosaic-path candidate filter (reference/legacy value 0.1): a box keeps
-        # its label only if >= 10% of its area stays visible after the canvas warp
+        # Mosaic-path candidate filter (legacy value 0.5): a box keeps its label
+        # only if >= 50% of its area stays visible after the canvas warp
         # (clipped/warped ratio, scale-invariant). The single-image path uses the
         # parser-level area_thresh (0.1) wired via single_area_thresh.
-        area_thresh: 0.1
+        area_thresh: 0.5
         jitter: 0.0
         group_size: 32
         # R=1: each decoded image recurs in 4 outputs of its group (Sidon-shift
@@ -168,9 +171,10 @@ task:
         # disperses recurrences ~24 batches apart so same-batch reuse is rare.
         decodes_per_output: 1
         # Mosaic-path affine knobs (the single path uses the parser-level values).
-        # The mosaic path never rotates (wired to 0 in code); translate 0, shear 0.
+        # The mosaic path never rotates (wired to 0 in code); shear 0; the
+        # canvas->output warp translate matches legacy (0.1).
         shear: 0.0
-        translate: 0.0
+        translate: 0.1
     distance_data:
       tfds_name: "servingbot_polygon:1.0.1"
       tfds_split: train

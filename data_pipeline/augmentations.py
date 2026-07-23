@@ -142,8 +142,21 @@ def letterbox_resize(
         tf.shape(image)[0], tf.shape(image)[1], out_h, out_w
     )
 
+    # Downscale with AREA (anti-aliased) to match the legacy letterbox, which
+    # AREA-downsamples before its final resize; plain bilinear aliases on the large
+    # downscales the production (>672) images require, disproportionately harming
+    # small / fine-textured objects. Upscale / same-size stays bilinear. This is the
+    # single letterbox shared by the eval parser and the mosaic-stage pre-resize.
+    in_h = tf.shape(image)[0]
+    in_w = tf.shape(image)[1]
+    img_f = tf.cast(image, tf.float32)
+    downscale = tf.logical_or(new_h < in_h, new_w < in_w)
     image = tf.cast(
-        tf.image.resize(tf.cast(image, tf.float32), [new_h, new_w], method='bilinear'),
+        tf.cond(
+            downscale,
+            lambda: tf.image.resize(img_f, [new_h, new_w], method='area'),
+            lambda: tf.image.resize(img_f, [new_h, new_w], method='bilinear'),
+        ),
         tf.uint8,
     )
     pad_bottom = out_h - new_h - pad_top
