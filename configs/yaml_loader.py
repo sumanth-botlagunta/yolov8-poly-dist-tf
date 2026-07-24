@@ -180,7 +180,25 @@ def _build_runtime_config(r: Dict[str, Any]) -> RuntimeConfig:
     )
 
 
+_TASK_KEYS = frozenset({
+    "model", "losses", "train_data", "validation_data", "norm_activation",
+    "finetune_from", "freeze_modules", "freeze_backbone_layers",
+    "init_checkpoint", "init_checkpoint_modules", "num_classes",
+    "with_polygons", "with_distance", "min_distance", "max_distance",
+    "ignore_dontcare", "ignore_iscrowds", "iscrowds_labels",
+    "per_category_metrics", "gradient_clip_norm", "smart_bias_lr",
+    "find_best_score_thresh", "summary_types", "summary_image_num",
+    "summary_image_draw_box", "summary_image_draw_poly",
+    # consumed by _build_model_config via the task dict
+    "input_size", "output_poly_size", "output_dist_size", "num_dist_block",
+})
+_NORM_ACT_KEYS = frozenset({
+    "activation", "norm_epsilon", "norm_momentum", "use_sync_bn",
+})
+
+
 def _build_task_config(t: Dict[str, Any]) -> TaskConfig:
+    _warn_unknown_keys(t, _TASK_KEYS, "task")
     model_cfg      = _build_model_config(t.get("model", {}), t)
     loss_cfg       = _build_loss_config(t.get("losses", {}))
     train_data_cfg = _build_data_config(t.get("train_data", {}))
@@ -222,18 +240,44 @@ _MODEL_KEYS = frozenset({
 _DETGEN_KEYS = frozenset({
     "max_boxes", "nms_thresh", "score_thresh", "nms_class_mode",
 })
+_BACKBONE_KEYS = frozenset({
+    "model_id", "min_level", "max_level", "depth_scale", "width_scale",
+    "use_separable_conv",
+})
+_DECODER_KEYS = frozenset({
+    "version", "type", "activation", "use_separable_conv",
+})
+_HEAD_KEYS = frozenset({"smart_bias"})
 
 
 def _build_model_config(m: Dict[str, Any], task: Dict[str, Any]) -> ModelConfig:
     _warn_unknown_keys(m, _MODEL_KEYS, "model")
     _warn_unknown_keys(m.get("detection_generator", {}), _DETGEN_KEYS,
                        "model.detection_generator")
+    backbone_outer = m.get("backbone", {})
+    if isinstance(backbone_outer, dict) and "darknet" in backbone_outer:
+        _warn_unknown_keys(backbone_outer, {"type", "darknet"}, "model.backbone")
+        _warn_unknown_keys(backbone_outer.get("darknet", {}), _BACKBONE_KEYS,
+                           "model.backbone.darknet")
+    else:
+        _warn_unknown_keys(backbone_outer, _BACKBONE_KEYS | {"type"},
+                           "model.backbone")
     backbone_raw  = m.get("backbone", {}).get("darknet", m.get("backbone", {}))
     decoder_outer = m.get("decoder", {})
+    if isinstance(decoder_outer, dict) and "yolo_decoder" in decoder_outer:
+        _warn_unknown_keys(decoder_outer, {"type", "yolo_decoder"},
+                           "model.decoder")
+        _warn_unknown_keys(decoder_outer.get("yolo_decoder", {}), _DECODER_KEYS,
+                           "model.decoder.yolo_decoder")
+    else:
+        _warn_unknown_keys(decoder_outer, _DECODER_KEYS | {"type"},
+                           "model.decoder")
     decoder_raw   = decoder_outer.get("yolo_decoder", decoder_outer)
     head_raw      = m.get("head", {})
+    _warn_unknown_keys(head_raw, _HEAD_KEYS, "model.head")
     det_gen_raw   = m.get("detection_generator", {})
     norm_act_raw  = task.get("norm_activation", {})
+    _warn_unknown_keys(norm_act_raw, _NORM_ACT_KEYS, "task.norm_activation")
 
     backbone_cfg = BackboneConfig(
         model_id=backbone_raw.get("model_id", "cspdarknetv8s"),
@@ -373,7 +417,15 @@ def _build_data_config(d: Dict[str, Any], is_validation: bool = False) -> DataCo
     )
 
 
+_DISTANCE_DATA_KEYS = frozenset({
+    "tfds_name", "tfds_split", "tfds_data_dir", "global_batch_size",
+    "ignore_bg", "with_distance", "with_polygons", "drop_remainder",
+    "shuffle_buffer_size", "parser",
+})
+
+
 def _build_distance_data_config(d: Dict[str, Any]) -> DistanceDataConfig:
+    _warn_unknown_keys(d, _DISTANCE_DATA_KEYS, "distance_data")
     parser_cfg = _build_parser_config(d.get("parser", {}))
     return DistanceDataConfig(
         tfds_name=d.get("tfds_name", "servingbot_polygon:1.0.1"),
