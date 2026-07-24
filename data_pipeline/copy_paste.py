@@ -24,6 +24,12 @@ class CopyAndPasteModule:
         2. Randomly place object in the background within the height_limit region.
         3. Composite using the alpha mask channel.
         4. Append updated bounding boxes, classes, and polygon vertices.
+
+    A drawn placement is DISCARDED (background returned unchanged) when the
+    pasted object's box would cover more than ``max_occlusion_frac`` of any
+    pre-existing GT box: the composite overwrites those pixels but the old
+    label is kept, so a heavily-occluded object's box/class/polygon would
+    point at content that is no longer there.
     """
 
     def __init__(
@@ -34,6 +40,7 @@ class CopyAndPasteModule:
         max_resize_ratio: float = 1.5,
         min_resize_ratio: float = 0.2,
         height_limit: float = 0.6,
+        max_occlusion_frac: float = 0.5,
     ):
         self._prob = prob
         self._min_height = min_height
@@ -41,6 +48,11 @@ class CopyAndPasteModule:
         self._max_resize_ratio = max_resize_ratio
         self._min_resize_ratio = min_resize_ratio
         self._height_limit = height_limit
+        # Occlusion gate threshold: skip the paste when it would cover more
+        # than this fraction of any existing GT box's area. 0.5 mirrors the
+        # candidate-filter convention (a label is kept iff >= 50% of the
+        # object stays visible). None disables the gate.
+        self._max_occlusion_frac = max_occlusion_frac
 
     # ------------------------------------------------------------------
     # Core compositing
@@ -67,8 +79,10 @@ class CopyAndPasteModule:
             ratio ~ U(min_ratio, max_ratio)
 
         Containment and the size floor are guaranteed by construction; there
-        is no separate accept/reject gate, so the realized paste rate never
-        falls below ``prob``.
+        is no size-based accept/reject gate. The only post-draw rejection is
+        the occlusion gate in ``_paste`` (see ``max_occlusion_frac``), so the
+        realized paste rate can fall slightly below ``prob`` on crowded
+        backgrounds.
         """
         obj_shape = tf.shape(obj_data['image'])
         obj_h_f = tf.cast(obj_shape[0], tf.float32)
@@ -121,8 +135,10 @@ class CopyAndPasteModule:
                 points:   float32 [max_v] flat xy, normalised in object image
 
         Returns:
-            bg_data dict with the pasted object appended to annotations.
+            bg_data dict with the pasted object appended to annotations, or
+            the input unchanged when the occlusion gate rejects the placement.
         """
+        orig_data = bg_data  # untouched input, returned if the gate rejects
         bg_img = tf.cast(bg_data['image'], tf.float32)      # [H, W, 3]
         H = tf.shape(bg_img)[0]
         W = tf.shape(bg_img)[1]
@@ -321,7 +337,38 @@ class CopyAndPasteModule:
             [bg_data['groundtruth_polygons'], new_poly], axis=0
         )
 
-        return bg_data
+        if self._max_occlusion_frac is None:
+            return bg_data
+
+        # Occlusion gate: fraction of each PRE-EXISTING GT box covered by the
+        # pasted object's box (intersection / existing-box area). The hard-mask
+        # composite replaces those pixels while the old label is kept unchanged,
+        # so a heavily-covered object would train the model on a box/class that
+        # no longer matches the image. Skip the paste in that case. The paste
+        # box is a conservative proxy for the alpha mask (mask area <= box area).
+        orig_boxes = orig_data['groundtruth_boxes']  # [N, 4] yxyx normalized
+        inter_ymin = tf.maximum(orig_boxes[:, 0], new_box[0, 0])
+        inter_xmin = tf.maximum(orig_boxes[:, 1], new_box[0, 1])
+        inter_ymax = tf.minimum(orig_boxes[:, 2], new_box[0, 2])
+        inter_xmax = tf.minimum(orig_boxes[:, 3], new_box[0, 3])
+        inter_area = (
+            tf.maximum(inter_ymax - inter_ymin, 0.0)
+            * tf.maximum(inter_xmax - inter_xmin, 0.0)
+        )
+        box_areas = tf.maximum(
+            (orig_boxes[:, 2] - orig_boxes[:, 0])
+            * (orig_boxes[:, 3] - orig_boxes[:, 1]),
+            1e-9,
+        )
+        # [0.0] guard keeps the reduce_max defined when there is no existing GT.
+        max_occlusion = tf.reduce_max(
+            tf.concat([inter_area / box_areas, [0.0]], axis=0)
+        )
+        return tf.cond(
+            max_occlusion > self._max_occlusion_frac,
+            lambda: orig_data,
+            lambda: bg_data,
+        )
 
     # ------------------------------------------------------------------
     # Dataset-map interface

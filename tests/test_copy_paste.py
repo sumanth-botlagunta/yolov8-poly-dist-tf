@@ -20,10 +20,13 @@ from data_pipeline.copy_paste import CopyAndPasteModule
 
 
 def _bg(h=100, w=100, n=2):
+    # Both fixture boxes live in the UPPER 40% of the frame: the paste band is
+    # y >= H*(1 - height_limit) = 0.4H, so tests that assert a paste happened
+    # can never be skipped by the occlusion gate (see the gate tests below).
     return {
         "image":  tf.constant(np.full((h, w, 3), 120, np.uint8)),
         "groundtruth_boxes": tf.constant(
-            [[0.1, 0.1, 0.3, 0.3], [0.5, 0.5, 0.7, 0.7]][:n], dtype=tf.float32
+            [[0.1, 0.1, 0.3, 0.3], [0.1, 0.5, 0.3, 0.7]][:n], dtype=tf.float32
         ),
         "groundtruth_classes":  tf.constant([0, 1][:n], dtype=tf.int64),
         "groundtruth_polygons": tf.fill([n, 8], -1.0),
@@ -185,6 +188,50 @@ class TestCopyAndPasteModule(unittest.TestCase):
             self.assertLessEqual(box[2], 1.0 + 1e-6)
             self.assertGreaterEqual(box[1], -1e-6)
             self.assertLessEqual(box[3], 1.0 + 1e-6)
+
+    def test_occlusion_gate_skips_paste_covering_existing_gt(self):
+        """A paste that would cover > max_occlusion_frac of an existing GT box
+        is skipped entirely (image and annotations unchanged).
+
+        Deterministic setup: obj 60x100 on a 100x100 bg with resize ratio
+        pinned to 1.0 and height_limit 0.6 forces off_h_min == off_h_max == 40
+        and off_w == 0, so the paste box is exactly [0.4, 0.0, 1.0, 1.0]. The
+        existing box [0.5, 0.2, 0.9, 0.6] is fully inside it (occlusion 1.0).
+        """
+        mod = CopyAndPasteModule(prob=1.0, min_height=0, min_width=0,
+                                 min_resize_ratio=1.0, max_resize_ratio=1.0,
+                                 height_limit=0.6)
+        bg = _bg(h=100, w=100, n=1)
+        bg["groundtruth_boxes"] = tf.constant([[0.5, 0.2, 0.9, 0.6]], tf.float32)
+        out = mod.process_fn(is_training=True)(bg, _obj(h=60, w=100))
+        self.assertEqual(int(out["groundtruth_boxes"].shape[0]), 1)
+        self.assertEqual(int(out["groundtruth_polygons"].shape[0]), 1)
+        np.testing.assert_array_equal(out["image"].numpy(), bg["image"].numpy())
+
+    def test_occlusion_gate_allows_paste_clear_of_existing_gt(self):
+        """Same deterministic placement, but the existing GT box lies above the
+        paste region (zero overlap) -> the paste proceeds and appends its row."""
+        mod = CopyAndPasteModule(prob=1.0, min_height=0, min_width=0,
+                                 min_resize_ratio=1.0, max_resize_ratio=1.0,
+                                 height_limit=0.6)
+        bg = _bg(h=100, w=100, n=1)
+        bg["groundtruth_boxes"] = tf.constant([[0.0, 0.0, 0.35, 0.3]], tf.float32)
+        out = mod.process_fn(is_training=True)(bg, _obj(h=60, w=100))
+        self.assertEqual(int(out["groundtruth_boxes"].shape[0]), 2)
+        # Appended box is the full paste region.
+        np.testing.assert_allclose(
+            out["groundtruth_boxes"][-1].numpy(), [0.4, 0.0, 1.0, 1.0], atol=1e-5
+        )
+
+    def test_occlusion_gate_none_disables_skip(self):
+        """max_occlusion_frac=None restores the unconditional-paste behavior."""
+        mod = CopyAndPasteModule(prob=1.0, min_height=0, min_width=0,
+                                 min_resize_ratio=1.0, max_resize_ratio=1.0,
+                                 height_limit=0.6, max_occlusion_frac=None)
+        bg = _bg(h=100, w=100, n=1)
+        bg["groundtruth_boxes"] = tf.constant([[0.5, 0.2, 0.9, 0.6]], tf.float32)
+        out = mod.process_fn(is_training=True)(bg, _obj(h=60, w=100))
+        self.assertEqual(int(out["groundtruth_boxes"].shape[0]), 2)
 
     def test_graph_mode_map_traces(self):
         """Regression: copy-paste must trace under Dataset.map(AUTOTUNE).
