@@ -194,7 +194,11 @@ task:
       with_distance: true
       with_polygons: false
       drop_remainder: true
-      shuffle_buffer_size: 200
+      # Shuffle-before-repeat: only this window mixes within a lap. At 200 the
+      # 16 distance rows per step tracked shard read order (same scene/session
+      # back to back). Records stay encoded through shuffle (SkipDecoding), so
+      # a few thousand costs little host RAM.
+      shuffle_buffer_size: 2000
       parser:
         angle_step: 15
         max_num_instances: 300
