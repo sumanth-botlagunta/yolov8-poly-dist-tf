@@ -99,7 +99,13 @@ task:
     #     --datasets cleaner_polygon2026:2.0.0,field_misrecog2026:1.0.0,station_misrecog:1.1.0
     # tfds_name: "cleaner_polygon2026_672:2.0.0,field_misrecog2026_672:1.0.0,station_misrecog_672:1.1.0"
     tfds_split: "train,train,train"
-    tfds_sampling_weights: [95, 2, 3]
+    # Weights bias the interleave ORDER only (each image is still seen exactly
+    # once per lap). Proportional-to-source-size weights (268,384 / 416 / 2,366)
+    # make all sources exhaust together, so the small misrecog sources spread
+    # uniformly across the epoch. The old [95, 2, 3] over-drew them 13x/3.4x
+    # their true rate, exhausting them ~8%/~29% into every lap and leaving the
+    # epoch tail (and every epoch-boundary checkpoint) pure cleaner data.
+    tfds_sampling_weights: [268384, 416, 2366]
     tfds_data_dir: /home/user/tensorflow_datasets/
     tfds_for_cnp: "cleaner_copy_paste:1.0.0"
     tfds_for_cnp_split: train_f
