@@ -20,7 +20,8 @@ task:
   ignore_iscrowds: false
   iscrowds_labels: [6, 13, 24, 36, 37]
   smart_bias_lr: 0.1
-  gradient_clip_norm: 0.0
+  # Global-norm gradient clip (Ultralytics clips at 10.0 every step). 0 = off.
+  gradient_clip_norm: 10.0
   find_best_score_thresh: true
   summary_types: scalar,image
   summary_image_num: 20
