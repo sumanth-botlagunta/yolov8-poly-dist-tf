@@ -185,6 +185,12 @@ task:
         # canvas->output warp translate matches legacy (0.1).
         shear: 0.0
         translate: 0.1
+        # Ultralytics close_mosaic: rebuild the train stream with mosaic +
+        # mixup frequency 0 for the final N epochs, so the model converges on
+        # clean single-image statistics (mosaic seams / warped scale stats are
+        # train-only artifacts). Copy-paste rides the mosaic branch, so it
+        # stops too. Step/epoch/LR accounting is unaffected.
+        close_mosaic_epochs: 10
     distance_data:
       tfds_name: "servingbot_polygon:1.0.1"
       tfds_split: train
